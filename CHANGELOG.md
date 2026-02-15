@@ -4,6 +4,11 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [0.6.5] - 2026-02-15
+
+### Changed
+- Version bumped: `daizo-core` 0.6.5, `daizo-cli` 0.6.5, `daizo-mcp` 0.6.5.
+
 ## [0.6.4] - 2026-02-15
 
 ### Changed
