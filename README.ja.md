@@ -124,6 +124,7 @@ daizo-cli update --yes              # CLI の再インストール
 基本:
 - `daizo_version`（サーバーのバージョン/ビルド情報）
 - `daizo_usage`（AI クライアント向けの使い方ガイド。低トークン運用の推奨フロー）
+- `daizo_system_prompt`（AI向けのsystem promptテンプレ（1枚）。低トークン運用の既定値をまとめたもの）
 - `daizo_profile`（ツール呼び出しの簡易ベンチマーク）
 
 解決:
@@ -240,13 +241,13 @@ Tips: `DAIZO_HINT_TOP` でサジェスト件数を制御（既定 1）。
 
 ```bash
 # 自動一括（バンプ → コミット → タグ → プッシュ → GitHub リリース自動ノート）
-scripts/release.sh 0.6.2 --all
+scripts/release.sh 0.6.3 --all
 
 # CHANGELOG をノートに使用
-scripts/release.sh 0.6.2 --push --release
+scripts/release.sh 0.6.3 --push --release
 
 # ドライラン
-scripts/release.sh 0.6.2 --all --dry-run
+scripts/release.sh 0.6.3 --all --dry-run
 ```
 
 ## ライセンス

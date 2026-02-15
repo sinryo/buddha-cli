@@ -124,6 +124,7 @@ daizo-cli update --yes              # reinstall this CLI
 Core:
 - `daizo_version` (server version/build info)
 - `daizo_usage` (usage guide for AI clients; low-token flow)
+- `daizo_system_prompt` (one-page system prompt template for AI clients; low-token defaults)
 - `daizo_profile` (in-process benchmark for a tool call)
 
 Resolve:
@@ -240,13 +241,13 @@ Tip: Control number of suggestions via `DAIZO_HINT_TOP` (default 1).
 
 ```bash
 # Auto (bump → commit → tag → push → GitHub release with auto-notes)
-scripts/release.sh 0.6.2 --all
+scripts/release.sh 0.6.3 --all
 
 # CHANGELOG notes instead of auto-notes
-scripts/release.sh 0.6.2 --push --release
+scripts/release.sh 0.6.3 --push --release
 
 # Dry run
-scripts/release.sh 0.6.2 --all --dry-run
+scripts/release.sh 0.6.3 --all --dry-run
 ```
 
 ## License

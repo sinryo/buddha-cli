@@ -271,6 +271,7 @@ fn tools_list() -> Vec<serde_json::Value> {
     vec![
         tool("daizo_version", "Get daizo-mcp server version and build information. Use this to check compatibility and troubleshoot issues.", json!({"type":"object","properties":{}})),
         tool("daizo_usage", "Usage guidance for AI (low-token). FAST PATH: use direct IDs when known. Local corpora: CBETA (T0001/T0262), Tipitaka (DN1/MN1), GRETIL (saddharmapuNDarIka), SARIT (file stem), MUKTABODHA (file stem). Online: SAT, JOZEN, Tibetan (tibetan_search).", json!({"type":"object","properties":{}})),
+        tool("daizo_system_prompt", "One-page system prompt template for AI clients using daizo-mcp (low-token defaults, _meta.fetchSuggestions flow).", json!({"type":"object","properties":{}})),
         tool("daizo_profile", "Run an in-process benchmark for a tool call and return timing stats (warm cache). Use for performance measurement.", json!({"type":"object","properties":{
             "tool":{"type":"string","description":"Tool name to call (e.g., cbeta_search, cbeta_fetch, daizo_resolve)."},
             "arguments":{"type":"object","description":"Arguments object passed to the tool."},
@@ -2040,6 +2041,14 @@ Flow: jozen_search -> jozen_fetch (lineno)
                 "jsonrpc":"2.0",
                 "id": id,
                 "result": { "content": [{"type":"text","text": guide}], "_meta": {"source": "daizo_usage"} }
+            });
+        }
+        "daizo_system_prompt" => {
+            let prompt = include_str!("../../docs/daizo_system_prompt.txt");
+            return json!({
+                "jsonrpc":"2.0",
+                "id": id,
+                "result": { "content": [{"type":"text","text": prompt}], "_meta": {"source": "daizo_system_prompt"} }
             });
         }
         "daizo_profile" => {

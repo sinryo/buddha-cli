@@ -124,6 +124,7 @@ daizo-cli update --yes              # 重新安裝 CLI
 核心：
 - `daizo_version`（伺服器版本/建置資訊）
 - `daizo_usage`（AI 用戶端使用指南；低代幣流程）
+- `daizo_system_prompt`（AI 用 system prompt 範本（單頁）；包含低代幣預設值）
 - `daizo_profile`（工具呼叫的簡易效能量測）
 
 解決：
@@ -233,13 +234,13 @@ daizo-cli update --yes              # 重新安裝 CLI
 
 ```bash
 # 全自動（bump → commit → tag → push → GitHub 釋出，自動筆記）
-scripts/release.sh 0.6.2 --all
+scripts/release.sh 0.6.3 --all
 
 # 使用 CHANGELOG 筆記
-scripts/release.sh 0.6.2 --push --release
+scripts/release.sh 0.6.3 --push --release
 
 # 模擬執行
-scripts/release.sh 0.6.2 --all --dry-run
+scripts/release.sh 0.6.3 --all --dry-run
 ```
 
 ## 授權
