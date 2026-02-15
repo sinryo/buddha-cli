@@ -4,6 +4,17 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [0.6.2] - 2026-02-15
+
+### Added
+- feat(sat): `sat_search` now returns `_meta.fetchSuggestions` (suggested `sat_detail` calls) for a low-token search -> fetch flow.
+- feat(sat): `sat_search` results now include `tNumber` (derived from `startid`) for easier Taisho-number filtering/reading.
+
+### Changed
+- `sat_search` (autoFetch=false) now renders an LLM-friendly, human-readable results list directly in `content[0].text` (instead of only `see _meta.results`).
+- Tool descriptions improved for SAT tools (how to fetch, how to use `fq`).
+- Version bumped: `daizo-core` 0.6.2, `daizo-cli` 0.6.2, `daizo-mcp` 0.6.2.
+
 ## [0.6.1] - 2026-02-15
 
 ### Added

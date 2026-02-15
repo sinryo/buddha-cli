@@ -135,7 +135,7 @@ daizo-cli update --yes              # 重新安裝 CLI
 - `gretil_title_search`, `gretil_search`
 - `sarit_title_search`, `sarit_search`
 - `muktabodha_title_search`, `muktabodha_search`
-- `sat_search`
+- `sat_search`（SAT 大正新脩大藏經搜尋；回傳 `_meta.results` + `sat_detail` 用的 `_meta.fetchSuggestions`；可用 `fq` 篩選 T 號範圍）
 - `jozen_search`
 - `tibetan_search`（藏文線上全文搜尋；`sources:["buda","adarshah"]`，BUDA 支援 `exact` 短語搜尋，Adarshah 支援 `wildcard`，`maxSnippetChars` 控制片段長度）
 
@@ -145,7 +145,7 @@ daizo-cli update --yes              # 重新安裝 CLI
 - `gretil_fetch`（支援 `lineNumber`, `contextBefore`, `contextAfter`）
 - `sarit_fetch`（支援 `lineNumber`, `contextBefore`, `contextAfter`）
 - `muktabodha_fetch`（支援 `lineNumber`, `contextBefore`, `contextAfter`）
-- `sat_fetch`, `sat_detail`, `sat_pipeline`
+- `sat_fetch`, `sat_detail`, `sat_pipeline`（SAT 詳細擷取；`sat_pipeline` 會挑選最佳結果並自動擷取）
 - `jozen_fetch`（以 `lineno` 擷取單頁；回傳格式為 `[J..] ...`）
 
 管線：
@@ -233,13 +233,13 @@ daizo-cli update --yes              # 重新安裝 CLI
 
 ```bash
 # 全自動（bump → commit → tag → push → GitHub 釋出，自動筆記）
-scripts/release.sh 0.6.1 --all
+scripts/release.sh 0.6.2 --all
 
 # 使用 CHANGELOG 筆記
-scripts/release.sh 0.6.1 --push --release
+scripts/release.sh 0.6.2 --push --release
 
 # 模擬執行
-scripts/release.sh 0.6.1 --all --dry-run
+scripts/release.sh 0.6.2 --all --dry-run
 ```
 
 ## 授權

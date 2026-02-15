@@ -135,7 +135,7 @@ Search:
 - `gretil_title_search`, `gretil_search`
 - `sarit_title_search`, `sarit_search`
 - `muktabodha_title_search`, `muktabodha_search`
-- `sat_search`
+- `sat_search` (SAT Taisho Shinshu Daizokyo search; returns `_meta.results` + `_meta.fetchSuggestions` for `sat_detail`; use `fq` to filter by Taisho id ranges)
 - `jozen_search`
 - `tibetan_search` (online Tibetan full-text search; `sources:["buda","adarshah"]`, `exact` for phrase search on BUDA, `wildcard` for Adarshah, `maxSnippetChars` for snippet size)
 
@@ -145,7 +145,7 @@ Fetch:
 - `gretil_fetch` (supports `lineNumber`, `contextBefore`, `contextAfter`, `headQuery`, `headIndex`)
 - `sarit_fetch` (supports `lineNumber`, `contextBefore`, `contextAfter`)
 - `muktabodha_fetch` (supports `lineNumber`, `contextBefore`, `contextAfter`)
-- `sat_fetch`, `sat_detail`, `sat_pipeline` (supports `exact`; default is phrase search)
+- `sat_fetch`, `sat_detail`, `sat_pipeline` (SAT detail fetch; `sat_pipeline` auto-picks best hit and fetches; supports `exact`; default is phrase search)
 - `jozen_fetch` (fetches a page by `lineno`; returns lines as `[J..] ...`)
 
 Pipelines:
@@ -240,13 +240,13 @@ Tip: Control number of suggestions via `DAIZO_HINT_TOP` (default 1).
 
 ```bash
 # Auto (bump → commit → tag → push → GitHub release with auto-notes)
-scripts/release.sh 0.6.1 --all
+scripts/release.sh 0.6.2 --all
 
 # CHANGELOG notes instead of auto-notes
-scripts/release.sh 0.6.1 --push --release
+scripts/release.sh 0.6.2 --push --release
 
 # Dry run
-scripts/release.sh 0.6.1 --all --dry-run
+scripts/release.sh 0.6.2 --all --dry-run
 ```
 
 ## License

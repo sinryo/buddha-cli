@@ -135,7 +135,7 @@ daizo-cli update --yes              # CLI の再インストール
 - `gretil_title_search`, `gretil_search`
 - `sarit_title_search`, `sarit_search`
 - `muktabodha_title_search`, `muktabodha_search`
-- `sat_search`
+- `sat_search`（SAT大正新脩大蔵経の検索。`_meta.results` + `sat_detail` 用の `_meta.fetchSuggestions` を返す。`fq` でT番号レンジ絞り込み可）
 - `jozen_search`
 - `tibetan_search`（チベット語のオンライン全文検索。`sources:["buda","adarshah"]`。BUDAは `exact` でフレーズ検索、Adarshahは `wildcard`、`maxSnippetChars` でスニペット長）
 
@@ -145,7 +145,7 @@ daizo-cli update --yes              # CLI の再インストール
 - `gretil_fetch`（`lineNumber`, `contextBefore`, `contextAfter`, `headQuery`, `headIndex` をサポート）
 - `sarit_fetch`（`lineNumber`, `contextBefore`, `contextAfter` をサポート）
 - `muktabodha_fetch`（`lineNumber`, `contextBefore`, `contextAfter` をサポート）
-- `sat_fetch`, `sat_detail`, `sat_pipeline`（`exact` をサポート。デフォルトはフレーズ検索）
+- `sat_fetch`, `sat_detail`, `sat_pipeline`（SAT詳細取得。`sat_pipeline` はベストヒットを選んで自動取得。`exact` をサポート。デフォルトはフレーズ検索）
 - `jozen_fetch`（`lineno` 指定で1ページ取得。`[J..] ...` 形式で返す）
 
 パイプライン:
@@ -240,13 +240,13 @@ Tips: `DAIZO_HINT_TOP` でサジェスト件数を制御（既定 1）。
 
 ```bash
 # 自動一括（バンプ → コミット → タグ → プッシュ → GitHub リリース自動ノート）
-scripts/release.sh 0.6.1 --all
+scripts/release.sh 0.6.2 --all
 
 # CHANGELOG をノートに使用
-scripts/release.sh 0.6.1 --push --release
+scripts/release.sh 0.6.2 --push --release
 
 # ドライラン
-scripts/release.sh 0.6.1 --all --dry-run
+scripts/release.sh 0.6.2 --all --dry-run
 ```
 
 ## ライセンス
