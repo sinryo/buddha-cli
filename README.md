@@ -241,13 +241,13 @@ Tip: Control number of suggestions via `DAIZO_HINT_TOP` (default 1).
 
 ```bash
 # Auto (bump → commit → tag → push → GitHub release with auto-notes)
-scripts/release.sh 0.6.3 --all
+scripts/release.sh 0.6.4 --all
 
 # CHANGELOG notes instead of auto-notes
-scripts/release.sh 0.6.3 --push --release
+scripts/release.sh 0.6.4 --push --release
 
 # Dry run
-scripts/release.sh 0.6.3 --all --dry-run
+scripts/release.sh 0.6.4 --all --dry-run
 ```
 
 ## License
