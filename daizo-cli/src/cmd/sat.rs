@@ -211,7 +211,18 @@ pub fn sat_search(
     max_chars: Option<usize>,
     json: bool,
 ) -> anyhow::Result<()> {
-    let wrap = sat_wrap7_search_json(query, rows, offs, fields, fq);
+    let qt = query.trim();
+    let q_sent = if exact && !qt.is_empty() {
+        if qt.starts_with('"') && qt.ends_with('"') && qt.len() >= 2 {
+            qt.to_string()
+        } else {
+            format!("\"{}\"", qt)
+        }
+    } else {
+        qt.to_string()
+    };
+
+    let wrap = sat_wrap7_search_json(&q_sent, rows, offs, fields, fq);
     if autofetch {
         if let Some(w) = wrap.clone() {
             let docs = w
@@ -257,7 +268,7 @@ pub fn sat_search(
                         "truncated": (sliced.len() as u64) < (t.len() as u64),
                         "sourceUrl": url,
                         "extractionMethod": "sat-detail-extract",
-                        "search": {"rows": rows, "offs": offs, "fl": fields, "fq": fq, "count": count},
+                        "search": {"q": qt, "qSent": q_sent, "exact": exact, "rows": rows, "offs": offs, "fl": fields, "fq": fq, "count": count},
                         "chosen": chosen,
                         "titleScore": best_sc,
                     });
@@ -295,12 +306,35 @@ pub fn sat_search(
         let hits = sat_search_results_cli(query, rows, offs, exact, titles_only);
         serde_json::json!({"response": {"numFound": hits.len(), "start": offs, "docs": hits }})
     });
-    let docs = wrap
+    let count = wrap
+        .get("response")
+        .and_then(|r| r.get("numFound"))
+        .and_then(|x| x.as_u64())
+        .unwrap_or(0);
+    let docs0 = wrap
         .get("response")
         .and_then(|r| r.get("docs"))
         .and_then(|v| v.as_array())
         .cloned()
         .unwrap_or_default();
+    let q_focus = qt
+        .strip_prefix('"')
+        .and_then(|s| s.strip_suffix('"'))
+        .unwrap_or(qt)
+        .trim();
+    let q_norm = normalized(q_focus);
+    let docs: Vec<serde_json::Value> = if titles_only && !q_norm.is_empty() {
+        docs0
+            .into_iter()
+            .filter(|d| {
+                let t = d.get("fascnm").and_then(|v| v.as_str()).unwrap_or("");
+                normalized(t).contains(&q_norm)
+            })
+            .collect()
+    } else {
+        docs0
+    };
+
     if docs.is_empty() {
         let text = "no results".to_string();
         if json {
@@ -315,56 +349,65 @@ pub fn sat_search(
         }
         return Ok(());
     }
-    let mut best_idx = 0usize;
-    let mut best_sc = -1.0f32;
+
+    let shown_start = if count == 0 { 0 } else { offs + 1 };
+    let shown_end = std::cmp::min(offs + rows, count as usize);
+    let mut summary = format!(
+        "{} results (showing {}-{}):\n\n",
+        count, shown_start, shown_end
+    );
     for (i, d) in docs.iter().enumerate() {
         let title = d.get("fascnm").and_then(|v| v.as_str()).unwrap_or("");
-        let sc = title_score(title, query);
-        if sc > best_sc {
-            best_sc = sc;
-            best_idx = i;
-        }
+        let useid = d.get("startid").and_then(|v| v.as_str()).unwrap_or("");
+        let tnum = useid
+            .split(',')
+            .next()
+            .map(|s| s.trim())
+            .filter(|s| !s.is_empty())
+            .map(|s| format!("T{}", s))
+            .unwrap_or_else(|| "?".to_string());
+        summary.push_str(&format!(
+            "{}. {} {} [useid: {}]\n",
+            shown_start + i,
+            tnum,
+            title,
+            useid
+        ));
     }
-    let chosen = &docs[best_idx];
-    let useid = chosen.get("startid").and_then(|v| v.as_str()).unwrap_or("");
-    let url = sat_detail_build_url(useid);
-    let t = sat_fetch_cli(&url);
-    let start = start_char.unwrap_or(0);
-    let args = SliceArgs {
-        page: None,
-        page_size: None,
-        start_char: Some(start),
-        end_char: None,
-        max_chars,
-    };
-    let sliced = slice_text_cli(&t, &args);
+    summary.push_str("\n[hint] use sat-detail --useid <startid> (or sat-fetch --useid <startid>) to fetch full text.\n");
+
     if json {
         let meta = serde_json::json!({
-            "totalLength": t.len(),
-            "returnedStart": start,
-            "returnedEnd": args.end_bound(t.len(), sliced.len()),
-            "truncated": (sliced.len() as u64) < (t.len() as u64),
-            "sourceUrl": url,
-            "extractionMethod": "sat-detail-extract",
-            "search": {"rows": rows, "offs": offs, "fl": fields, "fq": fq, "count": wrap.get("response").and_then(|r| r.get("numFound")).and_then(|x| x.as_u64()).unwrap_or(0)},
-            "chosen": chosen,
-            "titleScore": best_sc,
+            "count": count,
+            "displayedCount": docs.len(),
+            "results": docs,
+            "q": qt,
+            "qSent": q_sent,
+            "exact": exact,
+            "rows": rows,
+            "offs": offs,
+            "titlesOnly": titles_only,
+            "fl": fields,
+            "fq": fq,
+            "autoFetch": autofetch
         });
         let envelope = serde_json::json!({
             "jsonrpc":"2.0","id": serde_json::Value::Null,
-            "result": { "content": [{"type":"text","text": sliced}], "_meta": meta }
+            "result": { "content": [{"type":"text","text": summary}], "_meta": meta }
         });
         println!("{}", serde_json::to_string_pretty(&envelope)?);
     } else {
-        println!("{}", sliced);
+        print!("{}", summary);
+        // Preserve these args for reproducibility.
         eprintln!(
-            "[meta] url={} total={} start={} returned={} chosen_title={} score={}",
-            url,
-            t.len(),
-            start,
-            sliced.len(),
-            chosen.get("fascnm").and_then(|v| v.as_str()).unwrap_or(""),
-            best_sc
+            "[meta] qSent={} exact={} rows={} offs={} fl={} fq_count={} titles_only={}",
+            q_sent,
+            exact,
+            rows,
+            offs,
+            fields,
+            fq.len(),
+            titles_only
         );
     }
     Ok(())
