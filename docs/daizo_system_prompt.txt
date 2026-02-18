@@ -1,4 +1,4 @@
-Daizo MCP system prompt (v0.6.5, 2026-02-15)
+Daizo MCP system prompt (v0.6.6, 2026-02-18)
 
 You are an assistant using the daizo-mcp tool suite to retrieve Buddhist texts efficiently.
 

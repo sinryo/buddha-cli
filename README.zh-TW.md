@@ -234,13 +234,13 @@ daizo-cli update --yes              # 重新安裝 CLI
 
 ```bash
 # 全自動（bump → commit → tag → push → GitHub 釋出，自動筆記）
-scripts/release.sh 0.6.5 --all
+scripts/release.sh 0.6.6 --all
 
 # 使用 CHANGELOG 筆記
-scripts/release.sh 0.6.5 --push --release
+scripts/release.sh 0.6.6 --push --release
 
 # 模擬執行
-scripts/release.sh 0.6.5 --all --dry-run
+scripts/release.sh 0.6.6 --all --dry-run
 ```
 
 ## 授權

@@ -51,11 +51,66 @@ fn to_whitespace_fuzzy_literal(s: &str) -> String {
     out
 }
 
-fn cbeta_extract_lb_from_line(line: &str) -> Option<String> {
+fn cbeta_extract_lb_from_line_near(line: &str, anchor: Option<&str>) -> Option<String> {
     static LB_RE: OnceLock<Regex> = OnceLock::new();
     let re = LB_RE.get_or_init(|| Regex::new(r#"<lb\b[^>]*\bn\s*=\s*["']([^"']+)["']"#).unwrap());
-    re.captures(line)
-        .and_then(|c| c.get(1).map(|m| m.as_str().to_string()))
+    let lbs: Vec<(usize, String)> = re
+        .captures_iter(line)
+        .filter_map(|c| {
+            let start = c.get(0).map(|m| m.start())?;
+            let n = c.get(1).map(|m| m.as_str().to_string())?;
+            Some((start, n))
+        })
+        .collect();
+    if lbs.is_empty() {
+        return None;
+    }
+
+    if let Some(anchor_text) = anchor.map(|s| s.trim()).filter(|s| !s.is_empty()) {
+        if let Some(anchor_pos) = line.find(anchor_text) {
+            return lbs
+                .iter()
+                .rev()
+                .find(|(pos, _)| *pos <= anchor_pos)
+                .map(|(_, n)| n.clone())
+                .or_else(|| lbs.first().map(|(_, n)| n.clone()));
+        }
+    }
+
+    lbs.first().map(|(_, n)| n.clone())
+}
+
+fn cbeta_extract_lb_from_line(line: &str) -> Option<String> {
+    cbeta_extract_lb_from_line_near(line, None)
+}
+
+fn cbeta_part_arg(args: &serde_json::Value) -> Option<String> {
+    let v = args.get("part")?;
+    match v {
+        serde_json::Value::String(s) => {
+            let t = s.trim();
+            if t.is_empty() {
+                None
+            } else {
+                Some(t.to_string())
+            }
+        }
+        serde_json::Value::Number(n) => n.as_u64().map(|u| u.to_string()),
+        _ => None,
+    }
+}
+
+fn should_focus_highlight(args: &serde_json::Value) -> bool {
+    let full_flag = args.get("full").and_then(|v| v.as_bool()).unwrap_or(false);
+    let focus_hl = args
+        .get("focusHighlight")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(true);
+    let has_target = args.get("lb").is_some() || args.get("lineNumber").is_some();
+    let has_hard_slice = args.get("startChar").is_some()
+        || args.get("endChar").is_some()
+        || args.get("maxChars").is_some();
+    !full_flag && focus_hl && !has_target && !has_hard_slice
 }
 
 // ============ MCP stdio framing ============
@@ -2752,9 +2807,9 @@ Flow: jozen_search -> jozen_fetch (lineno)
                         false,
                     )
                 }
-            } else if let Some(part) = args.get("part").and_then(|v| v.as_str()) {
+            } else if let Some(part) = cbeta_part_arg(&args) {
                 if is_plain {
-                    if let Some(sec) = extract_cbeta_juan_plain(&xml, part, include_notes) {
+                    if let Some(sec) = extract_cbeta_juan_plain(&xml, &part, include_notes) {
                         (sec, "plain-cbeta-juan".to_string(), true)
                     } else {
                         ensure_gaiji();
@@ -2765,7 +2820,7 @@ Flow: jozen_search -> jozen_fetch (lineno)
                         );
                         (t, "plain-full".to_string(), false)
                     }
-                } else if let Some(sec) = extract_cbeta_juan(&xml, part) {
+                } else if let Some(sec) = extract_cbeta_juan(&xml, &part) {
                     (sec, "cbeta-juan".to_string(), true)
                 } else {
                     (
@@ -2853,18 +2908,8 @@ Flow: jozen_search -> jozen_fetch (lineno)
             // If highlight is provided but lb/lineNumber isn't, focus output around the first match.
             // This avoids "start of text only" when the match is far from the beginning.
             let full_flag = args.get("full").and_then(|v| v.as_bool()).unwrap_or(false);
-            let focus_hl = args
-                .get("focusHighlight")
-                .and_then(|v| v.as_bool())
-                .unwrap_or(true);
-            let has_target = args.get("lb").is_some() || args.get("lineNumber").is_some();
-            let has_slice = args.get("startChar").is_some()
-                || args.get("endChar").is_some()
-                || args.get("page").is_some()
-                || args.get("pageSize").is_some()
-                || args.get("maxChars").is_some();
             let mut focused_meta: Option<serde_json::Value> = None;
-            if !full_flag && focus_hl && !has_target && !has_slice {
+            if should_focus_highlight(&args) {
                 if let Some(pat) = hl_pat.as_deref() {
                     let before = args
                         .get("contextBefore")
@@ -4007,7 +4052,12 @@ Flow: jozen_search -> jozen_fetch (lineno)
             let mut fetch_suggestions: Vec<serde_json::Value> = Vec::new();
             for r in results.iter().take(hint_top) {
                 if let Some(m) = r.matches.first() {
-                    if let Some(lb) = cbeta_extract_lb_from_line(&m.context) {
+                    let anchor = if m.highlight.trim().is_empty() {
+                        None
+                    } else {
+                        Some(m.highlight.as_str())
+                    };
+                    if let Some(lb) = cbeta_extract_lb_from_line_near(&m.context, anchor) {
                         fetch_suggestions.push(json!({
                             "tool": "cbeta_fetch",
                             "args": {"id": r.file_id, "lb": lb, "contextBefore": 1, "contextAfter": 3, "highlight": hl_pat, "highlightRegex": hl_regex, "format": "plain"},
@@ -4182,7 +4232,12 @@ Flow: jozen_search -> jozen_fetch (lineno)
                     ));
                 }
                 if let Some(m) = result.matches.first() {
-                    if let Some(lb) = cbeta_extract_lb_from_line(&m.context) {
+                    let anchor = if m.highlight.trim().is_empty() {
+                        None
+                    } else {
+                        Some(m.highlight.as_str())
+                    };
+                    if let Some(lb) = cbeta_extract_lb_from_line_near(&m.context, anchor) {
                         let sug_hl = hl_pat.clone().unwrap_or_else(|| q.to_string());
                         let sug_hl_regex = if hl_pat.is_some() { hl_regex } else { true };
                         suggestions.push(json!({
@@ -7289,7 +7344,8 @@ fn normalize_ws(s: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::{
-        jozen_extract_detail, jozen_parse_search_html, sat_pick_best_doc, slice_text_bounds,
+        cbeta_extract_lb_from_line_near, cbeta_part_arg, jozen_extract_detail,
+        jozen_parse_search_html, sat_pick_best_doc, should_focus_highlight, slice_text_bounds,
     };
     use serde_json::json;
 
@@ -7322,6 +7378,41 @@ mod tests {
         assert_eq!(total_full, text.chars().count());
         assert_eq!(start_full, 1);
         assert_eq!(end_full, total_full);
+    }
+
+    #[test]
+    fn cbeta_extract_lb_from_line_near_prefers_lb_before_anchor() {
+        let line = r#"<lb n="0001a01"/>甲<lb n="0001a02"/>乙般若波羅蜜<lb n="0001a03"/>丙"#;
+        let lb = cbeta_extract_lb_from_line_near(line, Some("般若波羅蜜"));
+        assert_eq!(lb.as_deref(), Some("0001a02"));
+    }
+
+    #[test]
+    fn cbeta_extract_lb_from_line_near_fallbacks_to_first_when_anchor_missing() {
+        let line = r#"<lb n="0001a01"/>甲<lb n="0001a02"/>乙"#;
+        let lb = cbeta_extract_lb_from_line_near(line, Some("不存在"));
+        assert_eq!(lb.as_deref(), Some("0001a01"));
+    }
+
+    #[test]
+    fn cbeta_part_arg_accepts_string_and_number() {
+        assert_eq!(
+            cbeta_part_arg(&json!({"part":"002"})).as_deref(),
+            Some("002")
+        );
+        assert_eq!(cbeta_part_arg(&json!({"part":2})).as_deref(), Some("2"));
+    }
+
+    #[test]
+    fn should_focus_highlight_allows_pagination_but_blocks_hard_slice() {
+        let with_page = json!({"page": 0, "pageSize": 8000, "highlight": "般若"});
+        assert!(should_focus_highlight(&with_page));
+
+        let with_max_chars = json!({"maxChars": 1000, "highlight": "般若"});
+        assert!(!should_focus_highlight(&with_max_chars));
+
+        let with_lb = json!({"lb":"0114b27", "highlight":"般若"});
+        assert!(!should_focus_highlight(&with_lb));
     }
 
     #[test]
