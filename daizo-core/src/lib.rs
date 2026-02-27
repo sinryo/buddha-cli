@@ -915,6 +915,7 @@ pub fn build_gretil_index(root: &Path) -> Vec<IndexEntry> {
 struct HeaderTitleCandidate {
     text: String,
     lang: Option<String>,
+    level: Option<String>,
 }
 
 fn cbeta_cjk_ratio(s: &str) -> f32 {
@@ -961,6 +962,14 @@ fn pick_best_cbeta_header_title(cands: &[HeaderTitleCandidate]) -> Option<String
             }
         }
         sc += cbeta_cjk_ratio(&c.text) * 2.0;
+        // level="m" (monograph = 個別テキスト) を強く優先
+        if let Some(lvl) = &c.level {
+            match lvl.as_str() {
+                "m" => sc += 5.0,
+                "s" => sc -= 5.0,
+                _ => {}
+            }
+        }
         if cbeta_title_contains_collection_keywords(&c.text) {
             sc -= 2.0;
         }
@@ -1008,6 +1017,7 @@ pub fn build_cbeta_index(root: &Path) -> Vec<IndexEntry> {
             let mut path_stack: Vec<Vec<u8>> = Vec::new();
             let mut in_title_header = false;
             let mut title_lang: Option<String> = None;
+            let mut title_level: Option<String> = None;
             let mut title_buf = String::new();
             let mut in_author = false;
             let mut in_editor = false;
@@ -1039,6 +1049,7 @@ pub fn build_cbeta_index(root: &Path) -> Vec<IndexEntry> {
                                 in_title_header = true;
                                 title_buf.clear();
                                 title_lang = attr_val(&e, b"xml:lang").map(|v| v.to_string());
+                                title_level = attr_val(&e, b"level").map(|v| v.to_string());
                             }
                         }
                         if lname.as_slice() == b"author"
@@ -1093,11 +1104,13 @@ pub fn build_cbeta_index(root: &Path) -> Vec<IndexEntry> {
                                 titles.push(HeaderTitleCandidate {
                                     text: t,
                                     lang: title_lang.take(),
+                                    level: title_level.take(),
                                 });
                             }
                             in_title_header = false;
                             title_buf.clear();
                             title_lang = None;
+                            title_level = None;
                         }
                         if lname == b"author" && in_author {
                             in_author = false;
@@ -3400,6 +3413,29 @@ mod tests_gretil {
 mod tests_cbeta_index_and_plain {
     use super::*;
     use std::fs;
+
+    #[test]
+    fn build_cbeta_index_prefers_level_m_over_level_s() {
+        let dir = tempfile::tempdir().unwrap();
+        let p = dir.path().join("T41n1823.xml");
+        let xml = r#"
+<TEI xml:id="T41n1823">
+  <teiHeader>
+    <fileDesc>
+      <titleStmt>
+        <title level="s" xml:lang="zh-Hant">大正新脩大藏經</title>
+        <title level="m" xml:lang="zh-Hant">俱舍論頌疏</title>
+      </titleStmt>
+    </fileDesc>
+  </teiHeader>
+  <text><body><p>dummy</p></body></text>
+</TEI>
+"#;
+        fs::write(&p, xml).unwrap();
+        let idx = build_cbeta_index(dir.path());
+        assert_eq!(idx.len(), 1);
+        assert_eq!(idx[0].title, "俱舍論頌疏");
+    }
 
     #[test]
     fn build_cbeta_index_prefers_cjk_title_over_collection_title() {
