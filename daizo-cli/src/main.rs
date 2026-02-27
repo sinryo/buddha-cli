@@ -51,6 +51,8 @@ enum Commands {
         #[arg(long)]
         base: Option<PathBuf>,
     },
+    /// Run MCP stdio server
+    Mcp {},
     /// Search GRETIL and optionally auto-fetch contexts or full text (pipeline)
     GretilPipeline {
         /// Query string (regex)
@@ -887,11 +889,34 @@ fn run(cmd: &str, args: &[&str], cwd: Option<&PathBuf>) -> bool {
     result
 }
 
+fn is_mcp_compat_executable_name(name: &str) -> bool {
+    let lowered = name.to_lowercase();
+    lowered == "daizo-mcp" || lowered == "daizo-mcp.exe"
+}
+
+fn should_run_mcp_compat_alias() -> bool {
+    std::env::args_os()
+        .next()
+        .and_then(|p| {
+            std::path::Path::new(&p)
+                .file_name()
+                .map(|s| s.to_string_lossy().to_string())
+        })
+        .map(|name| is_mcp_compat_executable_name(&name))
+        .unwrap_or(false)
+}
+
 fn main() -> anyhow::Result<()> {
     // Initialize optional repo policy from env (rate limits / future robots compliance)
     daizo_core::repo::init_policy_from_env();
+    if should_run_mcp_compat_alias() {
+        return daizo_mcp::run_stdio_server();
+    }
     let cli = Cli::parse();
     match cli.command {
+        Commands::Mcp {} => {
+            return daizo_mcp::run_stdio_server();
+        }
         Commands::Init { base } => {
             // Display startup message with colored output
             eprintln!("\x1b[33m📥 First-time setup requires downloading Buddhist texts. This may take several minutes... / 初回起動時はお経のダウンロードに時間がかかります。しばらくお待ちください... / 首次啟動需要下載佛經文本，可能需要幾分鐘時間...\x1b[0m");
@@ -1569,7 +1594,7 @@ fn main() -> anyhow::Result<()> {
                 if cli.exists() { "OK" } else { "MISSING" }
             );
             println!(
-                " - daizo-mcp: {}",
+                " - daizo-mcp (compat alias): {}",
                 if mcp.exists() { "OK" } else { "MISSING" }
             );
             println!("data:");
@@ -2211,3 +2236,21 @@ use cmd::{
     cbeta as cmd_cbeta, gretil as cmd_gretil, muktabodha as cmd_muktabodha, sarit as cmd_sarit,
     tipitaka as cmd_tipitaka,
 };
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn compat_name_detects_daizo_mcp_binary_names() {
+        assert!(is_mcp_compat_executable_name("daizo-mcp"));
+        assert!(is_mcp_compat_executable_name("daizo-mcp.exe"));
+        assert!(!is_mcp_compat_executable_name("daizo-cli"));
+    }
+
+    #[test]
+    fn clap_parses_mcp_subcommand() {
+        let cli = Cli::try_parse_from(["daizo-cli", "mcp"]).expect("must parse mcp subcommand");
+        assert!(matches!(cli.command, Commands::Mcp {}));
+    }
+}

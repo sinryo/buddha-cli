@@ -1,6 +1,6 @@
 [package]
 name = "daizo-cli"
-version = "0.6.6"
+version = "0.6.7"
 edition = "2021"
 license = "MIT OR Apache-2.0"
 
@@ -21,3 +21,4 @@ idna = "1.0"
 sha1 = "0.10"
 encoding_rs = "0.8"
 quick-xml = "0.38.3"
+daizo-mcp = { path = "../daizo-mcp" }

@@ -28,8 +28,11 @@ link_bin() {
   fi
 }
 
-link_bin daizo-mcp
 link_bin daizo-cli
 
-echo "[link] done. You can now run ./daizo-mcp and ./daizo-cli"
+if [ -x "$ROOT_DIR/daizo-cli" ]; then
+  ln -sfn "daizo-cli" "$ROOT_DIR/daizo-mcp"
+  echo "[link] daizo-mcp -> daizo-cli (compat alias)"
+fi
 
+echo "[link] done. You can now run ./daizo-cli mcp (or ./daizo-mcp)"

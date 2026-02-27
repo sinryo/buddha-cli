@@ -38,15 +38,18 @@ scripts/install.sh --prefix "$HOME/.daizo" --write-path
 Claude Code CLI:
 
 ```bash
-claude mcp add daizo "$HOME/.daizo/bin/daizo-mcp"
+claude mcp add daizo "$HOME/.daizo/bin/daizo-cli" mcp
 ```
 
 Codex CLI（`~/.codex/config.toml`）:
 
 ```toml
 [mcp_servers.daizo]
-command = "/Users/you/.daizo/bin/daizo-mcp"
+command = "/Users/you/.daizo/bin/daizo-cli"
+args = ["mcp"]
 ```
+
+互換性: `$HOME/.daizo/bin/daizo-mcp` も互換aliasとして当面利用できます。
 
 ## CLI 例
 
@@ -232,8 +235,8 @@ Tips: `DAIZO_HINT_TOP` でサジェスト件数を制御（既定 1）。
 
 | スクリプト | 役割 |
 |------------|------|
-| `scripts/bootstrap.sh` | ワンライナーインストーラー: 依存チェック → リポジトリclone → install.sh実行 → MCP自動登録 |
-| `scripts/install.sh` | メインインストーラー: ビルド → バイナリ配置 → GRETILダウンロード → インデックス構築 |
+| `scripts/bootstrap.sh` | ワンライナーインストーラー: 依存チェック → リポジトリclone → install.sh実行 → MCP自動登録（`daizo-cli mcp`） |
+| `scripts/install.sh` | メインインストーラー: `daizo-cli` をビルド → バイナリ配置（`daizo-mcp` 互換alias含む） → GRETILダウンロード → インデックス構築 |
 | `scripts/link-binaries.sh` | 開発用: リリースバイナリへのシンボリックリンク作成 |
 | `scripts/release.sh` | リリース用: バージョンバンプ → タグ作成 → GitHub Release |
 
@@ -241,13 +244,13 @@ Tips: `DAIZO_HINT_TOP` でサジェスト件数を制御（既定 1）。
 
 ```bash
 # 自動一括（バンプ → コミット → タグ → プッシュ → GitHub リリース自動ノート）
-scripts/release.sh 0.6.6 --all
+scripts/release.sh 0.6.7 --all
 
 # CHANGELOG をノートに使用
-scripts/release.sh 0.6.6 --push --release
+scripts/release.sh 0.6.7 --push --release
 
 # ドライラン
-scripts/release.sh 0.6.6 --all --dry-run
+scripts/release.sh 0.6.7 --all --dry-run
 ```
 
 ## ライセンス

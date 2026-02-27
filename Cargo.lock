@@ -260,11 +260,12 @@ dependencies = [
 
 [[package]]
 name = "daizo-cli"
-version = "0.6.6"
+version = "0.6.7"
 dependencies = [
  "anyhow",
  "clap",
  "daizo-core",
+ "daizo-mcp",
  "encoding_rs",
  "idna",
  "ignore",
@@ -282,7 +283,7 @@ dependencies = [
 
 [[package]]
 name = "daizo-core"
-version = "0.6.6"
+version = "0.6.7"
 dependencies = [
  "encoding_rs",
  "glob",
@@ -301,7 +302,7 @@ dependencies = [
 
 [[package]]
 name = "daizo-mcp"
-version = "0.6.6"
+version = "0.6.7"
 dependencies = [
  "anyhow",
  "daizo-core",

@@ -38,15 +38,18 @@ scripts/install.sh --prefix "$HOME/.daizo" --write-path
 Claude Code CLI：
 
 ```bash
-claude mcp add daizo "$HOME/.daizo/bin/daizo-mcp"
+claude mcp add daizo "$HOME/.daizo/bin/daizo-cli" mcp
 ```
 
 Codex CLI（`~/.codex/config.toml`）：
 
 ```toml
 [mcp_servers.daizo]
-command = "/Users/you/.daizo/bin/daizo-mcp"
+command = "/Users/you/.daizo/bin/daizo-cli"
+args = ["mcp"]
 ```
+
+相容性：`$HOME/.daizo/bin/daizo-mcp` 仍可作為相容 alias 使用。
 
 ## CLI 範例
 
@@ -225,8 +228,8 @@ daizo-cli update --yes              # 重新安裝 CLI
 
 | 腳本 | 用途 |
 |------|------|
-| `scripts/bootstrap.sh` | 一鍵安裝：檢查依賴 → clone 倉庫 → 執行 install.sh → 自動註冊 MCP |
-| `scripts/install.sh` | 主安裝程式：建置 → 安裝二進位 → 下載 GRETIL → 重建索引 |
+| `scripts/bootstrap.sh` | 一鍵安裝：檢查依賴 → clone 倉庫 → 執行 install.sh → 自動註冊 MCP（`daizo-cli mcp`） |
+| `scripts/install.sh` | 主安裝程式：建置 `daizo-cli` → 安裝二進位（含 `daizo-mcp` 相容 alias）→ 下載 GRETIL → 重建索引 |
 | `scripts/link-binaries.sh` | 開發用：建立指向 release 二進位的符號連結 |
 | `scripts/release.sh` | 釋出用：版本升級 → 建立標籤 → GitHub Release |
 
@@ -234,13 +237,13 @@ daizo-cli update --yes              # 重新安裝 CLI
 
 ```bash
 # 全自動（bump → commit → tag → push → GitHub 釋出，自動筆記）
-scripts/release.sh 0.6.6 --all
+scripts/release.sh 0.6.7 --all
 
 # 使用 CHANGELOG 筆記
-scripts/release.sh 0.6.6 --push --release
+scripts/release.sh 0.6.7 --push --release
 
 # 模擬執行
-scripts/release.sh 0.6.6 --all --dry-run
+scripts/release.sh 0.6.7 --all --dry-run
 ```
 
 ## 授權

@@ -38,15 +38,18 @@ scripts/install.sh --prefix "$HOME/.daizo" --write-path
 Claude Code CLI:
 
 ```bash
-claude mcp add daizo "$HOME/.daizo/bin/daizo-mcp"
+claude mcp add daizo "$HOME/.daizo/bin/daizo-cli" mcp
 ```
 
 Codex CLI (`~/.codex/config.toml`):
 
 ```toml
 [mcp_servers.daizo]
-command = "/Users/you/.daizo/bin/daizo-mcp"
+command = "/Users/you/.daizo/bin/daizo-cli"
+args = ["mcp"]
 ```
+
+Compatibility: `$HOME/.daizo/bin/daizo-mcp` remains available as a compatibility alias.
 
 ## CLI Examples
 
@@ -232,8 +235,8 @@ Tip: Control number of suggestions via `DAIZO_HINT_TOP` (default 1).
 
 | Script | Purpose |
 |--------|---------|
-| `scripts/bootstrap.sh` | One-liner installer: checks deps → clones repo → runs install.sh → auto-registers MCP |
-| `scripts/install.sh` | Main installer: builds → installs binaries → downloads GRETIL → rebuilds indexes |
+| `scripts/bootstrap.sh` | One-liner installer: checks deps → clones repo → runs install.sh → auto-registers MCP (`daizo-cli mcp`) |
+| `scripts/install.sh` | Main installer: builds `daizo-cli` → installs binaries (`daizo-mcp` compat alias included) → downloads GRETIL → rebuilds indexes |
 | `scripts/link-binaries.sh` | Dev helper: creates symlinks to release binaries in repo root |
 | `scripts/release.sh` | Release helper: version bump → tag → GitHub release |
 
@@ -241,13 +244,13 @@ Tip: Control number of suggestions via `DAIZO_HINT_TOP` (default 1).
 
 ```bash
 # Auto (bump → commit → tag → push → GitHub release with auto-notes)
-scripts/release.sh 0.6.6 --all
+scripts/release.sh 0.6.7 --all
 
 # CHANGELOG notes instead of auto-notes
-scripts/release.sh 0.6.6 --push --release
+scripts/release.sh 0.6.7 --push --release
 
 # Dry run
-scripts/release.sh 0.6.6 --all --dry-run
+scripts/release.sh 0.6.7 --all --dry-run
 ```
 
 ## License

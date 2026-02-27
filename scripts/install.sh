@@ -5,9 +5,10 @@ if set -o | grep -q pipefail 2>/dev/null; then
   set -o pipefail
 fi
 
-# daizo-mcp installer
-# - Builds release binaries
+# daizo installer
+# - Builds release binary (daizo-cli; MCP is served via "daizo-cli mcp")
 # - Installs into "${DAIZO_DIR:-$HOME/.daizo}/bin"
+# - Creates daizo-mcp compatibility alias to daizo-cli
 # - Rebuilds indexes via installed CLI
 # - Optionally writes PATH export to your shell rc
 
@@ -23,9 +24,10 @@ Environment:
   DAIZO_DIR         Install base. Overrides default if set.
 
 This will:
-  1) cargo build --release
-  2) copy target/release/daizo-cli and daizo-mcp to \$DAIZO_DIR/bin
-  3) run: \$DAIZO_DIR/bin/daizo-cli index-rebuild --source all (automatically downloads/updates data)
+  1) cargo build --release -p daizo-cli
+  2) copy target/release/daizo-cli to \$DAIZO_DIR/bin
+  3) create \$DAIZO_DIR/bin/daizo-mcp compatibility alias (symlink; copy fallback)
+  4) run: \$DAIZO_DIR/bin/daizo-cli index-rebuild --source all (automatically downloads/updates data)
 EOF
 }
 
@@ -56,32 +58,35 @@ echo "[install] REPO_DIR=$REPO_DIR"
 echo "[install] DAIZO_DIR=$PREFIX"
 echo "[install] BIN_OUT=$BIN_OUT"
 
-echo -e "\033[36m🛑 Stopping existing daizo-mcp processes... / 既存のdaizo-mcpプロセスを停止中... / 正在停止現有的daizo-mcp進程...\033[0m"
+echo -e "\033[36m🛑 Stopping existing daizo MCP processes... / 既存のdaizo MCPプロセスを停止中... / 正在停止現有的 daizo MCP 進程...\033[0m"
 
 # Check if we're on Windows (Git Bash, WSL, or similar)
 if command -v tasklist > /dev/null 2>&1 && command -v taskkill > /dev/null 2>&1; then
   # Windows environment
-  if tasklist | grep -i "daizo-mcp" > /dev/null; then
-    echo "[cleanup] killing existing daizo-mcp processes (Windows)"
+  if tasklist | grep -E -i "daizo-mcp|daizo-cli" > /dev/null; then
+    echo "[cleanup] killing existing daizo-mcp/daizo-cli processes (Windows)"
     taskkill /F /IM "daizo-mcp*" > /dev/null 2>&1 || true
+    taskkill /F /IM "daizo-cli*" > /dev/null 2>&1 || true
     echo -e "\033[32m✅ Existing processes stopped / 既存プロセス停止完了 / 現有進程已停止\033[0m"
   else
-    echo "[cleanup] no daizo-mcp processes found"
+    echo "[cleanup] no daizo MCP processes found"
   fi
 else
   # Unix-like environment (Linux, macOS)
-  if pgrep -f "daizo-mcp" > /dev/null; then
-    echo "[cleanup] killing existing daizo-mcp processes"
+  if pgrep -f "daizo-mcp" > /dev/null || pgrep -f "daizo-cli.*mcp" > /dev/null; then
+    echo "[cleanup] killing existing daizo-mcp and daizo-cli mcp processes"
     pkill -f "daizo-mcp" || true
+    pkill -f "daizo-cli.*mcp" || true
     sleep 1
     # Force kill if still running
-    if pgrep -f "daizo-mcp" > /dev/null; then
-      echo "[cleanup] force killing daizo-mcp processes"
+    if pgrep -f "daizo-mcp" > /dev/null || pgrep -f "daizo-cli.*mcp" > /dev/null; then
+      echo "[cleanup] force killing daizo MCP processes"
       pkill -9 -f "daizo-mcp" || true
+      pkill -9 -f "daizo-cli.*mcp" || true
     fi
     echo -e "\033[32m✅ Existing processes stopped / 既存プロセス停止完了 / 現有進程已停止\033[0m"
   else
-    echo "[cleanup] no daizo-mcp processes found"
+    echo "[cleanup] no daizo MCP processes found"
   fi
 fi
 
@@ -97,23 +102,30 @@ fi
 mkdir -p "$BIN_OUT"
 
 echo -e "\033[36m🔨 Building Rust project... / Rustプロジェクトをビルドしています... / 正在構建Rust項目...\033[0m"
-echo "[build] cargo build --release"
+echo "[build] cargo build --release -p daizo-cli"
 (
   cd "$REPO_DIR"
-  cargo build --release
+  cargo build --release -p daizo-cli
 )
 echo -e "\033[32m✅ Build completed / ビルド完了 / 構建完成\033[0m"
 
 echo -e "\033[36m📦 Installing binaries... / バイナリをインストール中... / 正在安裝二進制文件...\033[0m"
-for b in daizo-cli daizo-mcp; do
-  src="$REPO_DIR/target/release/$b"
-  if [ ! -x "$src" ]; then
-    echo "[error] missing binary: $src" >&2
-    exit 1
-  fi
-  echo "[install] copy $b -> $BIN_OUT"
-  cp -f "$src" "$BIN_OUT/"
-done
+CLI_SRC="$REPO_DIR/target/release/daizo-cli"
+if [ ! -x "$CLI_SRC" ]; then
+  echo "[error] missing binary: $CLI_SRC" >&2
+  exit 1
+fi
+echo "[install] copy daizo-cli -> $BIN_OUT"
+cp -f "$CLI_SRC" "$BIN_OUT/daizo-cli"
+
+ALIAS="$BIN_OUT/daizo-mcp"
+rm -f "$ALIAS"
+if ln -sfn "daizo-cli" "$ALIAS" 2>/dev/null; then
+  echo "[install] created compat alias: daizo-mcp -> daizo-cli"
+else
+  echo "[install] symlink unavailable; copy daizo-cli -> daizo-mcp"
+  cp -f "$BIN_OUT/daizo-cli" "$ALIAS"
+fi
 echo -e "\033[32m✅ Binary installation completed / バイナリインストール完了 / 二進制文件安裝完成\033[0m"
 
 echo -e "\033[36m📚 Fetching GRETIL Sanskrit corpus... / GRETILサンスクリット語コーパスを取得中... / 正在下載 GRETIL 梵文語料庫...\033[0m"
@@ -230,4 +242,4 @@ else
 fi
 
 echo -e "\033[32m🎉 Installation completed! / インストール完了！ / 安裝完成！\033[0m"
-echo "[ok] Installed daizo-cli and daizo-mcp to $BIN_OUT"
+echo "[ok] Installed daizo-cli and daizo-mcp (compat alias) to $BIN_OUT"

@@ -3,7 +3,7 @@
 set +e  # disable for now
 set +u  # disable for now
 
-# One-liner bootstrap installer for daizo-mcp
+# One-liner bootstrap installer for daizo-mcp/daizo-cli
 # Example (after publishing):
 #   curl -fsSL https://raw.githubusercontent.com/sinryo/daizo-mcp/main/scripts/bootstrap.sh | bash -s -- --yes --write-path
 
@@ -87,12 +87,16 @@ else
 fi
 
 echo "[install] running scripts/install.sh"
-bash "$REPO_DIR/scripts/install.sh" --prefix "$DAIZO_DIR" ${WRITE_PATH:+--write-path}
+INSTALL_ARGS=(--prefix "$DAIZO_DIR")
+if [ "$WRITE_PATH" -eq 1 ]; then
+  INSTALL_ARGS+=(--write-path)
+fi
+bash "$REPO_DIR/scripts/install.sh" "${INSTALL_ARGS[@]}"
 
 # Try to auto-register with Claude Code if available
 if command -v claude >/dev/null 2>&1; then
   echo "[mcp] attempting to register with Claude Code..."
-  if claude mcp add daizo "$DAIZO_DIR/bin/daizo-mcp" 2>/dev/null; then
+  if claude mcp add daizo "$DAIZO_DIR/bin/daizo-cli" mcp 2>/dev/null; then
     echo "[mcp] successfully registered daizo MCP server with Claude Code"
   else
     echo "[mcp] Claude Code auto-registration failed (this is fine)"
@@ -110,7 +114,8 @@ if [ -f "$CODEX_CONFIG" ]; then
   else
     echo "" >> "$CODEX_CONFIG"
     echo "[mcp_servers.daizo]" >> "$CODEX_CONFIG"
-    echo "command = \"$DAIZO_DIR/bin/daizo-mcp\"" >> "$CODEX_CONFIG"
+    echo "command = \"$DAIZO_DIR/bin/daizo-cli\"" >> "$CODEX_CONFIG"
+    echo "args = [\"mcp\"]" >> "$CODEX_CONFIG"
     echo "[mcp] successfully registered daizo MCP server with Codex"
   fi
 else
@@ -120,7 +125,8 @@ fi
 echo "[done] daizo installed. Try: daizo-cli doctor --verbose"
 echo ""
 echo "If MCP auto-registration failed, you can add manually:"
-echo "  Claude Code: claude mcp add daizo $DAIZO_DIR/bin/daizo-mcp"
+echo "  Claude Code: claude mcp add daizo $DAIZO_DIR/bin/daizo-cli mcp"
 echo "  Codex: Add to ~/.codex/config.toml:"
 echo "    [mcp_servers.daizo]"
-echo "    command = \"$DAIZO_DIR/bin/daizo-mcp\""
+echo "    command = \"$DAIZO_DIR/bin/daizo-cli\""
+echo "    args = [\"mcp\"]"
