@@ -122,6 +122,38 @@ buddha uninstall --purge         # 移除二進位與資料/快取
 buddha update --yes              # 重新安裝 CLI
 ```
 
+## AI Agent 整合
+
+buddha CLI 專為 AI 代理（Claude Code、Codex 等）直接呼叫而設計：
+
+**非 TTY 自動 JSON：** 當 stdout 為管道或重新導向時，自動輸出 JSON，無需每次指定 `--json`。
+
+```bash
+buddha cbeta-title-search --query "般若" | jq .    # 自動 JSON（管道時）
+BUDDHA_JSON=1 buddha cbeta-title-search --query "般若"  # 透過環境變數強制 JSON
+buddha --json cbeta-title-search --query "般若"    # 全域 --json 旗標
+```
+
+**靜音模式 (`--quiet` / `-q`)：** 抑制 stderr 上的進度訊息，便於輸出解析。
+
+**指令自動發現 (`buddha schema`)：** 以機器可讀的 JSON 取得所有子指令與參數架構。
+
+```bash
+buddha schema                          # 所有指令
+buddha schema --command cbeta-fetch    # 單一指令架構
+```
+
+**結構化錯誤輸出：** JSON 模式下，錯誤以 `{"error":{"message":"...","code":"NOT_FOUND"}}` 格式輸出至 stderr。
+
+| 結束碼 | 含義 |
+|--------|------|
+| 0 | 成功 |
+| 1 | 一般錯誤 |
+| 2 | 用法錯誤（參數無效） |
+| 10 | 未找到（無結果） |
+| 11 | 網路錯誤（逾時、連線） |
+| 12 | 資料未就緒（需要 clone/下載） |
+
 ## MCP 工具
 
 核心：
@@ -219,6 +251,7 @@ buddha update --yes              # 重新安裝 CLI
   - 資料：`xml-p5/`, `tipitaka-xml/romn/`, `GRETIL/`, `SARIT-corpus/`, `MUKTABODHA/`
   - 快取：`cache/`
   - 二進位：`bin/`
+- `BUDDHA_JSON=1` 強制所有 CLI 指令輸出 JSON（等同 `--json`）
 - `BUDDHA_DEBUG=1` 啟用簡易 MCP 除錯日誌（舊版：`DAIZO_DEBUG`）
 - 高亮設定：`BUDDHA_HL_PREFIX`, `BUDDHA_HL_SUFFIX`, `BUDDHA_SNIPPET_PREFIX`, `BUDDHA_SNIPPET_SUFFIX`
 - 取得策略（頻率/robots）：
@@ -237,13 +270,13 @@ buddha update --yes              # 重新安裝 CLI
 
 ```bash
 # 全自動（bump → commit → tag → push → GitHub 釋出，自動筆記）
-scripts/release.sh 0.6.11 --all
+scripts/release.sh 0.6.12 --all
 
 # 使用 CHANGELOG 筆記
-scripts/release.sh 0.6.11 --push --release
+scripts/release.sh 0.6.12 --push --release
 
 # 模擬執行
-scripts/release.sh 0.6.11 --all --dry-run
+scripts/release.sh 0.6.12 --all --dry-run
 ```
 
 ## 授權

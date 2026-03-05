@@ -122,6 +122,38 @@ buddha uninstall --purge         # remove binaries and data/cache
 buddha update --yes              # reinstall this CLI
 ```
 
+## AI Agent Integration
+
+buddha CLI is designed for seamless use by AI agents (Claude Code, Codex, etc.):
+
+**Auto-JSON in non-TTY:** When stdout is piped or redirected, output is automatically JSON — no need to pass `--json` every time.
+
+```bash
+buddha cbeta-title-search --query "般若" | jq .    # auto-JSON (piped)
+BUDDHA_JSON=1 buddha cbeta-title-search --query "般若"  # force JSON via env
+buddha --json cbeta-title-search --query "般若"    # global --json flag
+```
+
+**Quiet mode (`--quiet` / `-q`):** Suppresses progress messages on stderr for cleaner output parsing.
+
+**Command discovery (`buddha schema`):** Lists all subcommands and their arguments in machine-readable JSON.
+
+```bash
+buddha schema                          # all commands
+buddha schema --command cbeta-fetch    # single command schema
+```
+
+**Structured errors:** In JSON mode, errors are output to stderr as `{"error":{"message":"...","code":"NOT_FOUND"}}`.
+
+| Exit Code | Meaning |
+|-----------|---------|
+| 0 | Success |
+| 1 | General error |
+| 2 | Usage error (invalid arguments) |
+| 10 | Not found (no results) |
+| 11 | Network error (timeout, connection) |
+| 12 | Data unavailable (needs clone/download) |
+
 ## MCP Tools
 
 Core:
@@ -226,6 +258,7 @@ Tip: Control number of suggestions via `BUDDHA_HINT_TOP` (default 1).
   - data: `xml-p5/`, `tipitaka-xml/romn/`, `GRETIL/`, `SARIT-corpus/`, `MUKTABODHA/`
   - cache: `cache/`
   - binaries: `bin/`
+- `BUDDHA_JSON=1` forces JSON output for all CLI commands (same as `--json`)
 - `BUDDHA_DEBUG=1` enables minimal MCP debug log (legacy: `DAIZO_DEBUG`)
 - Highlight envs: `BUDDHA_HL_PREFIX`, `BUDDHA_HL_SUFFIX`, `BUDDHA_SNIPPET_PREFIX`, `BUDDHA_SNIPPET_SUFFIX`
 - Repo policy envs (for robots/rate-limits):
@@ -244,13 +277,13 @@ Tip: Control number of suggestions via `BUDDHA_HINT_TOP` (default 1).
 
 ```bash
 # Auto (bump → commit → tag → push → GitHub release with auto-notes)
-scripts/release.sh 0.6.11 --all
+scripts/release.sh 0.6.12 --all
 
 # CHANGELOG notes instead of auto-notes
-scripts/release.sh 0.6.11 --push --release
+scripts/release.sh 0.6.12 --push --release
 
 # Dry run
-scripts/release.sh 0.6.11 --all --dry-run
+scripts/release.sh 0.6.12 --all --dry-run
 ```
 
 ## License
