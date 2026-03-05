@@ -10,15 +10,112 @@ use buddha_core::{
     build_cbeta_index, build_gretil_index, build_index, build_muktabodha_index, build_sarit_index,
     build_tipitaka_index, extract_text,
 };
-use clap::{Parser, Subcommand};
+use clap::{CommandFactory, Parser, Subcommand};
 use serde::Serialize;
 use std::env;
 use std::fs;
-use std::io::{self, Read};
+use std::io::{self, IsTerminal, Read};
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::sync::atomic::{AtomicBool, Ordering};
 mod regex_utils;
-//
+
+// ---------------------------------------------------------------------------
+// Exit codes
+// ---------------------------------------------------------------------------
+const EXIT_OK: i32 = 0;
+const EXIT_ERROR: i32 = 1;
+// 2 is reserved for clap usage errors
+const EXIT_NOT_FOUND: i32 = 10;
+const EXIT_NETWORK: i32 = 11;
+const EXIT_DATA_UNAVAILABLE: i32 = 12;
+
+// ---------------------------------------------------------------------------
+// Global quiet flag (set once, read from progress! macro)
+// ---------------------------------------------------------------------------
+static QUIET: AtomicBool = AtomicBool::new(false);
+
+pub(crate) fn is_quiet() -> bool {
+    QUIET.load(Ordering::Relaxed)
+}
+
+/// Print progress messages to stderr (suppressed by --quiet or non-TTY+JSON).
+#[macro_export]
+macro_rules! progress {
+    ($($arg:tt)*) => {
+        if !$crate::is_quiet() {
+            eprintln!($($arg)*);
+        }
+    };
+}
+
+// ---------------------------------------------------------------------------
+// JSON-mode detection
+// ---------------------------------------------------------------------------
+fn should_output_json(cli_json: bool, subcmd_json: bool) -> bool {
+    cli_json
+        || subcmd_json
+        || !std::io::stdout().is_terminal()
+        || std::env::var("BUDDHA_JSON")
+            .map(|v| v == "1" || v == "true")
+            .unwrap_or(false)
+}
+
+// ---------------------------------------------------------------------------
+// Structured error output
+// ---------------------------------------------------------------------------
+#[derive(Serialize)]
+struct StructuredError<'a> {
+    error: ErrorBody<'a>,
+}
+
+#[derive(Serialize)]
+struct ErrorBody<'a> {
+    message: &'a str,
+    code: &'a str,
+}
+
+fn output_error(msg: &str, code: &str, json_mode: bool) {
+    if json_mode {
+        let err = StructuredError {
+            error: ErrorBody { message: msg, code },
+        };
+        let _ = serde_json::to_writer(std::io::stderr(), &err);
+        let _ = writeln!(std::io::stderr());
+    } else {
+        eprintln!("error: {}", msg);
+    }
+}
+
+fn classify_error(err: &anyhow::Error) -> (&'static str, i32) {
+    let msg = format!("{:#}", err);
+    let lower = msg.to_lowercase();
+    if lower.contains("not found")
+        || lower.contains("no results")
+        || lower.contains("no match")
+        || lower.contains("no entries")
+    {
+        ("NOT_FOUND", EXIT_NOT_FOUND)
+    } else if lower.contains("timeout")
+        || lower.contains("timed out")
+        || lower.contains("connection")
+        || lower.contains("network")
+        || lower.contains("dns")
+        || lower.contains("reqwest")
+    {
+        ("NETWORK_ERROR", EXIT_NETWORK)
+    } else if lower.contains("clone")
+        || lower.contains("download")
+        || lower.contains("data not found")
+        || lower.contains("unavailable")
+    {
+        ("DATA_UNAVAILABLE", EXIT_DATA_UNAVAILABLE)
+    } else {
+        ("INTERNAL_ERROR", EXIT_ERROR)
+    }
+}
+
+use std::io::Write;
 
 /// バージョン情報を生成
 fn long_version() -> &'static str {
@@ -60,6 +157,14 @@ fn long_version() -> &'static str {
     long_version = long_version()
 )]
 struct Cli {
+    /// Force JSON output for all commands
+    #[arg(long, global = true)]
+    json: bool,
+
+    /// Suppress progress messages on stderr
+    #[arg(long, short = 'q', global = true)]
+    quiet: bool,
+
     #[command(subcommand)]
     command: Commands,
 }
@@ -1036,6 +1141,18 @@ enum Commands {
         #[arg(long, default_value_t = false)]
         json: bool,
     },
+    /// Output command schema as JSON for AI agent discovery.
+    ///
+    /// Lists all subcommands with their arguments in a machine-readable format.
+    /// Use --command to get schema for a specific subcommand.
+    #[command(
+        after_help = "EXAMPLES:\n  buddha schema\n  buddha schema --command cbeta-fetch\n  buddha schema | jq '.commands | length'"
+    )]
+    Schema {
+        /// Show schema for a specific subcommand only
+        #[arg(long)]
+        command: Option<String>,
+    },
 }
 
 #[derive(Serialize)]
@@ -1069,7 +1186,7 @@ fn ensure_dir(p: &PathBuf) -> anyhow::Result<()> {
 }
 
 fn clone_tipitaka_sparse(target_dir: &Path) -> bool {
-    eprintln!(
+    progress!(
         "[clone] Cloning Tipitaka (romn only) to: {}",
         target_dir.display()
     );
@@ -1130,12 +1247,12 @@ fn clone_tipitaka_sparse(target_dir: &Path) -> bool {
         return false;
     }
 
-    eprintln!("[clone] Tipitaka romn directory cloned successfully");
+    progress!("[clone] Tipitaka romn directory cloned successfully");
     true
 }
 
 fn run(cmd: &str, args: &[&str], cwd: Option<&PathBuf>) -> bool {
-    eprintln!("[exec] {} {}", cmd, args.join(" "));
+    progress!("[exec] {} {}", cmd, args.join(" "));
     let mut c = Command::new(cmd);
     c.args(args);
     if let Some(d) = cwd {
@@ -1148,9 +1265,9 @@ fn run(cmd: &str, args: &[&str], cwd: Option<&PathBuf>) -> bool {
     }
     let result = c.status().map(|s| s.success()).unwrap_or(false);
     if result {
-        eprintln!("[exec] {} completed successfully", cmd);
+        progress!("[exec] {} completed successfully", cmd);
     } else {
-        eprintln!("[exec] {} failed", cmd);
+        progress!("[exec] {} failed", cmd);
     }
     result
 }
@@ -1175,99 +1292,100 @@ fn should_run_mcp_compat_alias() -> bool {
         .unwrap_or(false)
 }
 
-fn main() -> anyhow::Result<()> {
+fn main() {
     // Initialize optional repo policy from env (rate limits / future robots compliance)
     buddha_core::repo::init_policy_from_env();
     if should_run_mcp_compat_alias() {
-        return buddha_mcp::run_stdio_server();
+        if let Err(e) = buddha_mcp::run_stdio_server() {
+            eprintln!("error: {:#}", e);
+            std::process::exit(EXIT_ERROR);
+        }
+        return;
     }
+    let code = run_cli();
+    std::process::exit(code);
+}
+
+fn run_cli() -> i32 {
     let cli = Cli::parse();
-    match cli.command {
-        Commands::Mcp {} => {
-            return buddha_mcp::run_stdio_server();
-        }
-        Commands::Init { base } => {
-            // Display startup message with colored output
-            eprintln!("\x1b[33m📥 First-time setup requires downloading Buddhist texts. This may take several minutes... / 初回起動時はお経のダウンロードに時間がかかります。しばらくお待ちください... / 首次啟動需要下載佛經文本，可能需要幾分鐘時間...\x1b[0m");
 
-            let base_dir = base.unwrap_or(default_buddha());
-            ensure_dir(&base_dir)?;
-            // ensure data via shared helpers
-            let cbeta_dir = base_dir.join("xml-p5");
-            if !buddha_core::repo::ensure_cbeta_data_at(&cbeta_dir) {
-                anyhow::bail!("failed to ensure CBETA data");
+    // Set global quiet flag
+    if cli.quiet {
+        QUIET.store(true, Ordering::Relaxed);
+    }
+
+    // Determine effective JSON mode from global flag
+    let global_json = should_output_json(cli.json, false);
+
+    let result: anyhow::Result<()> = (|| {
+        match cli.command {
+            Commands::Mcp {} => {
+                return buddha_mcp::run_stdio_server();
             }
-            let tipitaka_dir = base_dir.join("tipitaka-xml");
-            if !buddha_core::repo::ensure_tipitaka_data_at(&tipitaka_dir) {
-                anyhow::bail!("failed to ensure Tipitaka data");
+            Commands::Init { base } => {
+                // Display startup message with colored output
+                progress!("\x1b[33m📥 First-time setup requires downloading Buddhist texts. This may take several minutes... / 初回起動時はお経のダウンロードに時間がかかります。しばらくお待ちください... / 首次啟動需要下載佛經文本，可能需要幾分鐘時間...\x1b[0m");
+
+                let base_dir = base.unwrap_or(default_buddha());
+                ensure_dir(&base_dir)?;
+                // ensure data via shared helpers
+                let cbeta_dir = base_dir.join("xml-p5");
+                if !buddha_core::repo::ensure_cbeta_data_at(&cbeta_dir) {
+                    anyhow::bail!("failed to ensure CBETA data");
+                }
+                let tipitaka_dir = base_dir.join("tipitaka-xml");
+                if !buddha_core::repo::ensure_tipitaka_data_at(&tipitaka_dir) {
+                    anyhow::bail!("failed to ensure Tipitaka data");
+                }
+                let sarit_dir = base_dir.join("SARIT-corpus");
+                if !buddha_core::repo::ensure_sarit_data_at(&sarit_dir) {
+                    anyhow::bail!("failed to ensure SARIT data");
+                }
+                // build indices
+                progress!("[init] Building CBETA index...");
+                let cbeta_entries = build_cbeta_index(&cbeta_dir);
+                progress!("[init] Found {} CBETA entries", cbeta_entries.len());
+
+                progress!("[init] Building Tipitaka index...");
+                let tipitaka_entries = build_index(&tipitaka_dir.join("romn"), Some("romn"));
+                progress!("[init] Found {} Tipitaka entries", tipitaka_entries.len());
+
+                progress!("[init] Building SARIT index...");
+                let sarit_entries = build_sarit_index(&sarit_dir);
+                progress!("[init] Found {} SARIT entries", sarit_entries.len());
+
+                let cache_dir = base_dir.join("cache");
+                fs::create_dir_all(&cache_dir)?;
+                let cbeta_out = cache_dir.join("cbeta-index.json");
+                let tipitaka_out = cache_dir.join("tipitaka-index.json");
+                let sarit_out = cache_dir.join("sarit-index.json");
+                fs::write(&cbeta_out, serde_json::to_vec(&cbeta_entries)?)?;
+                fs::write(&tipitaka_out, serde_json::to_vec(&tipitaka_entries)?)?;
+                fs::write(&sarit_out, serde_json::to_vec(&sarit_entries)?)?;
+                println!(
+                    "[init] cbeta-index: {} ({} entries)",
+                    cbeta_out.to_string_lossy(),
+                    cbeta_entries.len()
+                );
+                println!(
+                    "[init] tipitaka-index: {} ({} entries)",
+                    tipitaka_out.to_string_lossy(),
+                    tipitaka_entries.len()
+                );
+                println!(
+                    "[init] sarit-index: {} ({} entries)",
+                    sarit_out.to_string_lossy(),
+                    sarit_entries.len()
+                );
             }
-            let sarit_dir = base_dir.join("SARIT-corpus");
-            if !buddha_core::repo::ensure_sarit_data_at(&sarit_dir) {
-                anyhow::bail!("failed to ensure SARIT data");
+            Commands::CbetaTitleSearch { query, limit, json } => {
+                cmd_cbeta::cbeta_title_search(
+                    &query,
+                    limit,
+                    should_output_json(global_json, json),
+                )?;
             }
-            // build indices
-            eprintln!("[init] Building CBETA index...");
-            let cbeta_entries = build_cbeta_index(&cbeta_dir);
-            eprintln!("[init] Found {} CBETA entries", cbeta_entries.len());
-
-            eprintln!("[init] Building Tipitaka index...");
-            let tipitaka_entries = build_index(&tipitaka_dir.join("romn"), Some("romn"));
-            eprintln!("[init] Found {} Tipitaka entries", tipitaka_entries.len());
-
-            eprintln!("[init] Building SARIT index...");
-            let sarit_entries = build_sarit_index(&sarit_dir);
-            eprintln!("[init] Found {} SARIT entries", sarit_entries.len());
-
-            let cache_dir = base_dir.join("cache");
-            fs::create_dir_all(&cache_dir)?;
-            let cbeta_out = cache_dir.join("cbeta-index.json");
-            let tipitaka_out = cache_dir.join("tipitaka-index.json");
-            let sarit_out = cache_dir.join("sarit-index.json");
-            fs::write(&cbeta_out, serde_json::to_vec(&cbeta_entries)?)?;
-            fs::write(&tipitaka_out, serde_json::to_vec(&tipitaka_entries)?)?;
-            fs::write(&sarit_out, serde_json::to_vec(&sarit_entries)?)?;
-            println!(
-                "[init] cbeta-index: {} ({} entries)",
-                cbeta_out.to_string_lossy(),
-                cbeta_entries.len()
-            );
-            println!(
-                "[init] tipitaka-index: {} ({} entries)",
-                tipitaka_out.to_string_lossy(),
-                tipitaka_entries.len()
-            );
-            println!(
-                "[init] sarit-index: {} ({} entries)",
-                sarit_out.to_string_lossy(),
-                sarit_entries.len()
-            );
-        }
-        Commands::CbetaTitleSearch { query, limit, json } => {
-            cmd_cbeta::cbeta_title_search(&query, limit, json)?;
-        }
-        Commands::CbetaFetch {
-            id,
-            query,
-            part,
-            include_notes,
-            full,
-            highlight,
-            highlight_regex,
-            highlight_prefix,
-            highlight_suffix,
-            headings_limit,
-            start_char,
-            end_char,
-            max_chars,
-            page,
-            page_size,
-            line_number,
-            context_before,
-            context_after,
-            context_lines,
-            json,
-        } => {
-            let tmp = Commands::CbetaFetch {
+            Commands::CbetaFetch {
                 id,
                 query,
                 part,
@@ -1288,32 +1406,32 @@ fn main() -> anyhow::Result<()> {
                 context_after,
                 context_lines,
                 json,
-            };
-            cmd_cbeta::cbeta_fetch(&tmp)?;
-        }
-        Commands::CbetaPipeline {
-            query,
-            max_results,
-            max_matches_per_file,
-            context_before,
-            context_after,
-            autofetch,
-            auto_fetch_files,
-            auto_fetch_matches,
-            include_match_line,
-            include_highlight_snippet,
-            min_snippet_len,
-            highlight,
-            highlight_regex,
-            highlight_prefix,
-            highlight_suffix,
-            snippet_prefix,
-            snippet_suffix,
-            full,
-            include_notes,
-            json,
-        } => {
-            let tmp = Commands::CbetaPipeline {
+            } => {
+                let tmp = Commands::CbetaFetch {
+                    id,
+                    query,
+                    part,
+                    include_notes,
+                    full,
+                    highlight,
+                    highlight_regex,
+                    highlight_prefix,
+                    highlight_suffix,
+                    headings_limit,
+                    start_char,
+                    end_char,
+                    max_chars,
+                    page,
+                    page_size,
+                    line_number,
+                    context_before,
+                    context_after,
+                    context_lines,
+                    json: should_output_json(global_json, json),
+                };
+                cmd_cbeta::cbeta_fetch(&tmp)?;
+            }
+            Commands::CbetaPipeline {
                 query,
                 max_results,
                 max_matches_per_file,
@@ -1334,34 +1452,39 @@ fn main() -> anyhow::Result<()> {
                 full,
                 include_notes,
                 json,
-            };
-            cmd_cbeta::cbeta_pipeline(&tmp)?;
-        }
-        Commands::GretilTitleSearch { query, limit, json } => {
-            cmd_gretil::gretil_title_search(&query, limit, json)?;
-        }
-        Commands::GretilFetch {
-            id,
-            query,
-            include_notes,
-            full,
-            highlight,
-            highlight_regex,
-            highlight_prefix,
-            highlight_suffix,
-            headings_limit,
-            start_char,
-            end_char,
-            max_chars,
-            page,
-            page_size,
-            line_number,
-            context_before,
-            context_after,
-            context_lines,
-            json,
-        } => {
-            let tmp = Commands::GretilFetch {
+            } => {
+                let tmp = Commands::CbetaPipeline {
+                    query,
+                    max_results,
+                    max_matches_per_file,
+                    context_before,
+                    context_after,
+                    autofetch,
+                    auto_fetch_files,
+                    auto_fetch_matches,
+                    include_match_line,
+                    include_highlight_snippet,
+                    min_snippet_len,
+                    highlight,
+                    highlight_regex,
+                    highlight_prefix,
+                    highlight_suffix,
+                    snippet_prefix,
+                    snippet_suffix,
+                    full,
+                    include_notes,
+                    json: should_output_json(global_json, json),
+                };
+                cmd_cbeta::cbeta_pipeline(&tmp)?;
+            }
+            Commands::GretilTitleSearch { query, limit, json } => {
+                cmd_gretil::gretil_title_search(
+                    &query,
+                    limit,
+                    should_output_json(global_json, json),
+                )?;
+            }
+            Commands::GretilFetch {
                 id,
                 query,
                 include_notes,
@@ -1381,32 +1504,31 @@ fn main() -> anyhow::Result<()> {
                 context_after,
                 context_lines,
                 json,
-            };
-            cmd_gretil::gretil_fetch(&tmp)?;
-        }
-        Commands::GretilPipeline {
-            query,
-            max_results,
-            max_matches_per_file,
-            context_before,
-            context_after,
-            autofetch,
-            auto_fetch_files,
-            auto_fetch_matches,
-            include_match_line,
-            include_highlight_snippet,
-            min_snippet_len,
-            highlight,
-            highlight_regex,
-            highlight_prefix,
-            highlight_suffix,
-            snippet_prefix,
-            snippet_suffix,
-            full,
-            include_notes,
-            json,
-        } => {
-            let tmp = Commands::GretilPipeline {
+            } => {
+                let tmp = Commands::GretilFetch {
+                    id,
+                    query,
+                    include_notes,
+                    full,
+                    highlight,
+                    highlight_regex,
+                    highlight_prefix,
+                    highlight_suffix,
+                    headings_limit,
+                    start_char,
+                    end_char,
+                    max_chars,
+                    page,
+                    page_size,
+                    line_number,
+                    context_before,
+                    context_after,
+                    context_lines,
+                    json: should_output_json(global_json, json),
+                };
+                cmd_gretil::gretil_fetch(&tmp)?;
+            }
+            Commands::GretilPipeline {
                 query,
                 max_results,
                 max_matches_per_file,
@@ -1427,254 +1549,369 @@ fn main() -> anyhow::Result<()> {
                 full,
                 include_notes,
                 json,
-            };
-            cmd_gretil::gretil_pipeline(&tmp)?;
-        }
-        Commands::GretilSearch {
-            query,
-            max_results,
-            max_matches_per_file,
-            json,
-        } => {
-            cmd_gretil::gretil_search(&query, max_results, max_matches_per_file, json)?;
-        }
-        Commands::MuktabodhaTitleSearch { query, limit, json } => {
-            cmd_muktabodha::muktabodha_title_search(&query, limit, json)?;
-        }
-        Commands::MuktabodhaFetch { .. } => {
-            cmd_muktabodha::muktabodha_fetch(&cli.command)?;
-        }
-        Commands::MuktabodhaSearch {
-            query,
-            max_results,
-            max_matches_per_file,
-            json,
-        } => {
-            cmd_muktabodha::muktabodha_search(&query, max_results, max_matches_per_file, json)?;
-        }
-        Commands::SaritTitleSearch { query, limit, json } => {
-            cmd_sarit::sarit_title_search(&query, limit, json)?;
-        }
-        Commands::SaritFetch { .. } => {
-            // pass-through to keep parity with gretil/cbeta style
-            cmd_sarit::sarit_fetch(&cli.command)?;
-        }
-        Commands::SaritSearch {
-            query,
-            max_results,
-            max_matches_per_file,
-            json,
-        } => {
-            cmd_sarit::sarit_search(&query, max_results, max_matches_per_file, json)?;
-        }
+            } => {
+                let tmp = Commands::GretilPipeline {
+                    query,
+                    max_results,
+                    max_matches_per_file,
+                    context_before,
+                    context_after,
+                    autofetch,
+                    auto_fetch_files,
+                    auto_fetch_matches,
+                    include_match_line,
+                    include_highlight_snippet,
+                    min_snippet_len,
+                    highlight,
+                    highlight_regex,
+                    highlight_prefix,
+                    highlight_suffix,
+                    snippet_prefix,
+                    snippet_suffix,
+                    full,
+                    include_notes,
+                    json: should_output_json(global_json, json),
+                };
+                cmd_gretil::gretil_pipeline(&tmp)?;
+            }
+            Commands::GretilSearch {
+                query,
+                max_results,
+                max_matches_per_file,
+                json,
+            } => {
+                cmd_gretil::gretil_search(
+                    &query,
+                    max_results,
+                    max_matches_per_file,
+                    should_output_json(global_json, json),
+                )?;
+            }
+            Commands::MuktabodhaTitleSearch { query, limit, json } => {
+                cmd_muktabodha::muktabodha_title_search(
+                    &query,
+                    limit,
+                    should_output_json(global_json, json),
+                )?;
+            }
+            Commands::MuktabodhaFetch {
+                id,
+                query,
+                include_notes,
+                full,
+                highlight,
+                highlight_regex,
+                highlight_prefix,
+                highlight_suffix,
+                headings_limit,
+                start_char,
+                end_char,
+                max_chars,
+                page,
+                page_size,
+                line_number,
+                context_before,
+                context_after,
+                context_lines,
+                json,
+            } => {
+                let tmp = Commands::MuktabodhaFetch {
+                    id,
+                    query,
+                    include_notes,
+                    full,
+                    highlight,
+                    highlight_regex,
+                    highlight_prefix,
+                    highlight_suffix,
+                    headings_limit,
+                    start_char,
+                    end_char,
+                    max_chars,
+                    page,
+                    page_size,
+                    line_number,
+                    context_before,
+                    context_after,
+                    context_lines,
+                    json: should_output_json(global_json, json),
+                };
+                cmd_muktabodha::muktabodha_fetch(&tmp)?;
+            }
+            Commands::MuktabodhaSearch {
+                query,
+                max_results,
+                max_matches_per_file,
+                json,
+            } => {
+                cmd_muktabodha::muktabodha_search(
+                    &query,
+                    max_results,
+                    max_matches_per_file,
+                    should_output_json(global_json, json),
+                )?;
+            }
+            Commands::SaritTitleSearch { query, limit, json } => {
+                cmd_sarit::sarit_title_search(
+                    &query,
+                    limit,
+                    should_output_json(global_json, json),
+                )?;
+            }
+            Commands::SaritFetch {
+                id,
+                query,
+                include_notes,
+                full,
+                highlight,
+                highlight_regex,
+                highlight_prefix,
+                highlight_suffix,
+                headings_limit,
+                start_char,
+                end_char,
+                max_chars,
+                page,
+                page_size,
+                line_number,
+                context_before,
+                context_after,
+                context_lines,
+                json,
+            } => {
+                let tmp = Commands::SaritFetch {
+                    id,
+                    query,
+                    include_notes,
+                    full,
+                    highlight,
+                    highlight_regex,
+                    highlight_prefix,
+                    highlight_suffix,
+                    headings_limit,
+                    start_char,
+                    end_char,
+                    max_chars,
+                    page,
+                    page_size,
+                    line_number,
+                    context_before,
+                    context_after,
+                    context_lines,
+                    json: should_output_json(global_json, json),
+                };
+                cmd_sarit::sarit_fetch(&tmp)?;
+            }
+            Commands::SaritSearch {
+                query,
+                max_results,
+                max_matches_per_file,
+                json,
+            } => {
+                cmd_sarit::sarit_search(
+                    &query,
+                    max_results,
+                    max_matches_per_file,
+                    should_output_json(global_json, json),
+                )?;
+            }
 
-        Commands::SatSearch {
-            query,
-            rows,
-            offs,
-            exact,
-            titles_only,
-            fields,
-            fq,
-            autofetch,
-            start_char,
-            max_chars,
-            json,
-        } => {
-            cmd::sat::sat_search(
-                &query,
+            Commands::SatSearch {
+                query,
                 rows,
                 offs,
                 exact,
                 titles_only,
-                &fields,
-                &fq,
+                fields,
+                fq,
                 autofetch,
                 start_char,
                 max_chars,
                 json,
-            )?;
-            return Ok(());
-        }
-        Commands::SatFetch {
-            url,
-            useid,
-            start_char,
-            max_chars,
-            json,
-        } => {
-            cmd::sat::sat_fetch(url.as_ref(), useid.as_ref(), start_char, max_chars, json)?;
-            return Ok(());
-        }
-        Commands::SatDetail {
-            useid,
-            key: _,
-            start_char,
-            max_chars,
-            json,
-        } => {
-            cmd::sat::sat_detail(&useid, start_char, max_chars, json)?;
-            return Ok(());
-        }
-        Commands::SatPipeline {
-            query,
-            rows,
-            offs,
-            fields,
-            fq,
-            start_char,
-            max_chars,
-            json,
-        } => {
-            cmd::sat::sat_pipeline(
-                &query, rows, offs, &fields, &fq, start_char, max_chars, json,
-            )?;
-        }
-        Commands::CbetaIndex { root, out } => {
-            let default_base = default_buddha().join("xml-p5");
-            let base = root.unwrap_or(default_base.clone());
+            } => {
+                let json = should_output_json(global_json, json);
+                cmd::sat::sat_search(
+                    &query,
+                    rows,
+                    offs,
+                    exact,
+                    titles_only,
+                    &fields,
+                    &fq,
+                    autofetch,
+                    start_char,
+                    max_chars,
+                    json,
+                )?;
+                return Ok(());
+            }
+            Commands::SatFetch {
+                url,
+                useid,
+                start_char,
+                max_chars,
+                json,
+            } => {
+                let json = should_output_json(global_json, json);
+                cmd::sat::sat_fetch(url.as_ref(), useid.as_ref(), start_char, max_chars, json)?;
+                return Ok(());
+            }
+            Commands::SatDetail {
+                useid,
+                key: _,
+                start_char,
+                max_chars,
+                json,
+            } => {
+                let json = should_output_json(global_json, json);
+                cmd::sat::sat_detail(&useid, start_char, max_chars, json)?;
+                return Ok(());
+            }
+            Commands::SatPipeline {
+                query,
+                rows,
+                offs,
+                fields,
+                fq,
+                start_char,
+                max_chars,
+                json,
+            } => {
+                let json = should_output_json(global_json, json);
+                cmd::sat::sat_pipeline(
+                    &query, rows, offs, &fields, &fq, start_char, max_chars, json,
+                )?;
+            }
+            Commands::CbetaIndex { root, out } => {
+                let default_base = default_buddha().join("xml-p5");
+                let base = root.unwrap_or(default_base.clone());
 
-            // Ensure CBETA data exists
-            if !default_base.exists() {
-                eprintln!("[cbeta-index] CBETA data not found, downloading...");
-                let ok = run(
-                    "git",
-                    &[
-                        "clone",
-                        "--depth",
-                        "1",
-                        "https://github.com/cbeta-org/xml-p5",
-                        default_base.to_string_lossy().as_ref(),
-                    ],
-                    None,
+                // Ensure CBETA data exists
+                if !default_base.exists() {
+                    progress!("[cbeta-index] CBETA data not found, downloading...");
+                    let ok = run(
+                        "git",
+                        &[
+                            "clone",
+                            "--depth",
+                            "1",
+                            "https://github.com/cbeta-org/xml-p5",
+                            default_base.to_string_lossy().as_ref(),
+                        ],
+                        None,
+                    );
+                    if !ok {
+                        anyhow::bail!("Failed to clone CBETA repository");
+                    }
+                }
+
+                let entries = build_cbeta_index(&base);
+                let outp = out.unwrap_or(default_buddha().join("cache").join("cbeta-index.json"));
+                if let Some(parent) = outp.parent() {
+                    fs::create_dir_all(parent)?;
+                }
+                fs::write(&outp, serde_json::to_vec(&entries)?)?;
+                println!(
+                    "{}",
+                    serde_json::to_string(&IndexResult {
+                        count: entries.len(),
+                        out: outp.to_string_lossy().as_ref()
+                    })?
                 );
-                if !ok {
-                    anyhow::bail!("Failed to clone CBETA repository");
+            }
+            Commands::TipitakaIndex { root, out } => {
+                let default_base = default_buddha().join("tipitaka-xml");
+                let base = root.unwrap_or(default_base.clone());
+
+                // Ensure Tipitaka data exists
+                if !default_base.exists() {
+                    progress!("[tipitaka-index] Tipitaka data not found, downloading...");
+                    if !clone_tipitaka_sparse(&default_base) {
+                        anyhow::bail!("Failed to clone Tipitaka repository");
+                    }
                 }
-            }
 
-            let entries = build_cbeta_index(&base);
-            let outp = out.unwrap_or(default_buddha().join("cache").join("cbeta-index.json"));
-            if let Some(parent) = outp.parent() {
-                fs::create_dir_all(parent)?;
-            }
-            fs::write(&outp, serde_json::to_vec(&entries)?)?;
-            println!(
-                "{}",
-                serde_json::to_string(&IndexResult {
-                    count: entries.len(),
-                    out: outp.to_string_lossy().as_ref()
-                })?
-            );
-        }
-        Commands::TipitakaIndex { root, out } => {
-            let default_base = default_buddha().join("tipitaka-xml");
-            let base = root.unwrap_or(default_base.clone());
-
-            // Ensure Tipitaka data exists
-            if !default_base.exists() {
-                eprintln!("[tipitaka-index] Tipitaka data not found, downloading...");
-                if !clone_tipitaka_sparse(&default_base) {
-                    anyhow::bail!("Failed to clone Tipitaka repository");
+                let entries = build_tipitaka_index(&base);
+                let outp =
+                    out.unwrap_or(default_buddha().join("cache").join("tipitaka-index.json"));
+                if let Some(parent) = outp.parent() {
+                    fs::create_dir_all(parent)?;
                 }
-            }
-
-            let entries = build_tipitaka_index(&base);
-            let outp = out.unwrap_or(default_buddha().join("cache").join("tipitaka-index.json"));
-            if let Some(parent) = outp.parent() {
-                fs::create_dir_all(parent)?;
-            }
-            fs::write(&outp, serde_json::to_vec(&entries)?)?;
-            println!(
-                "{}",
-                serde_json::to_string(&IndexResult {
-                    count: entries.len(),
-                    out: outp.to_string_lossy().as_ref()
-                })?
-            );
-        }
-        Commands::SaritIndex { root, out } => {
-            let default_base = default_buddha().join("SARIT-corpus");
-            let base = root.unwrap_or(default_base.clone());
-
-            // Ensure SARIT data exists
-            if !default_base.exists() {
-                eprintln!("[sarit-index] SARIT data not found, downloading...");
-                let ok = run(
-                    "git",
-                    &[
-                        "clone",
-                        "--depth",
-                        "1",
-                        "https://github.com/sarit/SARIT-corpus.git",
-                        default_base.to_string_lossy().as_ref(),
-                    ],
-                    None,
+                fs::write(&outp, serde_json::to_vec(&entries)?)?;
+                println!(
+                    "{}",
+                    serde_json::to_string(&IndexResult {
+                        count: entries.len(),
+                        out: outp.to_string_lossy().as_ref()
+                    })?
                 );
-                if !ok {
-                    anyhow::bail!("Failed to clone SARIT repository");
+            }
+            Commands::SaritIndex { root, out } => {
+                let default_base = default_buddha().join("SARIT-corpus");
+                let base = root.unwrap_or(default_base.clone());
+
+                // Ensure SARIT data exists
+                if !default_base.exists() {
+                    progress!("[sarit-index] SARIT data not found, downloading...");
+                    let ok = run(
+                        "git",
+                        &[
+                            "clone",
+                            "--depth",
+                            "1",
+                            "https://github.com/sarit/SARIT-corpus.git",
+                            default_base.to_string_lossy().as_ref(),
+                        ],
+                        None,
+                    );
+                    if !ok {
+                        anyhow::bail!("Failed to clone SARIT repository");
+                    }
                 }
-            }
 
-            let entries = build_sarit_index(&base);
-            let outp = out.unwrap_or(default_buddha().join("cache").join("sarit-index.json"));
-            if let Some(parent) = outp.parent() {
-                fs::create_dir_all(parent)?;
+                let entries = build_sarit_index(&base);
+                let outp = out.unwrap_or(default_buddha().join("cache").join("sarit-index.json"));
+                if let Some(parent) = outp.parent() {
+                    fs::create_dir_all(parent)?;
+                }
+                fs::write(&outp, serde_json::to_vec(&entries)?)?;
+                println!(
+                    "{}",
+                    serde_json::to_string(&IndexResult {
+                        count: entries.len(),
+                        out: outp.to_string_lossy().as_ref()
+                    })?
+                );
             }
-            fs::write(&outp, serde_json::to_vec(&entries)?)?;
-            println!(
-                "{}",
-                serde_json::to_string(&IndexResult {
-                    count: entries.len(),
-                    out: outp.to_string_lossy().as_ref()
-                })?
-            );
-        }
-        Commands::MuktabodhaIndex { root, out } => {
-            let default_base = default_buddha().join("MUKTABODHA");
-            let base = root.unwrap_or(default_base.clone());
-            // ディレクトリだけは作っておく（実データのDLは install.sh 側）
-            let _ = std::fs::create_dir_all(&default_base);
+            Commands::MuktabodhaIndex { root, out } => {
+                let default_base = default_buddha().join("MUKTABODHA");
+                let base = root.unwrap_or(default_base.clone());
+                // ディレクトリだけは作っておく（実データのDLは install.sh 側）
+                let _ = std::fs::create_dir_all(&default_base);
 
-            let entries = build_muktabodha_index(&base);
-            let outp = out.unwrap_or(default_buddha().join("cache").join("muktabodha-index.json"));
-            if let Some(parent) = outp.parent() {
-                fs::create_dir_all(parent)?;
+                let entries = build_muktabodha_index(&base);
+                let outp =
+                    out.unwrap_or(default_buddha().join("cache").join("muktabodha-index.json"));
+                if let Some(parent) = outp.parent() {
+                    fs::create_dir_all(parent)?;
+                }
+                fs::write(&outp, serde_json::to_vec(&entries)?)?;
+                println!(
+                    "{}",
+                    serde_json::to_string(&IndexResult {
+                        count: entries.len(),
+                        out: outp.to_string_lossy().as_ref()
+                    })?
+                );
             }
-            fs::write(&outp, serde_json::to_vec(&entries)?)?;
-            println!(
-                "{}",
-                serde_json::to_string(&IndexResult {
-                    count: entries.len(),
-                    out: outp.to_string_lossy().as_ref()
-                })?
-            );
-        }
-        Commands::TipitakaTitleSearch { query, limit, json } => {
-            cmd_tipitaka::tipitaka_title_search(&query, limit, json)?;
-        }
-        Commands::TipitakaFetch {
-            id,
-            query,
-            head_index,
-            head_query,
-            headings_limit,
-            highlight,
-            highlight_regex,
-            highlight_prefix,
-            highlight_suffix,
-            start_char,
-            end_char,
-            max_chars,
-            page,
-            page_size,
-            line_number,
-            context_before,
-            context_after,
-            context_lines,
-            json,
-        } => {
-            let tmp = Commands::TipitakaFetch {
+            Commands::TipitakaTitleSearch { query, limit, json } => {
+                cmd_tipitaka::tipitaka_title_search(
+                    &query,
+                    limit,
+                    should_output_json(global_json, json),
+                )?;
+            }
+            Commands::TipitakaFetch {
                 id,
                 query,
                 head_index,
@@ -1694,334 +1931,443 @@ fn main() -> anyhow::Result<()> {
                 context_after,
                 context_lines,
                 json,
-            };
-            cmd_tipitaka::tipitaka_fetch(&tmp)?;
-            return Ok(());
-        }
-        Commands::IndexRebuild { source } => {
-            eprintln!("\x1b[33m📥 Rebuilding search indexes... / インデックスを再構築中... / 正在重建搜索索引...\x1b[0m");
-
-            let src = source.to_lowercase();
-            let base = default_buddha();
-            let cache = base.join("cache");
-            fs::create_dir_all(&cache)?;
-
-            let mut summary = serde_json::Map::new();
-            let mut rebuilt: Vec<&str> = Vec::new();
-
-            // Delete cache files first
-            if src == "cbeta" || src == "all" {
-                let _ = fs::remove_file(cache.join("cbeta-index.json"));
+            } => {
+                let tmp = Commands::TipitakaFetch {
+                    id,
+                    query,
+                    head_index,
+                    head_query,
+                    headings_limit,
+                    highlight,
+                    highlight_regex,
+                    highlight_prefix,
+                    highlight_suffix,
+                    start_char,
+                    end_char,
+                    max_chars,
+                    page,
+                    page_size,
+                    line_number,
+                    context_before,
+                    context_after,
+                    context_lines,
+                    json: should_output_json(global_json, json),
+                };
+                cmd_tipitaka::tipitaka_fetch(&tmp)?;
+                return Ok(());
             }
-            if src == "tipitaka" || src == "all" {
-                let _ = fs::remove_file(cache.join("tipitaka-index.json"));
-            }
-            if src == "sarit" || src == "all" {
-                let _ = fs::remove_file(cache.join("sarit-index.json"));
-            }
-            if src == "muktabodha" || src == "all" {
-                let _ = fs::remove_file(cache.join("muktabodha-index.json"));
-            }
+            Commands::IndexRebuild { source } => {
+                progress!("\x1b[33m📥 Rebuilding search indexes... / インデックスを再構築中... / 正在重建搜索索引...\x1b[0m");
 
-            // Call individual index commands
-            if src == "cbeta" || src == "all" {
-                eprintln!("[rebuild] Running cbeta-index...");
-                let cli_path = std::env::current_exe()?;
-                let ok = run(cli_path.to_string_lossy().as_ref(), &["cbeta-index"], None);
-                if ok {
-                    rebuilt.push("cbeta");
-                    summary.insert("cbeta".to_string(), serde_json::json!("completed"));
-                } else {
-                    eprintln!("[error] CBETA index rebuild failed");
+                let src = source.to_lowercase();
+                let base = default_buddha();
+                let cache = base.join("cache");
+                fs::create_dir_all(&cache)?;
+
+                let mut summary = serde_json::Map::new();
+                let mut rebuilt: Vec<&str> = Vec::new();
+
+                // Delete cache files first
+                if src == "cbeta" || src == "all" {
+                    let _ = fs::remove_file(cache.join("cbeta-index.json"));
                 }
-            }
+                if src == "tipitaka" || src == "all" {
+                    let _ = fs::remove_file(cache.join("tipitaka-index.json"));
+                }
+                if src == "sarit" || src == "all" {
+                    let _ = fs::remove_file(cache.join("sarit-index.json"));
+                }
+                if src == "muktabodha" || src == "all" {
+                    let _ = fs::remove_file(cache.join("muktabodha-index.json"));
+                }
 
-            if src == "tipitaka" || src == "all" {
-                eprintln!("[rebuild] Running tipitaka-index...");
-                let cli_path = std::env::current_exe()?;
-                let ok = run(
-                    cli_path.to_string_lossy().as_ref(),
-                    &["tipitaka-index"],
-                    None,
-                );
-                if ok {
-                    rebuilt.push("tipitaka");
-                    summary.insert("tipitaka".to_string(), serde_json::json!("completed"));
-                } else {
-                    eprintln!("[error] Tipitaka index rebuild failed");
+                // Call individual index commands
+                if src == "cbeta" || src == "all" {
+                    progress!("[rebuild] Running cbeta-index...");
+                    let cli_path = std::env::current_exe()?;
+                    let ok = run(cli_path.to_string_lossy().as_ref(), &["cbeta-index"], None);
+                    if ok {
+                        rebuilt.push("cbeta");
+                        summary.insert("cbeta".to_string(), serde_json::json!("completed"));
+                    } else {
+                        eprintln!("[error] CBETA index rebuild failed");
+                    }
                 }
-            }
-            if src == "sarit" || src == "all" {
-                eprintln!("[rebuild] Running sarit-index...");
-                let cli_path = std::env::current_exe()?;
-                let ok = run(cli_path.to_string_lossy().as_ref(), &["sarit-index"], None);
-                if ok {
-                    rebuilt.push("sarit");
-                    summary.insert("sarit".to_string(), serde_json::json!("completed"));
-                } else {
-                    eprintln!("[error] SARIT index rebuild failed");
-                }
-            }
-            if src == "muktabodha" || src == "all" {
-                eprintln!("[rebuild] Running muktabodha-index...");
-                let cli_path = std::env::current_exe()?;
-                let ok = run(
-                    cli_path.to_string_lossy().as_ref(),
-                    &["muktabodha-index"],
-                    None,
-                );
-                if ok {
-                    rebuilt.push("muktabodha");
-                    summary.insert("muktabodha".to_string(), serde_json::json!("completed"));
-                } else {
-                    eprintln!("[error] MUKTABODHA index rebuild failed");
-                }
-            }
 
-            summary.insert("rebuilt".to_string(), serde_json::json!(rebuilt));
-            println!("{}", serde_json::to_string(&summary)?);
-        }
-        Commands::ExtractText { path } => {
-            let xml = if let Some(p) = path {
-                fs::read_to_string(p)?
-            } else {
-                let mut s = String::new();
-                io::stdin().read_to_string(&mut s)?;
-                s
-            };
-            let t = extract_text(&xml);
-            println!("{}", t);
-        }
-        Commands::CbetaSearch {
-            query,
-            max_results,
-            max_matches_per_file,
-            json,
-        } => {
-            cmd_cbeta::cbeta_search(&query, max_results, max_matches_per_file, json)?;
-        }
-        Commands::TipitakaSearch {
-            query,
-            max_results,
-            max_matches_per_file,
-            json,
-        } => {
-            cmd_tipitaka::tipitaka_search(&query, max_results, max_matches_per_file, json)?;
-        }
-        Commands::JozenSearch {
-            query,
-            page,
-            max_results,
-            max_snippet_chars,
-            json,
-        } => {
-            cmd::jozen::jozen_search(&query, page, max_results, max_snippet_chars, json)?;
-        }
-        Commands::JozenFetch {
-            lineno,
-            start_char,
-            max_chars,
-            json,
-        } => {
-            cmd::jozen::jozen_fetch(&lineno, start_char, max_chars, json)?;
-        }
-        Commands::TibetanSearch {
-            query,
-            sources,
-            limit,
-            exact,
-            max_snippet_chars,
-            wildcard,
-            json,
-        } => {
-            cmd::tibetan::tibetan_search(
-                &query,
-                &sources,
+                if src == "tipitaka" || src == "all" {
+                    progress!("[rebuild] Running tipitaka-index...");
+                    let cli_path = std::env::current_exe()?;
+                    let ok = run(
+                        cli_path.to_string_lossy().as_ref(),
+                        &["tipitaka-index"],
+                        None,
+                    );
+                    if ok {
+                        rebuilt.push("tipitaka");
+                        summary.insert("tipitaka".to_string(), serde_json::json!("completed"));
+                    } else {
+                        eprintln!("[error] Tipitaka index rebuild failed");
+                    }
+                }
+                if src == "sarit" || src == "all" {
+                    progress!("[rebuild] Running sarit-index...");
+                    let cli_path = std::env::current_exe()?;
+                    let ok = run(cli_path.to_string_lossy().as_ref(), &["sarit-index"], None);
+                    if ok {
+                        rebuilt.push("sarit");
+                        summary.insert("sarit".to_string(), serde_json::json!("completed"));
+                    } else {
+                        eprintln!("[error] SARIT index rebuild failed");
+                    }
+                }
+                if src == "muktabodha" || src == "all" {
+                    progress!("[rebuild] Running muktabodha-index...");
+                    let cli_path = std::env::current_exe()?;
+                    let ok = run(
+                        cli_path.to_string_lossy().as_ref(),
+                        &["muktabodha-index"],
+                        None,
+                    );
+                    if ok {
+                        rebuilt.push("muktabodha");
+                        summary.insert("muktabodha".to_string(), serde_json::json!("completed"));
+                    } else {
+                        eprintln!("[error] MUKTABODHA index rebuild failed");
+                    }
+                }
+
+                summary.insert("rebuilt".to_string(), serde_json::json!(rebuilt));
+                println!("{}", serde_json::to_string(&summary)?);
+            }
+            Commands::ExtractText { path } => {
+                let xml = if let Some(p) = path {
+                    fs::read_to_string(p)?
+                } else {
+                    let mut s = String::new();
+                    io::stdin().read_to_string(&mut s)?;
+                    s
+                };
+                let t = extract_text(&xml);
+                println!("{}", t);
+            }
+            Commands::CbetaSearch {
+                query,
+                max_results,
+                max_matches_per_file,
+                json,
+            } => {
+                cmd_cbeta::cbeta_search(
+                    &query,
+                    max_results,
+                    max_matches_per_file,
+                    should_output_json(global_json, json),
+                )?;
+            }
+            Commands::TipitakaSearch {
+                query,
+                max_results,
+                max_matches_per_file,
+                json,
+            } => {
+                cmd_tipitaka::tipitaka_search(
+                    &query,
+                    max_results,
+                    max_matches_per_file,
+                    should_output_json(global_json, json),
+                )?;
+            }
+            Commands::JozenSearch {
+                query,
+                page,
+                max_results,
+                max_snippet_chars,
+                json,
+            } => {
+                cmd::jozen::jozen_search(
+                    &query,
+                    page,
+                    max_results,
+                    max_snippet_chars,
+                    should_output_json(global_json, json),
+                )?;
+            }
+            Commands::JozenFetch {
+                lineno,
+                start_char,
+                max_chars,
+                json,
+            } => {
+                cmd::jozen::jozen_fetch(
+                    &lineno,
+                    start_char,
+                    max_chars,
+                    should_output_json(global_json, json),
+                )?;
+            }
+            Commands::TibetanSearch {
+                query,
+                sources,
                 limit,
                 exact,
                 max_snippet_chars,
                 wildcard,
                 json,
-            )?;
-        }
-        Commands::Resolve {
-            query,
-            sources,
-            limit_per_source,
-            limit,
-            prefer_source,
-            min_score,
-            json,
-        } => {
-            cmd::resolve::resolve(
-                &query,
-                &sources,
+            } => {
+                let json = should_output_json(global_json, json);
+                cmd::tibetan::tibetan_search(
+                    &query,
+                    &sources,
+                    limit,
+                    exact,
+                    max_snippet_chars,
+                    wildcard,
+                    json,
+                )?;
+            }
+            Commands::Resolve {
+                query,
+                sources,
                 limit_per_source,
                 limit,
-                prefer_source.as_deref(),
+                prefer_source,
                 min_score,
                 json,
-            )?;
-        }
-        Commands::Update { git, yes } => {
-            // Build the cargo install command (owned strings)
-            let mut cmd: Vec<String> = Vec::new();
-            cmd.push("cargo".into());
-            cmd.push("install".into());
-            if let Some(repo) = git {
-                cmd.push("--git".into());
-                cmd.push(repo);
-                cmd.push("buddha".into());
-            } else {
-                cmd.push("--path".into());
-                cmd.push(".".into());
-                cmd.push("-p".into());
-                cmd.push("buddha".into());
+            } => {
+                let json = should_output_json(global_json, json);
+                cmd::resolve::resolve(
+                    &query,
+                    &sources,
+                    limit_per_source,
+                    limit,
+                    prefer_source.as_deref(),
+                    min_score,
+                    json,
+                )?;
             }
-            cmd.push("--locked".into());
-            cmd.push("--force".into());
-            let preview = cmd.join(" ");
-            if yes {
-                // Convert to &str for run()
-                let argv: Vec<&str> = cmd.iter().skip(1).map(|s| s.as_str()).collect();
-                let ok = run(&cmd[0], &argv, None);
-                if !ok {
-                    anyhow::bail!("update failed: {}", preview);
-                }
-                // Post-install: rebuild indexes using the installed binary
-                let ok2 = run("buddha", &["index-rebuild", "--source", "all"], None);
-                if !ok2 {
-                    eprintln!("[warn] index rebuild failed after update; run: buddha index-rebuild --source all");
-                }
-            } else {
-                eprintln!("[plan] {}", preview);
-                eprintln!("Use --git <repo-url> to install from GitHub; add --yes to execute.");
-            }
-        }
-        Commands::Version {} => {
-            println!("buddha {}", env!("CARGO_PKG_VERSION"));
-        }
-        Commands::Doctor { verbose } => {
-            let base = default_buddha();
-            let bin = base.join("bin");
-            let cli = bin.join("buddha");
-            let cli_legacy = bin.join("daizo-cli");
-            let mcp = bin.join("buddha-mcp");
-            let cbeta = base.join("xml-p5");
-            let tipi = base.join("tipitaka-xml");
-            let sarit = base.join("SARIT-corpus");
-            let mukta = base.join("MUKTABODHA");
-            let cache = base.join("cache");
-            println!("BUDDHA_DIR: {}", base.display());
-            println!("bin: {}", bin.display());
-            println!(" - buddha: {}", if cli.exists() { "OK" } else { "MISSING" });
-            println!(
-                " - daizo-cli (legacy alias): {}",
-                if cli_legacy.exists() { "OK" } else { "MISSING" }
-            );
-            println!(
-                " - buddha-mcp: {}",
-                if mcp.exists() { "OK" } else { "MISSING" }
-            );
-            println!("data:");
-            println!(
-                " - xml-p5: {}",
-                if cbeta.exists() {
-                    "OK"
+            Commands::Update { git, yes } => {
+                // Build the cargo install command (owned strings)
+                let mut cmd: Vec<String> = Vec::new();
+                cmd.push("cargo".into());
+                cmd.push("install".into());
+                if let Some(repo) = git {
+                    cmd.push("--git".into());
+                    cmd.push(repo);
+                    cmd.push("buddha".into());
                 } else {
-                    "MISSING (will clone on demand)"
+                    cmd.push("--path".into());
+                    cmd.push(".".into());
+                    cmd.push("-p".into());
+                    cmd.push("buddha".into());
                 }
-            );
-            println!(
-                " - tipitaka-xml: {}",
-                if tipi.exists() {
-                    "OK"
+                cmd.push("--locked".into());
+                cmd.push("--force".into());
+                let preview = cmd.join(" ");
+                if yes {
+                    // Convert to &str for run()
+                    let argv: Vec<&str> = cmd.iter().skip(1).map(|s| s.as_str()).collect();
+                    let ok = run(&cmd[0], &argv, None);
+                    if !ok {
+                        anyhow::bail!("update failed: {}", preview);
+                    }
+                    // Post-install: rebuild indexes using the installed binary
+                    let ok2 = run("buddha", &["index-rebuild", "--source", "all"], None);
+                    if !ok2 {
+                        progress!("[warn] index rebuild failed after update; run: buddha index-rebuild --source all");
+                    }
                 } else {
-                    "MISSING (will clone on demand)"
-                }
-            );
-            println!(
-                " - SARIT-corpus: {}",
-                if sarit.exists() {
-                    "OK"
-                } else {
-                    "MISSING (will clone on demand)"
-                }
-            );
-            println!(
-                " - MUKTABODHA: {}",
-                if mukta.exists() {
-                    "OK"
-                } else {
-                    "MISSING (will download on install)"
-                }
-            );
-            println!(
-                "cache: {}",
-                if cache.exists() {
-                    cache.display().to_string()
-                } else {
-                    format!("{} (will create)", cache.display())
-                }
-            );
-            if verbose {
-                if cli.exists() {
-                    println!(
-                        "   size: {} bytes",
-                        std::fs::metadata(&cli).map(|m| m.len()).unwrap_or(0)
-                    );
-                }
-                if mcp.exists() {
-                    println!(
-                        "   size: {} bytes",
-                        std::fs::metadata(&mcp).map(|m| m.len()).unwrap_or(0)
-                    );
+                    progress!("[plan] {}", preview);
+                    progress!("Use --git <repo-url> to install from GitHub; add --yes to execute.");
                 }
             }
-        }
-        Commands::Uninstall { purge } => {
-            let base = default_buddha();
-            let bin = base.join("bin");
-            let cli = bin.join("buddha");
-            let cli_legacy = bin.join("daizo-cli");
-            let mcp = bin.join("buddha-mcp");
-            let mut removed: Vec<String> = Vec::new();
-            if cli.exists() {
-                let _ = std::fs::remove_file(&cli);
-                removed.push(cli.display().to_string());
+            Commands::Version {} => {
+                println!("buddha {}", env!("CARGO_PKG_VERSION"));
             }
-            if cli_legacy.exists() {
-                let _ = std::fs::remove_file(&cli_legacy);
-                removed.push(cli_legacy.display().to_string());
-            }
-            if mcp.exists() {
-                let _ = std::fs::remove_file(&mcp);
-                removed.push(mcp.display().to_string());
-            }
-            if purge {
+            Commands::Doctor { verbose } => {
+                let base = default_buddha();
+                let bin = base.join("bin");
+                let cli = bin.join("buddha");
+                let cli_legacy = bin.join("daizo-cli");
+                let mcp = bin.join("buddha-mcp");
                 let cbeta = base.join("xml-p5");
                 let tipi = base.join("tipitaka-xml");
                 let sarit = base.join("SARIT-corpus");
                 let mukta = base.join("MUKTABODHA");
                 let cache = base.join("cache");
-                let _ = std::fs::remove_dir_all(&cbeta);
-                let _ = std::fs::remove_dir_all(&tipi);
-                let _ = std::fs::remove_dir_all(&sarit);
-                let _ = std::fs::remove_dir_all(&mukta);
-                let _ = std::fs::remove_dir_all(&cache);
-                println!("[purge] removed data/cache under {}", base.display());
-            }
-            if removed.is_empty() {
+                println!("BUDDHA_DIR: {}", base.display());
+                println!("bin: {}", bin.display());
+                println!(" - buddha: {}", if cli.exists() { "OK" } else { "MISSING" });
                 println!(
-                    "no binaries removed (nothing found under {})",
-                    bin.display()
+                    " - daizo-cli (legacy alias): {}",
+                    if cli_legacy.exists() { "OK" } else { "MISSING" }
                 );
-            } else {
-                println!("removed: {}", removed.join(", "));
+                println!(
+                    " - buddha-mcp: {}",
+                    if mcp.exists() { "OK" } else { "MISSING" }
+                );
+                println!("data:");
+                println!(
+                    " - xml-p5: {}",
+                    if cbeta.exists() {
+                        "OK"
+                    } else {
+                        "MISSING (will clone on demand)"
+                    }
+                );
+                println!(
+                    " - tipitaka-xml: {}",
+                    if tipi.exists() {
+                        "OK"
+                    } else {
+                        "MISSING (will clone on demand)"
+                    }
+                );
+                println!(
+                    " - SARIT-corpus: {}",
+                    if sarit.exists() {
+                        "OK"
+                    } else {
+                        "MISSING (will clone on demand)"
+                    }
+                );
+                println!(
+                    " - MUKTABODHA: {}",
+                    if mukta.exists() {
+                        "OK"
+                    } else {
+                        "MISSING (will download on install)"
+                    }
+                );
+                println!(
+                    "cache: {}",
+                    if cache.exists() {
+                        cache.display().to_string()
+                    } else {
+                        format!("{} (will create)", cache.display())
+                    }
+                );
+                if verbose {
+                    if cli.exists() {
+                        println!(
+                            "   size: {} bytes",
+                            std::fs::metadata(&cli).map(|m| m.len()).unwrap_or(0)
+                        );
+                    }
+                    if mcp.exists() {
+                        println!(
+                            "   size: {} bytes",
+                            std::fs::metadata(&mcp).map(|m| m.len()).unwrap_or(0)
+                        );
+                    }
+                }
+            }
+            Commands::Uninstall { purge } => {
+                let base = default_buddha();
+                let bin = base.join("bin");
+                let cli = bin.join("buddha");
+                let cli_legacy = bin.join("daizo-cli");
+                let mcp = bin.join("buddha-mcp");
+                let mut removed: Vec<String> = Vec::new();
+                if cli.exists() {
+                    let _ = std::fs::remove_file(&cli);
+                    removed.push(cli.display().to_string());
+                }
+                if cli_legacy.exists() {
+                    let _ = std::fs::remove_file(&cli_legacy);
+                    removed.push(cli_legacy.display().to_string());
+                }
+                if mcp.exists() {
+                    let _ = std::fs::remove_file(&mcp);
+                    removed.push(mcp.display().to_string());
+                }
+                if purge {
+                    let cbeta = base.join("xml-p5");
+                    let tipi = base.join("tipitaka-xml");
+                    let sarit = base.join("SARIT-corpus");
+                    let mukta = base.join("MUKTABODHA");
+                    let cache = base.join("cache");
+                    let _ = std::fs::remove_dir_all(&cbeta);
+                    let _ = std::fs::remove_dir_all(&tipi);
+                    let _ = std::fs::remove_dir_all(&sarit);
+                    let _ = std::fs::remove_dir_all(&mukta);
+                    let _ = std::fs::remove_dir_all(&cache);
+                    println!("[purge] removed data/cache under {}", base.display());
+                }
+                if removed.is_empty() {
+                    println!(
+                        "no binaries removed (nothing found under {})",
+                        bin.display()
+                    );
+                } else {
+                    println!("removed: {}", removed.join(", "));
+                }
+            }
+            Commands::Schema { command } => {
+                cmd_schema(command.as_deref());
             }
         }
+        Ok(())
+    })();
+
+    match result {
+        Ok(()) => EXIT_OK,
+        Err(e) => {
+            let (code_str, exit_code) = classify_error(&e);
+            output_error(&format!("{:#}", e), code_str, global_json);
+            exit_code
+        }
     }
-    Ok(())
+}
+
+fn cmd_schema(filter: Option<&str>) {
+    let app = Cli::command();
+    let version = env!("CARGO_PKG_VERSION");
+
+    let mut commands = Vec::new();
+    for sub in app.get_subcommands() {
+        let name = sub.get_name();
+        if name == "help" || name == "schema" {
+            continue;
+        }
+        if let Some(f) = filter {
+            if name != f {
+                continue;
+            }
+        }
+
+        let mut args = Vec::new();
+        for arg in sub.get_arguments() {
+            if arg.get_id() == "help" || arg.get_id() == "json" || arg.get_id() == "quiet" {
+                continue;
+            }
+            let mut a = serde_json::Map::new();
+            a.insert("name".into(), serde_json::json!(arg.get_id().as_str()));
+            if let Some(short) = arg.get_short() {
+                a.insert("short".into(), serde_json::json!(short.to_string()));
+            }
+            a.insert("required".into(), serde_json::json!(arg.is_required_set()));
+            if let Some(vals) = arg.get_default_values().first() {
+                a.insert("default".into(), serde_json::json!(vals.to_string_lossy()));
+            }
+            if let Some(help) = arg.get_help() {
+                a.insert("help".into(), serde_json::json!(help.to_string()));
+            }
+            args.push(serde_json::Value::Object(a));
+        }
+
+        let mut cmd = serde_json::Map::new();
+        cmd.insert("name".into(), serde_json::json!(name));
+        if let Some(about) = sub.get_about() {
+            cmd.insert("about".into(), serde_json::json!(about.to_string()));
+        }
+        cmd.insert("args".into(), serde_json::Value::Array(args));
+        commands.push(serde_json::Value::Object(cmd));
+    }
+
+    let output = serde_json::json!({
+        "version": version,
+        "commands": commands,
+    });
+    println!("{}", serde_json::to_string_pretty(&output).unwrap());
 }
 
 // ===== helpers (shared in buddha-core::text_utils) =====

@@ -4,6 +4,11 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [0.6.12] - 2026-03-05
+
+### Changed
+- Version bumped: `buddha-core` 0.6.12, `buddha` 0.6.12, `buddha-mcp` 0.6.12.
+
 ## [0.6.11] - 2026-03-05
 
 ### Changed
