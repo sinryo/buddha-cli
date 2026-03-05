@@ -240,7 +240,7 @@ if [[ "$bump_flag" -eq 1 ]]; then
   if [[ "$test_flag" -eq 1 ]]; then
     run "cargo test -q -p buddha-mcp"
     run "cargo test -q -p buddha-core"
-    run "cargo test -q -p buddha-cli"
+    run "cargo test -q -p buddha"
   fi
 fi
 
