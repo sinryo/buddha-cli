@@ -3,9 +3,9 @@ use crate::{
     decode_xml_bytes, load_or_build_sarit_index_cli, resolve_sarit_path_cli, slice_text_cli,
     SliceArgs,
 };
-use daizo_core::path_resolver::sarit_root;
-use daizo_core::text_utils::highlight_text;
-use daizo_core::{extract_text_opts, list_heads_generic, sarit_grep};
+use buddha_core::path_resolver::sarit_root;
+use buddha_core::text_utils::highlight_text;
+use buddha_core::{extract_text_opts, list_heads_generic, sarit_grep};
 
 pub fn sarit_title_search(query: &str, limit: usize, json: bool) -> anyhow::Result<()> {
     let idx = load_or_build_sarit_index_cli();
@@ -72,7 +72,7 @@ pub fn sarit_fetch(args: &crate::Commands) -> anyhow::Result<()> {
             let before = context_lines.unwrap_or(*context_before);
             let after = context_lines.unwrap_or(*context_after);
             let context_text =
-                daizo_core::extract_xml_around_line_asymmetric(&xml, *line_num, before, after);
+                buddha_core::extract_xml_around_line_asymmetric(&xml, *line_num, before, after);
             (
                 context_text,
                 format!("line-context-{}-{}-{}", line_num, before, after),

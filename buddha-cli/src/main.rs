@@ -1,16 +1,16 @@
-use clap::{Parser, Subcommand};
-use daizo_core::path_resolver::{
+use buddha_core::path_resolver::{
     cache_dir, cbeta_root, find_exact_file_by_name, find_tipitaka_content_for_base, gretil_root,
     muktabodha_root, resolve_cbeta_path_by_id, resolve_gretil_by_id, resolve_gretil_path_direct,
     resolve_muktabodha_by_id, resolve_muktabodha_path_direct, resolve_sarit_by_id,
     resolve_sarit_path_direct, resolve_tipitaka_by_id, sarit_root, tipitaka_root,
 };
-use daizo_core::text_utils::compute_match_score_sanskrit;
-use daizo_core::text_utils::{compute_match_score_precomputed, normalized, PrecomputedQuery};
-use daizo_core::{
+use buddha_core::text_utils::compute_match_score_sanskrit;
+use buddha_core::text_utils::{compute_match_score_precomputed, normalized, PrecomputedQuery};
+use buddha_core::{
     build_cbeta_index, build_gretil_index, build_index, build_muktabodha_index, build_sarit_index,
     build_tipitaka_index, extract_text,
 };
+use clap::{Parser, Subcommand};
 use serde::Serialize;
 use std::env;
 use std::fs;
@@ -23,7 +23,7 @@ mod regex_utils;
 /// バージョン情報を生成
 fn long_version() -> &'static str {
     concat!(
-        env!("DAIZO_VERSION"),
+        env!("BUDDHA_VERSION"),
         "\nBuilt: ",
         env!("BUILD_DATE"),
         "\nCommit: ",
@@ -33,9 +33,30 @@ fn long_version() -> &'static str {
 
 #[derive(Parser, Debug)]
 #[command(
-    name = "daizo-cli",
+    name = "buddha",
     about = "High-performance Buddhist text search and retrieval CLI",
-    version = env!("DAIZO_VERSION"),
+    long_about = "buddha — High-performance Buddhist text search and retrieval CLI.\n\n\
+        Provides unified access to major Buddhist text corpora:\n\
+        - CBETA (Chinese Buddhist Electronic Text Association)\n\
+        - Tipitaka (Pali Canon, romanized)\n\
+        - GRETIL (Göttingen Register of Electronic Texts in Indian Languages)\n\
+        - SARIT (Search and Retrieval of Indic Texts)\n\
+        - MUKTABODHA (Sanskrit digital library)\n\
+        - SAT (SAT Daizōkyō Text Database)\n\
+        - 浄土宗全書 (Jodo Shu Zensho — online)\n\
+        - Tibetan corpora: Adarsha + BUDA (online)\n\n\
+        Each corpus has search/fetch/pipeline commands. Use --json for structured MCP output.\n\
+        Also serves as an MCP (Model Context Protocol) server via 'buddha mcp'.",
+    after_long_help = "COMMON PATTERNS:\n\
+        Search by title:   buddha cbeta-title-search --query \"般若\" --json\n\
+        Fetch by ID:       buddha cbeta-fetch --id T0235 --json\n\
+        Full-text search:  buddha cbeta-search --query \"般若波羅蜜\" --json\n\
+        Pipeline:          buddha cbeta-pipeline --query \"般若\" --autofetch --json\n\
+        Cross-corpus:      buddha resolve --query \"法華経\" --json\n\
+        Tibetan:           buddha tibetan-search --query \"བདེ་བ\" --json\n\
+        浄土宗全書:          buddha jozen-search --query \"念仏\" --json\n\n\
+        JSON output follows MCP envelope: {jsonrpc, result: {content, _meta}}",
+    version = env!("BUDDHA_VERSION"),
     long_version = long_version()
 )]
 struct Cli {
@@ -45,15 +66,29 @@ struct Cli {
 
 #[derive(Subcommand, Debug)]
 enum Commands {
-    /// Initialize data: clone xml-p5, tipitaka-xml, SARIT-corpus and build indices (and prepare other corpora)
+    /// Initialize data: download corpora and build search indices.
+    ///
+    /// Downloads CBETA (xml-p5), Tipitaka (romn), SARIT-corpus and builds
+    /// JSON search indices under ~/.buddha/cache/. Run once after install.
     Init {
-        /// Override HOME/.daizo base
+        /// Override HOME/.buddha base
         #[arg(long)]
         base: Option<PathBuf>,
     },
-    /// Run MCP stdio server
+    /// Run MCP (Model Context Protocol) stdio server for AI integration.
+    ///
+    /// Starts the JSON-RPC MCP server on stdin/stdout. Used by Claude Code,
+    /// Codex, and other AI agents. Register via: claude mcp add buddha /path/to/buddha mcp
     Mcp {},
-    /// Search GRETIL and optionally auto-fetch contexts or full text (pipeline)
+    /// Search GRETIL Sanskrit corpus and optionally auto-fetch contexts (pipeline).
+    ///
+    /// Combines content search + context extraction in one command.
+    /// Use --autofetch to automatically retrieve matched passages.
+    ///
+    /// Related: gretil-title-search, gretil-fetch, gretil-search
+    #[command(
+        after_help = "EXAMPLES:\n  buddha gretil-pipeline --query \"dharma\" --autofetch --json\n  buddha gretil-pipeline --query \"yoga\" --max-results 5 --autofetch --auto-fetch-files 2 --json"
+    )]
     GretilPipeline {
         /// Query string (regex)
         #[arg(long)]
@@ -94,16 +129,16 @@ enum Commands {
         /// Interpret highlight as regex
         #[arg(long, default_value_t = false)]
         highlight_regex: bool,
-        /// Highlight prefix (fallback: $DAIZO_HL_PREFIX or ">>> ")
+        /// Highlight prefix (fallback: $BUDDHA_HL_PREFIX or ">>> ")
         #[arg(long)]
         highlight_prefix: Option<String>,
-        /// Highlight suffix (fallback: $DAIZO_HL_SUFFIX or " <<<")
+        /// Highlight suffix (fallback: $BUDDHA_HL_SUFFIX or " <<<")
         #[arg(long)]
         highlight_suffix: Option<String>,
-        /// Snippet prefix (fallback: $DAIZO_SNIPPET_PREFIX or ">>> ")
+        /// Snippet prefix (fallback: $BUDDHA_SNIPPET_PREFIX or ">>> ")
         #[arg(long)]
         snippet_prefix: Option<String>,
-        /// Snippet suffix (fallback: $DAIZO_SNIPPET_SUFFIX or "")
+        /// Snippet suffix (fallback: $BUDDHA_SNIPPET_SUFFIX or "")
         #[arg(long)]
         snippet_suffix: Option<String>,
         /// Fetch full text instead of contexts
@@ -116,7 +151,15 @@ enum Commands {
         #[arg(long, default_value_t = true)]
         json: bool,
     },
-    /// Search GRETIL titles (index-based)
+    /// Search GRETIL titles by fuzzy matching (index-based, offline).
+    ///
+    /// Searches the local GRETIL index for Sanskrit/Indological texts by title.
+    /// Returns scored matches with file IDs. Use gretil-fetch to retrieve content.
+    ///
+    /// Related: gretil-fetch, gretil-search, gretil-pipeline
+    #[command(
+        after_help = "EXAMPLES:\n  buddha gretil-title-search --query \"Bhagavadgita\" --json\n  buddha gretil-title-search --query \"yoga\" --limit 20"
+    )]
     GretilTitleSearch {
         /// Query string
         #[arg(long)]
@@ -128,7 +171,15 @@ enum Commands {
         #[arg(long, default_value_t = false)]
         json: bool,
     },
-    /// Fetch GRETIL text by id or query
+    /// Fetch GRETIL text content by file ID or title query.
+    ///
+    /// Retrieves full text or paginated slice from local GRETIL corpus.
+    /// Supports highlighting, line-based context extraction, and pagination.
+    ///
+    /// Related: gretil-title-search, gretil-search
+    #[command(
+        after_help = "EXAMPLES:\n  buddha gretil-fetch --id Bhagavadgita --json\n  buddha gretil-fetch --query \"yoga sutra\" --page 0 --page-size 4000 --json"
+    )]
     GretilFetch {
         /// File stem id (e.g., Bhagavadgita)
         #[arg(long)]
@@ -188,7 +239,15 @@ enum Commands {
         #[arg(long, default_value_t = false)]
         json: bool,
     },
-    /// Search GRETIL corpus (content-based)
+    /// Search GRETIL corpus by regex content match (offline full-text search).
+    ///
+    /// Scans local GRETIL files for regex pattern matches. Returns file paths
+    /// and matching snippets. Slower than title-search but finds content.
+    ///
+    /// Related: gretil-title-search, gretil-fetch
+    #[command(
+        after_help = "EXAMPLES:\n  buddha gretil-search --query \"dharma\" --max-results 10 --json"
+    )]
     GretilSearch {
         /// Query string (regular expression)
         #[arg(long)]
@@ -203,7 +262,12 @@ enum Commands {
         #[arg(long, default_value_t = false)]
         json: bool,
     },
-    /// Search MUKTABODHA titles (index-based)
+    /// Search MUKTABODHA Sanskrit library titles (index-based, offline).
+    ///
+    /// Related: muktabodha-fetch, muktabodha-search
+    #[command(
+        after_help = "EXAMPLES:\n  buddha muktabodha-title-search --query \"tantra\" --json"
+    )]
     MuktabodhaTitleSearch {
         /// Query string
         #[arg(long)]
@@ -215,7 +279,10 @@ enum Commands {
         #[arg(long, default_value_t = false)]
         json: bool,
     },
-    /// Fetch MUKTABODHA text by id or query
+    /// Fetch MUKTABODHA text by file ID or title query.
+    ///
+    /// Related: muktabodha-title-search, muktabodha-search
+    #[command(after_help = "EXAMPLES:\n  buddha muktabodha-fetch --query \"tantra\" --json")]
     MuktabodhaFetch {
         /// File stem id
         #[arg(long)]
@@ -275,7 +342,10 @@ enum Commands {
         #[arg(long, default_value_t = false)]
         json: bool,
     },
-    /// Search MUKTABODHA corpus (content-based)
+    /// Search MUKTABODHA Sanskrit corpus by regex (offline full-text search).
+    ///
+    /// Related: muktabodha-title-search, muktabodha-fetch
+    #[command(after_help = "EXAMPLES:\n  buddha muktabodha-search --query \"mantra\" --json")]
     MuktabodhaSearch {
         /// Query string (regular expression)
         #[arg(long)]
@@ -290,7 +360,10 @@ enum Commands {
         #[arg(long, default_value_t = false)]
         json: bool,
     },
-    /// Search SARIT titles (index-based)
+    /// Search SARIT (TEI P5) titles by fuzzy matching (index-based, offline).
+    ///
+    /// Related: sarit-fetch, sarit-search
+    #[command(after_help = "EXAMPLES:\n  buddha sarit-title-search --query \"nyaya\" --json")]
     SaritTitleSearch {
         /// Query string
         #[arg(long)]
@@ -302,7 +375,10 @@ enum Commands {
         #[arg(long, default_value_t = false)]
         json: bool,
     },
-    /// Fetch SARIT text by id or query
+    /// Fetch SARIT text by file ID or title query.
+    ///
+    /// Related: sarit-title-search, sarit-search
+    #[command(after_help = "EXAMPLES:\n  buddha sarit-fetch --id asvaghosa-buddhacarita --json")]
     SaritFetch {
         /// File stem id (e.g., asvaghosa-buddhacarita)
         #[arg(long)]
@@ -362,7 +438,10 @@ enum Commands {
         #[arg(long, default_value_t = false)]
         json: bool,
     },
-    /// Search SARIT corpus (content-based)
+    /// Search SARIT corpus by regex (offline full-text search).
+    ///
+    /// Related: sarit-title-search, sarit-fetch
+    #[command(after_help = "EXAMPLES:\n  buddha sarit-search --query \"dharma\" --json")]
     SaritSearch {
         /// Query string (regular expression)
         #[arg(long)]
@@ -374,6 +453,126 @@ enum Commands {
         #[arg(long, default_value_t = 5)]
         max_matches_per_file: usize,
         /// Output JSON
+        #[arg(long, default_value_t = false)]
+        json: bool,
+    },
+    /// Search 浄土宗全書 (Jodo Shu Zensho) full-text database online.
+    ///
+    /// Searches jodoshuzensho.jp for matching text passages.
+    /// Returns paginated results with lineno, title, author, snippet.
+    /// Use --json for structured output (MCP envelope).
+    ///
+    /// Related: jozen-fetch (retrieve full page by lineno)
+    #[command(
+        after_help = "EXAMPLES:\n  buddha jozen-search --query \"薬師\" --json\n  buddha jozen-search --query \"念仏\" --page 2 --max-results 50\n\nOUTPUT FORMAT:\n  Plain: one result per block with lineno, title, author, snippet\n  JSON (--json): {jsonrpc, result: {content, _meta: {results, totalCount, ...}, hits}}"
+    )]
+    JozenSearch {
+        /// Search keyword
+        #[arg(long)]
+        query: String,
+        /// Page number (1-indexed, default 1)
+        #[arg(long, default_value_t = 1)]
+        page: usize,
+        /// Maximum results to return per page
+        #[arg(long, default_value_t = 50)]
+        max_results: usize,
+        /// Maximum snippet characters (0 = unlimited)
+        #[arg(long, default_value_t = 400)]
+        max_snippet_chars: usize,
+        /// Output JSON (MCP envelope)
+        #[arg(long, default_value_t = false)]
+        json: bool,
+    },
+    /// Fetch a 浄土宗全書 page by lineno identifier.
+    ///
+    /// Retrieves detail page from jodoshuzensho.jp for a specific lineno.
+    /// The lineno format is like "J01_0200B19" (volume_page_line).
+    /// Use --json for structured output with navigation (prev/next).
+    ///
+    /// Related: jozen-search (find lineno by keyword)
+    #[command(
+        after_help = "EXAMPLES:\n  buddha jozen-fetch --lineno \"J01_0200B19\" --json\n  buddha jozen-fetch --lineno \"J01_0001A01\" --max-chars 2000\n\nOUTPUT FORMAT:\n  Plain: work header + line content with [lineId] prefix\n  JSON (--json): {jsonrpc, result: {content, _meta: {lineno, workHeader, pagePrev, pageNext, ...}}}"
+    )]
+    JozenFetch {
+        /// Line number identifier (e.g., J01_0200B19)
+        #[arg(long)]
+        lineno: String,
+        /// Start character offset for pagination
+        #[arg(long)]
+        start_char: Option<usize>,
+        /// Maximum characters to return
+        #[arg(long)]
+        max_chars: Option<usize>,
+        /// Output JSON (MCP envelope)
+        #[arg(long, default_value_t = false)]
+        json: bool,
+    },
+    /// Search Tibetan text corpora (Adarsha + BUDA).
+    ///
+    /// Searches Tibetan Buddhist text databases. Supports Tibetan Unicode
+    /// and EWTS (Extended Wylie) input — EWTS is auto-converted to Unicode.
+    /// Sources: adarsha (online.adarshah.org), buda (library.bdrc.io).
+    ///
+    /// Related: resolve (cross-corpus ID resolution)
+    #[command(
+        after_help = "EXAMPLES:\n  daizo tibetan-search --query \"བདེ་བ\" --json\n  daizo tibetan-search --query \"bde ba\" --json           # EWTS auto-converted\n  daizo tibetan-search --query \"karma\" --sources buda --limit 20\n  daizo tibetan-search --query \"སྙིང\" --sources adarsha --wildcard\n\nOUTPUT FORMAT:\n  Plain: numbered results with [source] title, snippet, url\n  JSON (--json): {jsonrpc, result: {content, _meta, hits: [{source, score, title, snippet, url, ...}]}}"
+    )]
+    TibetanSearch {
+        /// Search query (Tibetan Unicode or EWTS)
+        #[arg(long)]
+        query: String,
+        /// Sources to search: adarsha, buda (default: both)
+        #[arg(long, value_delimiter = ',')]
+        sources: Vec<String>,
+        /// Maximum results
+        #[arg(long, default_value_t = 20)]
+        limit: usize,
+        /// Exact match mode (BUDA only)
+        #[arg(long, default_value_t = true)]
+        exact: bool,
+        /// Maximum snippet characters (0 = unlimited)
+        #[arg(long, default_value_t = 400)]
+        max_snippet_chars: usize,
+        /// Enable wildcard search (Adarsha only)
+        #[arg(long, default_value_t = false)]
+        wildcard: bool,
+        /// Output JSON (MCP envelope)
+        #[arg(long, default_value_t = false)]
+        json: bool,
+    },
+    /// Resolve a text identifier or title across all corpora.
+    ///
+    /// Given a query (ID like "T0262", or title like "法華経"), finds matching
+    /// texts across CBETA, Tipitaka, GRETIL, SARIT, and MUKTABODHA.
+    /// Returns ranked candidates with fetch instructions.
+    ///
+    /// Direct ID patterns: T+digits (CBETA), DN/MN/SN/AN/KN+digits (Tipitaka),
+    /// *.mul (Tipitaka file stem).
+    ///
+    /// Related: cbeta-title-search, gretil-title-search, tipitaka-title-search
+    #[command(
+        after_help = "EXAMPLES:\n  buddha resolve --query \"法華経\" --json\n  buddha resolve --query \"T0262\" --json\n  buddha resolve --query \"Bhagavadgita\" --sources gretil,sarit --json\n  buddha resolve --query \"DN1\" --prefer-source tipitaka --json\n\nOUTPUT FORMAT:\n  Plain: numbered candidates with [source] id title (score)\n  JSON (--json): {jsonrpc, result: {content, _meta: {candidates: [{source, id, title, score, fetch}], pick}}}"
+    )]
+    Resolve {
+        /// Query: text ID or title to resolve
+        #[arg(long)]
+        query: String,
+        /// Corpora to search (default: all). Comma-separated: cbeta,tipitaka,gretil,sarit,muktabodha
+        #[arg(long, value_delimiter = ',')]
+        sources: Vec<String>,
+        /// Max candidates per source
+        #[arg(long, default_value_t = 5)]
+        limit_per_source: usize,
+        /// Max total candidates
+        #[arg(long, default_value_t = 10)]
+        limit: usize,
+        /// Prefer this source (slight score boost)
+        #[arg(long)]
+        prefer_source: Option<String>,
+        /// Minimum score threshold (0.0–1.0)
+        #[arg(long, default_value_t = 0.1)]
+        min_score: f32,
+        /// Output JSON (MCP envelope)
         #[arg(long, default_value_t = false)]
         json: bool,
     },
@@ -393,14 +592,22 @@ enum Commands {
     },
     /// Update this CLI via cargo-install
     Update {
-        /// Install from a git repo (e.g. https://github.com/owner/daizo-mcp)
+        /// Install from a git repo (e.g. https://github.com/owner/buddha)
         #[arg(long)]
         git: Option<String>,
         /// Execute the install instead of just printing the command
         #[arg(long, default_value_t = false)]
         yes: bool,
     },
-    /// Search CBETA and optionally auto-fetch contexts or full text (pipeline)
+    /// Search CBETA Chinese Buddhist texts and auto-fetch contexts (pipeline).
+    ///
+    /// Combines regex content search + context extraction in one command.
+    /// Use --autofetch to automatically retrieve matched passages.
+    ///
+    /// Related: cbeta-title-search, cbeta-fetch, cbeta-search
+    #[command(
+        after_help = "EXAMPLES:\n  buddha cbeta-pipeline --query \"般若\" --autofetch --json\n  buddha cbeta-pipeline --query \"法華\" --max-results 5 --autofetch --full --json"
+    )]
     CbetaPipeline {
         /// Query string (regex)
         #[arg(long)]
@@ -441,16 +648,16 @@ enum Commands {
         /// Interpret highlight as regex
         #[arg(long, default_value_t = false)]
         highlight_regex: bool,
-        /// Highlight prefix (fallback: $DAIZO_HL_PREFIX or ">>> ")
+        /// Highlight prefix (fallback: $BUDDHA_HL_PREFIX or ">>> ")
         #[arg(long)]
         highlight_prefix: Option<String>,
-        /// Highlight suffix (fallback: $DAIZO_HL_SUFFIX or " <<<")
+        /// Highlight suffix (fallback: $BUDDHA_HL_SUFFIX or " <<<")
         #[arg(long)]
         highlight_suffix: Option<String>,
-        /// Snippet prefix (fallback: $DAIZO_SNIPPET_PREFIX or ">>> ")
+        /// Snippet prefix (fallback: $BUDDHA_SNIPPET_PREFIX or ">>> ")
         #[arg(long)]
         snippet_prefix: Option<String>,
-        /// Snippet suffix (fallback: $DAIZO_SNIPPET_SUFFIX or "")
+        /// Snippet suffix (fallback: $BUDDHA_SNIPPET_SUFFIX or "")
         #[arg(long)]
         snippet_suffix: Option<String>,
         /// Fetch full text instead of contexts
@@ -463,7 +670,14 @@ enum Commands {
         #[arg(long, default_value_t = true)]
         json: bool,
     },
-    /// Search CBETA titles (index-based)
+    /// Search CBETA titles by fuzzy matching (index-based, offline).
+    ///
+    /// Returns scored matches with canonical IDs (e.g., T0235). Use cbeta-fetch to retrieve.
+    ///
+    /// Related: cbeta-fetch, cbeta-search, cbeta-pipeline
+    #[command(
+        after_help = "EXAMPLES:\n  buddha cbeta-title-search --query \"般若\" --json\n  buddha cbeta-title-search --query \"法華経\" --limit 5"
+    )]
     CbetaTitleSearch {
         /// Query string
         #[arg(long)]
@@ -475,7 +689,15 @@ enum Commands {
         #[arg(long, default_value_t = false)]
         json: bool,
     },
-    /// Fetch CBETA text by id or query
+    /// Fetch CBETA text content by canonical ID (e.g., T0235) or title query.
+    ///
+    /// Retrieves full text or paginated slice. Supports highlighting, part/juan
+    /// extraction, and line-based context. ID format: T+digits (Taisho), etc.
+    ///
+    /// Related: cbeta-title-search, cbeta-search
+    #[command(
+        after_help = "EXAMPLES:\n  buddha cbeta-fetch --id T0235 --json\n  buddha cbeta-fetch --query \"般若心経\" --part 1 --json\n  buddha cbeta-fetch --id T0262 --page 0 --page-size 4000 --json"
+    )]
     CbetaFetch {
         /// Canonical id (e.g., T0002)
         #[arg(long)]
@@ -538,7 +760,15 @@ enum Commands {
         #[arg(long, default_value_t = false)]
         json: bool,
     },
-    /// Search SAT wrap7.php
+    /// Search SAT Daizōkyō Text Database (online via wrap7 API).
+    ///
+    /// Queries the SAT2018 Solr search API. Returns titles, fascicle info.
+    /// Use --autofetch to pick best match and fetch detail.
+    ///
+    /// Related: sat-fetch, sat-detail, sat-pipeline
+    #[command(
+        after_help = "EXAMPLES:\n  buddha sat-search --query \"般若\" --json\n  buddha sat-search --query \"法華\" --autofetch --json"
+    )]
     SatSearch {
         /// Query string
         #[arg(long)]
@@ -574,7 +804,10 @@ enum Commands {
         #[arg(long, default_value_t = false)]
         json: bool,
     },
-    /// Fetch SAT detail by URL
+    /// Fetch SAT text detail by URL or useid (online).
+    ///
+    /// Related: sat-search, sat-detail, sat-pipeline
+    #[command(after_help = "EXAMPLES:\n  buddha sat-fetch --useid \"SAT12345\" --json")]
     SatFetch {
         #[arg(long)]
         url: Option<String>,
@@ -589,7 +822,9 @@ enum Commands {
         #[arg(long, default_value_t = false)]
         json: bool,
     },
-    /// Fetch SAT detail by useid/key
+    /// Fetch SAT detail page by useid/key (online).
+    ///
+    /// Related: sat-search, sat-fetch, sat-pipeline
     SatDetail {
         #[arg(long)]
         useid: String,
@@ -603,7 +838,10 @@ enum Commands {
         #[arg(long, default_value_t = false)]
         json: bool,
     },
-    /// Search SAT (wrap7), select best title, then fetch by useid
+    /// Search SAT, select best title, then fetch full text (pipeline).
+    ///
+    /// Related: sat-search, sat-fetch, sat-detail
+    #[command(after_help = "EXAMPLES:\n  buddha sat-pipeline --query \"般若\" --json")]
     SatPipeline {
         /// Query string
         #[arg(long)]
@@ -630,7 +868,12 @@ enum Commands {
         #[arg(long, default_value_t = true)]
         json: bool,
     },
-    /// Search Tipitaka (romn) titles (index-based)
+    /// Search Tipitaka (Pali Canon, romanized) titles (index-based, offline).
+    ///
+    /// Related: tipitaka-fetch, tipitaka-search
+    #[command(
+        after_help = "EXAMPLES:\n  buddha tipitaka-title-search --query \"Dhammapada\" --json\n  buddha tipitaka-title-search --query \"DN1\" --json"
+    )]
     TipitakaTitleSearch {
         /// Query string
         #[arg(long)]
@@ -642,7 +885,15 @@ enum Commands {
         #[arg(long, default_value_t = false)]
         json: bool,
     },
-    /// Fetch Tipitaka (romn) text by id or query
+    /// Fetch Tipitaka text by file stem ID or title query.
+    ///
+    /// ID format: e.g., "abh01m.mul", "DN1". Supports section extraction
+    /// by head index/query, highlighting, and pagination.
+    ///
+    /// Related: tipitaka-title-search, tipitaka-search
+    #[command(
+        after_help = "EXAMPLES:\n  buddha tipitaka-fetch --id abh01m.mul --json\n  buddha tipitaka-fetch --query \"Dhammapada\" --page 0 --page-size 4000 --json"
+    )]
     TipitakaFetch {
         /// File stem id (e.g. abh01m.mul)
         #[arg(long)]
@@ -702,39 +953,39 @@ enum Commands {
         #[arg(long, default_value_t = false)]
         json: bool,
     },
-    /// Build CBETA index under ~/.daizo/cache/cbeta-index.json
+    /// Build CBETA index under ~/.buddha/cache/cbeta-index.json
     CbetaIndex {
-        /// Root directory of xml-p5 (default ~/.daizo/xml-p5)
+        /// Root directory of xml-p5 (default ~/.buddha/xml-p5)
         #[arg(long)]
         root: Option<PathBuf>,
-        /// Output path (default ~/.daizo/cache/cbeta-index.json)
+        /// Output path (default ~/.buddha/cache/cbeta-index.json)
         #[arg(long)]
         out: Option<PathBuf>,
     },
-    /// Build Tipitaka (romn) index under ~/.daizo/cache/tipitaka-index.json
+    /// Build Tipitaka (romn) index under ~/.buddha/cache/tipitaka-index.json
     TipitakaIndex {
-        /// Root directory of tipitaka-xml (default ~/.daizo/tipitaka-xml)
+        /// Root directory of tipitaka-xml (default ~/.buddha/tipitaka-xml)
         #[arg(long)]
         root: Option<PathBuf>,
-        /// Output path (default ~/.daizo/cache/tipitaka-index.json)
+        /// Output path (default ~/.buddha/cache/tipitaka-index.json)
         #[arg(long)]
         out: Option<PathBuf>,
     },
-    /// Build SARIT index under ~/.daizo/cache/sarit-index.json
+    /// Build SARIT index under ~/.buddha/cache/sarit-index.json
     SaritIndex {
-        /// Root directory of SARIT-corpus (default ~/.daizo/SARIT-corpus)
+        /// Root directory of SARIT-corpus (default ~/.buddha/SARIT-corpus)
         #[arg(long)]
         root: Option<PathBuf>,
-        /// Output path (default ~/.daizo/cache/sarit-index.json)
+        /// Output path (default ~/.buddha/cache/sarit-index.json)
         #[arg(long)]
         out: Option<PathBuf>,
     },
-    /// Build MUKTABODHA index under ~/.daizo/cache/muktabodha-index.json
+    /// Build MUKTABODHA index under ~/.buddha/cache/muktabodha-index.json
     MuktabodhaIndex {
-        /// Root directory of MUKTABODHA (default ~/.daizo/MUKTABODHA)
+        /// Root directory of MUKTABODHA (default ~/.buddha/MUKTABODHA)
         #[arg(long)]
         root: Option<PathBuf>,
-        /// Output path (default ~/.daizo/cache/muktabodha-index.json)
+        /// Output path (default ~/.buddha/cache/muktabodha-index.json)
         #[arg(long)]
         out: Option<PathBuf>,
     },
@@ -749,7 +1000,10 @@ enum Commands {
         #[arg(long)]
         path: Option<PathBuf>,
     },
-    /// Search CBETA corpus (content-based)
+    /// Search CBETA corpus by regex (offline full-text search).
+    ///
+    /// Related: cbeta-title-search, cbeta-fetch, cbeta-pipeline
+    #[command(after_help = "EXAMPLES:\n  buddha cbeta-search --query \"般若波羅蜜\" --json")]
     CbetaSearch {
         /// Query string (regular expression)
         #[arg(long)]
@@ -764,7 +1018,10 @@ enum Commands {
         #[arg(long, default_value_t = false)]
         json: bool,
     },
-    /// Search Tipitaka corpus (content-based)
+    /// Search Tipitaka corpus by regex (offline full-text search).
+    ///
+    /// Related: tipitaka-title-search, tipitaka-fetch
+    #[command(after_help = "EXAMPLES:\n  buddha tipitaka-search --query \"nibbana\" --json")]
     TipitakaSearch {
         /// Query string (regular expression)
         #[arg(long)]
@@ -787,14 +1044,23 @@ struct IndexResult<'a> {
     out: &'a str,
 }
 
-fn default_daizo() -> PathBuf {
+fn default_buddha() -> PathBuf {
+    if let Ok(p) = std::env::var("BUDDHA_DIR") {
+        return PathBuf::from(p);
+    }
     if let Ok(p) = std::env::var("DAIZO_DIR") {
         return PathBuf::from(p);
     }
-    std::env::var_os("HOME")
+    let home = std::env::var_os("HOME")
         .map(PathBuf::from)
-        .unwrap_or_else(|| PathBuf::from("."))
-        .join(".daizo")
+        .unwrap_or_else(|| PathBuf::from("."));
+    let new_dir = home.join(".buddha");
+    let old_dir = home.join(".daizo");
+    if new_dir.exists() || !old_dir.exists() {
+        new_dir
+    } else {
+        old_dir
+    }
 }
 
 fn ensure_dir(p: &PathBuf) -> anyhow::Result<()> {
@@ -891,7 +1157,10 @@ fn run(cmd: &str, args: &[&str], cwd: Option<&PathBuf>) -> bool {
 
 fn is_mcp_compat_executable_name(name: &str) -> bool {
     let lowered = name.to_lowercase();
-    lowered == "daizo-mcp" || lowered == "daizo-mcp.exe"
+    lowered == "buddha-mcp"
+        || lowered == "buddha-mcp.exe"
+        || lowered == "daizo-mcp"
+        || lowered == "daizo-mcp.exe"
 }
 
 fn should_run_mcp_compat_alias() -> bool {
@@ -908,32 +1177,32 @@ fn should_run_mcp_compat_alias() -> bool {
 
 fn main() -> anyhow::Result<()> {
     // Initialize optional repo policy from env (rate limits / future robots compliance)
-    daizo_core::repo::init_policy_from_env();
+    buddha_core::repo::init_policy_from_env();
     if should_run_mcp_compat_alias() {
-        return daizo_mcp::run_stdio_server();
+        return buddha_mcp::run_stdio_server();
     }
     let cli = Cli::parse();
     match cli.command {
         Commands::Mcp {} => {
-            return daizo_mcp::run_stdio_server();
+            return buddha_mcp::run_stdio_server();
         }
         Commands::Init { base } => {
             // Display startup message with colored output
             eprintln!("\x1b[33m📥 First-time setup requires downloading Buddhist texts. This may take several minutes... / 初回起動時はお経のダウンロードに時間がかかります。しばらくお待ちください... / 首次啟動需要下載佛經文本，可能需要幾分鐘時間...\x1b[0m");
 
-            let base_dir = base.unwrap_or(default_daizo());
+            let base_dir = base.unwrap_or(default_buddha());
             ensure_dir(&base_dir)?;
             // ensure data via shared helpers
             let cbeta_dir = base_dir.join("xml-p5");
-            if !daizo_core::repo::ensure_cbeta_data_at(&cbeta_dir) {
+            if !buddha_core::repo::ensure_cbeta_data_at(&cbeta_dir) {
                 anyhow::bail!("failed to ensure CBETA data");
             }
             let tipitaka_dir = base_dir.join("tipitaka-xml");
-            if !daizo_core::repo::ensure_tipitaka_data_at(&tipitaka_dir) {
+            if !buddha_core::repo::ensure_tipitaka_data_at(&tipitaka_dir) {
                 anyhow::bail!("failed to ensure Tipitaka data");
             }
             let sarit_dir = base_dir.join("SARIT-corpus");
-            if !daizo_core::repo::ensure_sarit_data_at(&sarit_dir) {
+            if !buddha_core::repo::ensure_sarit_data_at(&sarit_dir) {
                 anyhow::bail!("failed to ensure SARIT data");
             }
             // build indices
@@ -1262,7 +1531,7 @@ fn main() -> anyhow::Result<()> {
             )?;
         }
         Commands::CbetaIndex { root, out } => {
-            let default_base = default_daizo().join("xml-p5");
+            let default_base = default_buddha().join("xml-p5");
             let base = root.unwrap_or(default_base.clone());
 
             // Ensure CBETA data exists
@@ -1285,7 +1554,7 @@ fn main() -> anyhow::Result<()> {
             }
 
             let entries = build_cbeta_index(&base);
-            let outp = out.unwrap_or(default_daizo().join("cache").join("cbeta-index.json"));
+            let outp = out.unwrap_or(default_buddha().join("cache").join("cbeta-index.json"));
             if let Some(parent) = outp.parent() {
                 fs::create_dir_all(parent)?;
             }
@@ -1299,7 +1568,7 @@ fn main() -> anyhow::Result<()> {
             );
         }
         Commands::TipitakaIndex { root, out } => {
-            let default_base = default_daizo().join("tipitaka-xml");
+            let default_base = default_buddha().join("tipitaka-xml");
             let base = root.unwrap_or(default_base.clone());
 
             // Ensure Tipitaka data exists
@@ -1311,7 +1580,7 @@ fn main() -> anyhow::Result<()> {
             }
 
             let entries = build_tipitaka_index(&base);
-            let outp = out.unwrap_or(default_daizo().join("cache").join("tipitaka-index.json"));
+            let outp = out.unwrap_or(default_buddha().join("cache").join("tipitaka-index.json"));
             if let Some(parent) = outp.parent() {
                 fs::create_dir_all(parent)?;
             }
@@ -1325,7 +1594,7 @@ fn main() -> anyhow::Result<()> {
             );
         }
         Commands::SaritIndex { root, out } => {
-            let default_base = default_daizo().join("SARIT-corpus");
+            let default_base = default_buddha().join("SARIT-corpus");
             let base = root.unwrap_or(default_base.clone());
 
             // Ensure SARIT data exists
@@ -1348,7 +1617,7 @@ fn main() -> anyhow::Result<()> {
             }
 
             let entries = build_sarit_index(&base);
-            let outp = out.unwrap_or(default_daizo().join("cache").join("sarit-index.json"));
+            let outp = out.unwrap_or(default_buddha().join("cache").join("sarit-index.json"));
             if let Some(parent) = outp.parent() {
                 fs::create_dir_all(parent)?;
             }
@@ -1362,13 +1631,13 @@ fn main() -> anyhow::Result<()> {
             );
         }
         Commands::MuktabodhaIndex { root, out } => {
-            let default_base = default_daizo().join("MUKTABODHA");
+            let default_base = default_buddha().join("MUKTABODHA");
             let base = root.unwrap_or(default_base.clone());
             // ディレクトリだけは作っておく（実データのDLは install.sh 側）
             let _ = std::fs::create_dir_all(&default_base);
 
             let entries = build_muktabodha_index(&base);
-            let outp = out.unwrap_or(default_daizo().join("cache").join("muktabodha-index.json"));
+            let outp = out.unwrap_or(default_buddha().join("cache").join("muktabodha-index.json"));
             if let Some(parent) = outp.parent() {
                 fs::create_dir_all(parent)?;
             }
@@ -1433,7 +1702,7 @@ fn main() -> anyhow::Result<()> {
             eprintln!("\x1b[33m📥 Rebuilding search indexes... / インデックスを再構築中... / 正在重建搜索索引...\x1b[0m");
 
             let src = source.to_lowercase();
-            let base = default_daizo();
+            let base = default_buddha();
             let cache = base.join("cache");
             fs::create_dir_all(&cache)?;
 
@@ -1539,6 +1808,61 @@ fn main() -> anyhow::Result<()> {
         } => {
             cmd_tipitaka::tipitaka_search(&query, max_results, max_matches_per_file, json)?;
         }
+        Commands::JozenSearch {
+            query,
+            page,
+            max_results,
+            max_snippet_chars,
+            json,
+        } => {
+            cmd::jozen::jozen_search(&query, page, max_results, max_snippet_chars, json)?;
+        }
+        Commands::JozenFetch {
+            lineno,
+            start_char,
+            max_chars,
+            json,
+        } => {
+            cmd::jozen::jozen_fetch(&lineno, start_char, max_chars, json)?;
+        }
+        Commands::TibetanSearch {
+            query,
+            sources,
+            limit,
+            exact,
+            max_snippet_chars,
+            wildcard,
+            json,
+        } => {
+            cmd::tibetan::tibetan_search(
+                &query,
+                &sources,
+                limit,
+                exact,
+                max_snippet_chars,
+                wildcard,
+                json,
+            )?;
+        }
+        Commands::Resolve {
+            query,
+            sources,
+            limit_per_source,
+            limit,
+            prefer_source,
+            min_score,
+            json,
+        } => {
+            cmd::resolve::resolve(
+                &query,
+                &sources,
+                limit_per_source,
+                limit,
+                prefer_source.as_deref(),
+                min_score,
+                json,
+            )?;
+        }
         Commands::Update { git, yes } => {
             // Build the cargo install command (owned strings)
             let mut cmd: Vec<String> = Vec::new();
@@ -1547,12 +1871,12 @@ fn main() -> anyhow::Result<()> {
             if let Some(repo) = git {
                 cmd.push("--git".into());
                 cmd.push(repo);
-                cmd.push("daizo-cli".into());
+                cmd.push("buddha".into());
             } else {
                 cmd.push("--path".into());
                 cmd.push(".".into());
                 cmd.push("-p".into());
-                cmd.push("daizo-cli".into());
+                cmd.push("buddha".into());
             }
             cmd.push("--locked".into());
             cmd.push("--force".into());
@@ -1565,9 +1889,9 @@ fn main() -> anyhow::Result<()> {
                     anyhow::bail!("update failed: {}", preview);
                 }
                 // Post-install: rebuild indexes using the installed binary
-                let ok2 = run("daizo-cli", &["index-rebuild", "--source", "all"], None);
+                let ok2 = run("buddha", &["index-rebuild", "--source", "all"], None);
                 if !ok2 {
-                    eprintln!("[warn] index rebuild failed after update; run: daizo-cli index-rebuild --source all");
+                    eprintln!("[warn] index rebuild failed after update; run: buddha index-rebuild --source all");
                 }
             } else {
                 eprintln!("[plan] {}", preview);
@@ -1575,26 +1899,28 @@ fn main() -> anyhow::Result<()> {
             }
         }
         Commands::Version {} => {
-            println!("daizo-cli {}", env!("CARGO_PKG_VERSION"));
+            println!("buddha {}", env!("CARGO_PKG_VERSION"));
         }
         Commands::Doctor { verbose } => {
-            let base = default_daizo();
+            let base = default_buddha();
             let bin = base.join("bin");
-            let cli = bin.join("daizo-cli");
-            let mcp = bin.join("daizo-mcp");
+            let cli = bin.join("buddha");
+            let cli_legacy = bin.join("daizo-cli");
+            let mcp = bin.join("buddha-mcp");
             let cbeta = base.join("xml-p5");
             let tipi = base.join("tipitaka-xml");
             let sarit = base.join("SARIT-corpus");
             let mukta = base.join("MUKTABODHA");
             let cache = base.join("cache");
-            println!("DAIZO_DIR: {}", base.display());
+            println!("BUDDHA_DIR: {}", base.display());
             println!("bin: {}", bin.display());
+            println!(" - buddha: {}", if cli.exists() { "OK" } else { "MISSING" });
             println!(
-                " - daizo-cli: {}",
-                if cli.exists() { "OK" } else { "MISSING" }
+                " - daizo-cli (legacy alias): {}",
+                if cli_legacy.exists() { "OK" } else { "MISSING" }
             );
             println!(
-                " - daizo-mcp (compat alias): {}",
+                " - buddha-mcp: {}",
                 if mcp.exists() { "OK" } else { "MISSING" }
             );
             println!("data:");
@@ -1654,14 +1980,19 @@ fn main() -> anyhow::Result<()> {
             }
         }
         Commands::Uninstall { purge } => {
-            let base = default_daizo();
+            let base = default_buddha();
             let bin = base.join("bin");
-            let cli = bin.join("daizo-cli");
-            let mcp = bin.join("daizo-mcp");
+            let cli = bin.join("buddha");
+            let cli_legacy = bin.join("daizo-cli");
+            let mcp = bin.join("buddha-mcp");
             let mut removed: Vec<String> = Vec::new();
             if cli.exists() {
                 let _ = std::fs::remove_file(&cli);
                 removed.push(cli.display().to_string());
+            }
+            if cli_legacy.exists() {
+                let _ = std::fs::remove_file(&cli_legacy);
+                removed.push(cli_legacy.display().to_string());
             }
             if mcp.exists() {
                 let _ = std::fs::remove_file(&mcp);
@@ -1693,18 +2024,18 @@ fn main() -> anyhow::Result<()> {
     Ok(())
 }
 
-// ===== helpers (shared in daizo-core::text_utils) =====
+// ===== helpers (shared in buddha-core::text_utils) =====
 
 #[derive(Clone, Debug, serde::Serialize)]
-struct ScoredHit<'a> {
+pub(crate) struct ScoredHit<'a> {
     #[serde(skip_serializing)]
-    entry: &'a daizo_core::IndexEntry,
-    score: f32,
+    pub entry: &'a buddha_core::IndexEntry,
+    pub score: f32,
 }
 
 fn scored_cmp(
-    a: &(f32, &daizo_core::IndexEntry),
-    b: &(f32, &daizo_core::IndexEntry),
+    a: &(f32, &buddha_core::IndexEntry),
+    b: &(f32, &buddha_core::IndexEntry),
 ) -> std::cmp::Ordering {
     match b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal) {
         std::cmp::Ordering::Equal => a.1.id.cmp(&b.1.id),
@@ -1713,8 +2044,8 @@ fn scored_cmp(
 }
 
 fn topk_insert<'a>(
-    top: &mut Vec<(f32, &'a daizo_core::IndexEntry)>,
-    cand: (f32, &'a daizo_core::IndexEntry),
+    top: &mut Vec<(f32, &'a buddha_core::IndexEntry)>,
+    cand: (f32, &'a buddha_core::IndexEntry),
     limit: usize,
 ) {
     if limit == 0 {
@@ -1745,13 +2076,13 @@ fn topk_insert<'a>(
 }
 
 pub(crate) fn best_match<'a>(
-    entries: &'a [daizo_core::IndexEntry],
+    entries: &'a [buddha_core::IndexEntry],
     q: &str,
     limit: usize,
 ) -> Vec<ScoredHit<'a>> {
     let pq = PrecomputedQuery::new(q, false);
     let nq = pq.normalized();
-    let mut top: Vec<(f32, &daizo_core::IndexEntry)> = Vec::with_capacity(limit.min(32));
+    let mut top: Vec<(f32, &buddha_core::IndexEntry)> = Vec::with_capacity(limit.min(32));
     for e in entries.iter() {
         let mut s = compute_match_score_precomputed(e, &pq);
         if let Some(meta) = &e.meta {
@@ -1771,12 +2102,12 @@ pub(crate) fn best_match<'a>(
         .collect()
 }
 
-// paths & cache provided by daizo_core::path_resolver
+// paths & cache provided by buddha_core::path_resolver
 
-pub(crate) fn load_or_build_tipitaka_index_cli() -> Vec<daizo_core::IndexEntry> {
+pub(crate) fn load_or_build_tipitaka_index_cli() -> Vec<buddha_core::IndexEntry> {
     let out = cache_dir().join("tipitaka-index.json");
     if let Ok(b) = std::fs::read(&out) {
-        if let Ok(mut v) = serde_json::from_slice::<Vec<daizo_core::IndexEntry>>(&b) {
+        if let Ok(mut v) = serde_json::from_slice::<Vec<buddha_core::IndexEntry>>(&b) {
             v.retain(|e| !e.path.ends_with(".toc.xml"));
             let missing = v
                 .iter()
@@ -1824,10 +2155,10 @@ pub(crate) fn load_or_build_tipitaka_index_cli() -> Vec<daizo_core::IndexEntry> 
     entries
 }
 
-pub(crate) fn load_or_build_cbeta_index_cli() -> Vec<daizo_core::IndexEntry> {
+pub(crate) fn load_or_build_cbeta_index_cli() -> Vec<buddha_core::IndexEntry> {
     let out = cache_dir().join("cbeta-index.json");
     if let Ok(b) = std::fs::read(&out) {
-        if let Ok(v) = serde_json::from_slice::<Vec<daizo_core::IndexEntry>>(&b) {
+        if let Ok(v) = serde_json::from_slice::<Vec<buddha_core::IndexEntry>>(&b) {
             let missing = v
                 .iter()
                 .take(10)
@@ -1844,10 +2175,10 @@ pub(crate) fn load_or_build_cbeta_index_cli() -> Vec<daizo_core::IndexEntry> {
     entries
 }
 
-pub(crate) fn load_or_build_gretil_index_cli() -> Vec<daizo_core::IndexEntry> {
+pub(crate) fn load_or_build_gretil_index_cli() -> Vec<buddha_core::IndexEntry> {
     let out = cache_dir().join("gretil-index.json");
     if let Ok(b) = std::fs::read(&out) {
-        if let Ok(v) = serde_json::from_slice::<Vec<daizo_core::IndexEntry>>(&b) {
+        if let Ok(v) = serde_json::from_slice::<Vec<buddha_core::IndexEntry>>(&b) {
             let missing = v
                 .iter()
                 .take(10)
@@ -1864,10 +2195,10 @@ pub(crate) fn load_or_build_gretil_index_cli() -> Vec<daizo_core::IndexEntry> {
     entries
 }
 
-pub(crate) fn load_or_build_sarit_index_cli() -> Vec<daizo_core::IndexEntry> {
+pub(crate) fn load_or_build_sarit_index_cli() -> Vec<buddha_core::IndexEntry> {
     let out = cache_dir().join("sarit-index.json");
     if let Ok(b) = std::fs::read(&out) {
-        if let Ok(v) = serde_json::from_slice::<Vec<daizo_core::IndexEntry>>(&b) {
+        if let Ok(v) = serde_json::from_slice::<Vec<buddha_core::IndexEntry>>(&b) {
             let missing = v
                 .iter()
                 .take(10)
@@ -1884,10 +2215,10 @@ pub(crate) fn load_or_build_sarit_index_cli() -> Vec<daizo_core::IndexEntry> {
     entries
 }
 
-pub(crate) fn load_or_build_muktabodha_index_cli() -> Vec<daizo_core::IndexEntry> {
+pub(crate) fn load_or_build_muktabodha_index_cli() -> Vec<buddha_core::IndexEntry> {
     let out = cache_dir().join("muktabodha-index.json");
     if let Ok(b) = std::fs::read(&out) {
-        if let Ok(v) = serde_json::from_slice::<Vec<daizo_core::IndexEntry>>(&b) {
+        if let Ok(v) = serde_json::from_slice::<Vec<buddha_core::IndexEntry>>(&b) {
             let missing = v
                 .iter()
                 .take(10)
@@ -1904,13 +2235,13 @@ pub(crate) fn load_or_build_muktabodha_index_cli() -> Vec<daizo_core::IndexEntry
     entries
 }
 
-// directory scans are provided by daizo_core::path_resolver
+// directory scans are provided by buddha_core::path_resolver
 
 pub(crate) fn resolve_tipitaka_path(id: Option<&str>, query: Option<&str>) -> PathBuf {
     // ID指定時は直接パス解決を最初に試みる（高速）
     if let Some(id) = id {
         // 直接パス解決（インデックス不要）
-        if let Some(p) = daizo_core::path_resolver::resolve_tipitaka_path_direct(id) {
+        if let Some(p) = buddha_core::path_resolver::resolve_tipitaka_path_direct(id) {
             return p;
         }
         // フォールバック: インデックスから検索
@@ -2020,13 +2351,13 @@ pub(crate) fn resolve_muktabodha_path_cli(id: Option<&str>, query: Option<&str>)
     PathBuf::new()
 }
 
-fn best_match_gretil<'a>(
-    entries: &'a [daizo_core::IndexEntry],
+pub(crate) fn best_match_gretil<'a>(
+    entries: &'a [buddha_core::IndexEntry],
     q: &str,
     limit: usize,
 ) -> Vec<ScoredHit<'a>> {
     let nq = normalized(q);
-    let mut scored: Vec<(f32, &daizo_core::IndexEntry)> = entries
+    let mut scored: Vec<(f32, &buddha_core::IndexEntry)> = entries
         .iter()
         .map(|e| {
             let mut s = compute_match_score_sanskrit(e, q);
@@ -2060,7 +2391,7 @@ pub(crate) fn extract_section_by_head(
     let mut heads: Vec<(usize, usize, String)> = Vec::new();
     for cap in re.captures_iter(xml) {
         let m = cap.get(0).unwrap();
-        let text = daizo_core::strip_tags(&cap[1]);
+        let text = buddha_core::strip_tags(&cap[1]);
         heads.push((m.start(), m.end(), text));
     }
     if heads.is_empty() {
@@ -2242,15 +2573,19 @@ mod tests {
     use super::*;
 
     #[test]
-    fn compat_name_detects_daizo_mcp_binary_names() {
+    fn compat_name_detects_buddha_mcp_binary_names() {
+        assert!(is_mcp_compat_executable_name("buddha-mcp"));
+        assert!(is_mcp_compat_executable_name("buddha-mcp.exe"));
         assert!(is_mcp_compat_executable_name("daizo-mcp"));
         assert!(is_mcp_compat_executable_name("daizo-mcp.exe"));
         assert!(!is_mcp_compat_executable_name("daizo-cli"));
+        assert!(!is_mcp_compat_executable_name("daizo"));
+        assert!(!is_mcp_compat_executable_name("buddha"));
     }
 
     #[test]
     fn clap_parses_mcp_subcommand() {
-        let cli = Cli::try_parse_from(["daizo-cli", "mcp"]).expect("must parse mcp subcommand");
+        let cli = Cli::try_parse_from(["buddha", "mcp"]).expect("must parse mcp subcommand");
         assert!(matches!(cli.command, Commands::Mcp {}));
     }
 }

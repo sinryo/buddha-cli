@@ -106,6 +106,71 @@ dependencies = [
 ]
 
 [[package]]
+name = "buddha"
+version = "0.6.10"
+dependencies = [
+ "anyhow",
+ "buddha-core",
+ "buddha-mcp",
+ "clap",
+ "encoding_rs",
+ "ewts",
+ "idna",
+ "ignore",
+ "quick-xml",
+ "regex",
+ "reqwest",
+ "scraper",
+ "serde",
+ "serde_json",
+ "sha1",
+ "unicode-normalization",
+ "url",
+ "urlencoding",
+]
+
+[[package]]
+name = "buddha-core"
+version = "0.6.10"
+dependencies = [
+ "encoding_rs",
+ "glob",
+ "grep-matcher",
+ "grep-regex",
+ "grep-searcher",
+ "ignore",
+ "quick-xml",
+ "rayon",
+ "regex",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "unicode-normalization",
+]
+
+[[package]]
+name = "buddha-mcp"
+version = "0.6.10"
+dependencies = [
+ "anyhow",
+ "buddha-core",
+ "encoding_rs",
+ "ewts",
+ "idna",
+ "ignore",
+ "quick-xml",
+ "regex",
+ "reqwest",
+ "scraper",
+ "serde",
+ "serde_json",
+ "sha1",
+ "unicode-normalization",
+ "url",
+ "urlencoding",
+]
+
+[[package]]
 name = "bumpalo"
 version = "3.19.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -256,70 +321,6 @@ checksum = "13b588ba4ac1a99f7f2964d24b3d896ddc6bf847ee3855dbd4366f058cfcd331"
 dependencies = [
  "quote",
  "syn",
-]
-
-[[package]]
-name = "daizo-cli"
-version = "0.6.9"
-dependencies = [
- "anyhow",
- "clap",
- "daizo-core",
- "daizo-mcp",
- "encoding_rs",
- "idna",
- "ignore",
- "quick-xml",
- "regex",
- "reqwest",
- "scraper",
- "serde",
- "serde_json",
- "sha1",
- "unicode-normalization",
- "url",
- "urlencoding",
-]
-
-[[package]]
-name = "daizo-core"
-version = "0.6.9"
-dependencies = [
- "encoding_rs",
- "glob",
- "grep-matcher",
- "grep-regex",
- "grep-searcher",
- "ignore",
- "quick-xml",
- "rayon",
- "regex",
- "serde",
- "serde_json",
- "tempfile",
- "unicode-normalization",
-]
-
-[[package]]
-name = "daizo-mcp"
-version = "0.6.9"
-dependencies = [
- "anyhow",
- "daizo-core",
- "encoding_rs",
- "ewts",
- "idna",
- "ignore",
- "quick-xml",
- "regex",
- "reqwest",
- "scraper",
- "serde",
- "serde_json",
- "sha1",
- "unicode-normalization",
- "url",
- "urlencoding",
 ]
 
 [[package]]

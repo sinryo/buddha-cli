@@ -17,9 +17,10 @@ pub fn is_unified_tool(name: &str) -> bool {
 }
 
 /// Check if unified mode is enabled (default: true).
-/// Set DAIZO_UNIFIED_TOOLS=0 to disable.
+/// Set BUDDHA_UNIFIED_TOOLS=0 to disable (legacy: DAIZO_UNIFIED_TOOLS also works).
 pub fn is_unified_mode() -> bool {
-    std::env::var("DAIZO_UNIFIED_TOOLS")
+    std::env::var("BUDDHA_UNIFIED_TOOLS")
+        .or_else(|_| std::env::var("DAIZO_UNIFIED_TOOLS"))
         .map(|v| v != "0")
         .unwrap_or(true)
 }
@@ -310,9 +311,9 @@ pub fn dispatch_unified(name: &str, args: &Value) -> (String, Value) {
         "title_search" => dispatch_title_search(&source, args),
         "fetch" => dispatch_fetch(&source, args),
         "pipeline" => dispatch_pipeline(&source, args),
-        "resolve" => ("daizo_resolve".to_string(), args.clone()),
+        "resolve" => ("buddha_resolve".to_string(), args.clone()),
         "info" => dispatch_info(args),
-        "profile" => ("daizo_profile".to_string(), args.clone()),
+        "profile" => ("buddha_profile".to_string(), args.clone()),
         _ => (name.to_string(), args.clone()),
     }
 }
@@ -446,9 +447,9 @@ fn dispatch_info(args: &Value) -> (String, Value) {
         .and_then(|v| v.as_str())
         .unwrap_or("all");
     match section {
-        "version" => ("daizo_version".to_string(), json!({})),
-        "usage" => ("daizo_usage".to_string(), json!({})),
-        "system_prompt" => ("daizo_system_prompt".to_string(), json!({})),
+        "version" => ("buddha_version".to_string(), json!({})),
+        "usage" => ("buddha_usage".to_string(), json!({})),
+        "system_prompt" => ("buddha_system_prompt".to_string(), json!({})),
         "all" | _ => ("_info_all".to_string(), json!({})),
     }
 }
@@ -489,11 +490,11 @@ fn legacy_to_unified(tool_name: &str) -> Option<(&'static str, &'static str)> {
         "muktabodha_pipeline" => Some(("pipeline", "muktabodha")),
         "sat_pipeline" => Some(("pipeline", "sat")),
 
-        "daizo_resolve" => Some(("resolve", "")),
-        "daizo_version" => Some(("info", "")),
-        "daizo_usage" => Some(("info", "")),
-        "daizo_system_prompt" => Some(("info", "")),
-        "daizo_profile" => Some(("profile", "")),
+        "buddha_resolve" => Some(("resolve", "")),
+        "buddha_version" => Some(("info", "")),
+        "buddha_usage" => Some(("info", "")),
+        "buddha_system_prompt" => Some(("info", "")),
+        "buddha_profile" => Some(("profile", "")),
 
         _ => None,
     }
@@ -521,7 +522,7 @@ pub fn rewrite_meta_suggestions(response: &mut Value) {
             rewrite_tool_ref(hint);
         }
 
-        // candidates[].fetch: {tool, args, ...} (from daizo_resolve)
+        // candidates[].fetch: {tool, args, ...} (from buddha_resolve)
         if let Some(candidates) = meta.get_mut("candidates") {
             if let Some(arr) = candidates.as_array_mut() {
                 for item in arr.iter_mut() {
@@ -672,10 +673,10 @@ mod tests {
     #[test]
     fn test_dispatch_info() {
         let (name, _) = dispatch_unified("info", &json!({"section": "version"}));
-        assert_eq!(name, "daizo_version");
+        assert_eq!(name, "buddha_version");
 
         let (name, _) = dispatch_unified("info", &json!({"section": "usage"}));
-        assert_eq!(name, "daizo_usage");
+        assert_eq!(name, "buddha_usage");
 
         let (name, _) = dispatch_unified("info", &json!({}));
         assert_eq!(name, "_info_all");

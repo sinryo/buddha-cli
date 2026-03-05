@@ -1,8 +1,8 @@
 [workspace]
 members = [
-  "daizo-core",
-  "daizo-cli",
-  "daizo-mcp",
+  "buddha-core",
+  "buddha-cli",
+  "buddha-mcp",
 ]
 resolver = "2"
 

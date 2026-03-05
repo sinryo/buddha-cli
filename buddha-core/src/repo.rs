@@ -4,7 +4,7 @@ use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
 fn log(msg: &str) {
-    eprintln!("[daizo-repo] {}", msg);
+    eprintln!("[buddha-repo] {}", msg);
 }
 
 #[derive(Clone, Debug)]
@@ -40,17 +40,23 @@ pub fn init_policy_from_env() {
         return;
     }
     let mut p = RepoPolicy::default();
-    if let Ok(ms) = std::env::var("DAIZO_REPO_MIN_DELAY_MS") {
+    if let Ok(ms) = std::env::var("BUDDHA_REPO_MIN_DELAY_MS")
+        .or_else(|_| std::env::var("DAIZO_REPO_MIN_DELAY_MS"))
+    {
         if let Ok(v) = ms.parse::<u64>() {
             p.min_delay_ms = v;
         }
     }
-    if let Ok(s) = std::env::var("DAIZO_REPO_USER_AGENT") {
+    if let Ok(s) =
+        std::env::var("BUDDHA_REPO_USER_AGENT").or_else(|_| std::env::var("DAIZO_REPO_USER_AGENT"))
+    {
         if !s.is_empty() {
             p.user_agent = Some(s);
         }
     }
-    if let Ok(v) = std::env::var("DAIZO_REPO_RESPECT_ROBOTS") {
+    if let Ok(v) = std::env::var("BUDDHA_REPO_RESPECT_ROBOTS")
+        .or_else(|_| std::env::var("DAIZO_REPO_RESPECT_ROBOTS"))
+    {
         p.robots_txt = matches!(v.as_str(), "1" | "true" | "yes");
     }
     set_repo_policy(p);

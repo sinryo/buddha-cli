@@ -1,9 +1,9 @@
 use anyhow::Result;
-use daizo_core::text_utils::{
+use buddha_core::text_utils::{
     compute_match_score_sanskrit, find_highlight_positions, is_subsequence, jaccard, normalized,
     token_jaccard, ws_cjk_variant_fuzzy_regex_literal,
 };
-use daizo_core::{
+use buddha_core::{
     build_cbeta_index, build_gretil_index, build_muktabodha_index, build_sarit_index,
     build_tipitaka_index, cbeta_gaiji_map_fast, cbeta_grep, extract_cbeta_juan,
     extract_cbeta_juan_plain, extract_cbeta_plain_from_snippet, extract_text,
@@ -26,8 +26,8 @@ use std::time::{Duration, Instant};
 
 /// Version constant for the MCP server
 const VERSION: &str = env!("CARGO_PKG_VERSION");
-use daizo_core::path_resolver::{
-    cache_dir, cbeta_root, daizo_home, find_exact_file_by_name, find_tipitaka_content_for_base,
+use buddha_core::path_resolver::{
+    buddha_home, cache_dir, cbeta_root, find_exact_file_by_name, find_tipitaka_content_for_base,
     gretil_root, muktabodha_root, resolve_cbeta_path_by_id, resolve_muktabodha_by_id,
     resolve_muktabodha_path_direct, resolve_sarit_by_id, resolve_sarit_path_direct,
     resolve_tipitaka_by_id, sarit_root, tipitaka_root,
@@ -116,13 +116,17 @@ fn should_focus_highlight(args: &serde_json::Value) -> bool {
 // ============ MCP stdio framing ============
 
 fn dbg_enabled() -> bool {
-    std::env::var("DAIZO_DEBUG").ok().as_deref() == Some("1")
+    std::env::var("BUDDHA_DEBUG")
+        .or_else(|_| std::env::var("DAIZO_DEBUG"))
+        .ok()
+        .as_deref()
+        == Some("1")
 }
 fn dbg_log(msg: &str) {
     if !dbg_enabled() {
         return;
     }
-    let path = daizo_home().join("daizo-mcp.log");
+    let path = buddha_home().join("buddha-mcp.log");
     if let Ok(mut f) = std::fs::OpenOptions::new()
         .create(true)
         .append(true)
@@ -234,24 +238,26 @@ fn write_message(stdout: &mut impl Write, v: &serde_json::Value) -> Result<()> {
     Ok(())
 }
 
-fn env_usize(key: &str, default_v: usize) -> usize {
-    std::env::var(key)
+/// Look up `primary` first, then `fallback`, returning `default_v` if neither is set.
+fn env_usize_fb(primary: &str, fallback: &str, default_v: usize) -> usize {
+    std::env::var(primary)
+        .or_else(|_| std::env::var(fallback))
         .ok()
         .and_then(|s| s.parse::<usize>().ok())
         .unwrap_or(default_v)
 }
 
 fn default_max_chars() -> usize {
-    env_usize("DAIZO_MCP_MAX_CHARS", 6000)
+    env_usize_fb("BUDDHA_MCP_MAX_CHARS", "DAIZO_MCP_MAX_CHARS", 6000)
 }
 fn default_snippet_len() -> usize {
-    env_usize("DAIZO_MCP_SNIPPET_LEN", 120)
+    env_usize_fb("BUDDHA_MCP_SNIPPET_LEN", "DAIZO_MCP_SNIPPET_LEN", 120)
 }
 fn default_auto_files() -> usize {
-    env_usize("DAIZO_MCP_AUTO_FILES", 1)
+    env_usize_fb("BUDDHA_MCP_AUTO_FILES", "DAIZO_MCP_AUTO_FILES", 1)
 }
 fn default_auto_matches() -> usize {
-    env_usize("DAIZO_MCP_AUTO_MATCHES", 1)
+    env_usize_fb("BUDDHA_MCP_AUTO_MATCHES", "DAIZO_MCP_AUTO_MATCHES", 1)
 }
 
 #[derive(Deserialize)]
@@ -262,25 +268,25 @@ struct Request {
     params: serde_json::Value,
 }
 
-// ============ Paths & cache (via daizo-core::path_resolver) ============
+// ============ Paths & cache (via buddha-core::path_resolver) ============
 fn ensure_dir(p: &Path) {
     let _ = fs::create_dir_all(p);
 }
 
 fn ensure_cbeta_data() {
-    let _ = daizo_core::repo::ensure_cbeta_data_at(&cbeta_root());
+    let _ = buddha_core::repo::ensure_cbeta_data_at(&cbeta_root());
 }
 
 fn ensure_tipitaka_data() {
-    let _ = daizo_core::repo::ensure_tipitaka_data_at(&daizo_home().join("tipitaka-xml"));
+    let _ = buddha_core::repo::ensure_tipitaka_data_at(&buddha_home().join("tipitaka-xml"));
 }
 
 fn ensure_sarit_data() {
-    let _ = daizo_core::repo::ensure_sarit_data_at(&sarit_root());
+    let _ = buddha_core::repo::ensure_sarit_data_at(&sarit_root());
 }
 
 fn ensure_muktabodha_dir() {
-    daizo_core::repo::ensure_muktabodha_dir(&muktabodha_root());
+    buddha_core::repo::ensure_muktabodha_dir(&muktabodha_root());
 }
 
 fn load_index(path: &Path) -> Option<Vec<IndexEntry>> {
@@ -317,7 +323,7 @@ fn handle_initialize(id: serde_json::Value) -> serde_json::Value {
                 },
                 "logging": {}
             },
-            "serverInfo": { "name": "daizo-mcp", "version": VERSION }
+            "serverInfo": { "name": "buddha-mcp", "version": VERSION }
         }
     })
 }
@@ -331,17 +337,17 @@ fn tools_list() -> Vec<serde_json::Value> {
 
 fn legacy_tools_list() -> Vec<serde_json::Value> {
     vec![
-        tool("daizo_version", "Get daizo-mcp server version and build information. Use this to check compatibility and troubleshoot issues.", json!({"type":"object","properties":{}})),
-        tool("daizo_usage", "Usage guidance for AI (low-token). FAST PATH: use direct IDs when known. Local corpora: CBETA (T0001/T0262), Tipitaka (DN1/MN1), GRETIL (saddharmapuNDarIka), SARIT (file stem), MUKTABODHA (file stem). Online: SAT, JOZEN, Tibetan (tibetan_search).", json!({"type":"object","properties":{}})),
-        tool("daizo_system_prompt", "One-page system prompt template for AI clients using daizo-mcp (low-token defaults, _meta.fetchSuggestions flow).", json!({"type":"object","properties":{}})),
-        tool("daizo_profile", "Run an in-process benchmark for a tool call and return timing stats (warm cache). Use for performance measurement.", json!({"type":"object","properties":{
-            "tool":{"type":"string","description":"Tool name to call (e.g., cbeta_search, cbeta_fetch, daizo_resolve)."},
+        tool("buddha_version", "Get buddha-mcp server version and build information. Use this to check compatibility and troubleshoot issues.", json!({"type":"object","properties":{}})),
+        tool("buddha_usage", "Usage guidance for AI (low-token). FAST PATH: use direct IDs when known. Local corpora: CBETA (T0001/T0262), Tipitaka (DN1/MN1), GRETIL (saddharmapuNDarIka), SARIT (file stem), MUKTABODHA (file stem). Online: SAT, JOZEN, Tibetan (tibetan_search).", json!({"type":"object","properties":{}})),
+        tool("buddha_system_prompt", "One-page system prompt template for AI clients using buddha-mcp (low-token defaults, _meta.fetchSuggestions flow).", json!({"type":"object","properties":{}})),
+        tool("buddha_profile", "Run an in-process benchmark for a tool call and return timing stats (warm cache). Use for performance measurement.", json!({"type":"object","properties":{
+            "tool":{"type":"string","description":"Tool name to call (e.g., cbeta_search, cbeta_fetch, buddha_resolve)."},
             "arguments":{"type":"object","description":"Arguments object passed to the tool."},
             "iterations":{"type":"number","description":"Measured iterations (default: 10)."},
             "warmup":{"type":"number","description":"Warmup iterations (default: 1)."},
             "includeSamples":{"type":"boolean","description":"Include per-iteration samples in _meta (default: false)."}
         },"required":["tool","arguments"]})),
-        tool("daizo_resolve", "Resolve a user query (title/alias/ID) to candidate corpus IDs and recommended next tool calls. Use this when you don't know which corpus/ID to use.", json!({"type":"object","properties":{
+        tool("buddha_resolve", "Resolve a user query (title/alias/ID) to candidate corpus IDs and recommended next tool calls. Use this when you don't know which corpus/ID to use.", json!({"type":"object","properties":{
             "query":{"type":"string","description":"User query (title/alias/ID). Examples: '法華経', 'T0262', 'DN1', 'vajracchedikA'."},
             "sources":{"type":"array","items":{"type":"string","enum":["cbeta","tipitaka","gretil","sarit","muktabodha"]},"description":"Search scope. Default: ['cbeta','tipitaka','gretil','sarit','muktabodha']."},
             "limitPerSource":{"type":"number","description":"Max candidates per source (default: 5)"},
@@ -439,7 +445,7 @@ fn legacy_tools_list() -> Vec<serde_json::Value> {
 	            "query":{"type":"string","description":"Search keyword(s). Separate words by space for AND search."},
 	            "page":{"type":"number","description":"Page number (1-based). Default: 1."},
 	            "maxResults":{"type":"number","description":"Max results to return from that page (<=50). Default: 20."},
-	            "maxSnippetChars":{"type":"number","description":"Max snippet length in characters. Default: DAIZO_MCP_SNIPPET_LEN or 120."}
+	            "maxSnippetChars":{"type":"number","description":"Max snippet length in characters. Default: BUDDHA_MCP_SNIPPET_LEN or 120."}
 	        },"required":["query"]})),
 	        tool("jozen_fetch", "Fetch Jodo Shu Zensho detail page by lineno (online). Returns page text with line IDs.", json!({"type":"object","properties":{
 	            "lineno":{"type":"string","description":"Line/page id (e.g., 'J01_0200B19' or 'J01_0200')"},
@@ -624,7 +630,7 @@ fn handle_tools_list(id: serde_json::Value) -> serde_json::Value {
     json!({"jsonrpc":"2.0","id":id,"result": {"tools": tools_list()}})
 }
 
-// normalization and token similarity helpers are provided by daizo_core::text_utils
+// normalization and token similarity helpers are provided by buddha_core::text_utils
 
 // メモリキャッシュ: プロセス内でインデックスを再利用し、毎回のJSONパースを回避
 static CBETA_INDEX_CACHE: OnceLock<Vec<IndexEntry>> = OnceLock::new();
@@ -693,8 +699,8 @@ fn cbeta_title_hay_cache(entries: &[IndexEntry]) -> Option<&'static TitleHayCach
                 })
                 .unwrap_or_default();
             let hay_all = format!("{} {} {}", e.title, e.id, meta_str);
-            hay_norm.push(daizo_core::text_utils::normalized(&hay_all));
-            hay_ws.push(daizo_core::text_utils::normalized_with_spaces(&hay_all));
+            hay_norm.push(buddha_core::text_utils::normalized(&hay_all));
+            hay_ws.push(buddha_core::text_utils::normalized_with_spaces(&hay_all));
         }
         TitleHayCache { hay_norm, hay_ws }
     });
@@ -865,9 +871,9 @@ fn gretil_title_hay_cache(entries: &[IndexEntry]) -> Option<&'static GretilHayCa
                 })
                 .unwrap_or_default();
             let hay_all = format!("{} {} {}", e.title, e.id, meta_str);
-            hay_norm.push(daizo_core::text_utils::normalized(&hay_all));
-            hay_ws.push(daizo_core::text_utils::normalized_with_spaces(&hay_all));
-            hay_fold.push(daizo_core::text_utils::normalized_sanskrit(&hay_all));
+            hay_norm.push(buddha_core::text_utils::normalized(&hay_all));
+            hay_ws.push(buddha_core::text_utils::normalized_with_spaces(&hay_all));
+            hay_fold.push(buddha_core::text_utils::normalized_sanskrit(&hay_all));
         }
         GretilHayCache {
             hay_norm,
@@ -917,9 +923,9 @@ fn sarit_title_hay_cache(entries: &[IndexEntry]) -> Option<&'static GretilHayCac
                 })
                 .unwrap_or_default();
             let hay_all = format!("{} {} {}", e.title, e.id, meta_str);
-            hay_norm.push(daizo_core::text_utils::normalized(&hay_all));
-            hay_ws.push(daizo_core::text_utils::normalized_with_spaces(&hay_all));
-            hay_fold.push(daizo_core::text_utils::normalized_sanskrit(&hay_all));
+            hay_norm.push(buddha_core::text_utils::normalized(&hay_all));
+            hay_ws.push(buddha_core::text_utils::normalized_with_spaces(&hay_all));
+            hay_fold.push(buddha_core::text_utils::normalized_sanskrit(&hay_all));
         }
         GretilHayCache {
             hay_norm,
@@ -969,9 +975,9 @@ fn muktabodha_title_hay_cache(entries: &[IndexEntry]) -> Option<&'static GretilH
                 })
                 .unwrap_or_default();
             let hay_all = format!("{} {} {}", e.title, e.id, meta_str);
-            hay_norm.push(daizo_core::text_utils::normalized(&hay_all));
-            hay_ws.push(daizo_core::text_utils::normalized_with_spaces(&hay_all));
-            hay_fold.push(daizo_core::text_utils::normalized_sanskrit(&hay_all));
+            hay_norm.push(buddha_core::text_utils::normalized(&hay_all));
+            hay_ws.push(buddha_core::text_utils::normalized_with_spaces(&hay_all));
+            hay_fold.push(buddha_core::text_utils::normalized_sanskrit(&hay_all));
         }
         GretilHayCache {
             hay_norm,
@@ -1000,7 +1006,8 @@ struct CbetaFileCacheEntry {
 static CBETA_FILE_CACHE: OnceLock<Mutex<Vec<CbetaFileCacheEntry>>> = OnceLock::new();
 
 fn cbeta_file_cache_cap() -> usize {
-    std::env::var("DAIZO_CBETA_FILE_CACHE")
+    std::env::var("BUDDHA_CBETA_FILE_CACHE")
+        .or_else(|_| std::env::var("DAIZO_CBETA_FILE_CACHE"))
         .ok()
         .and_then(|s| s.parse::<usize>().ok())
         .unwrap_or(2)
@@ -1156,20 +1163,20 @@ fn topk_insert<'a>(
 }
 
 fn best_match<'a>(entries: &'a [IndexEntry], q: &str, limit: usize) -> Vec<ScoredHit<'a>> {
-    let pq = daizo_core::text_utils::PrecomputedQuery::new(q, false);
+    let pq = buddha_core::text_utils::PrecomputedQuery::new(q, false);
     let nq = pq.normalized();
     let hay_cache = cbeta_title_hay_cache(entries);
     let mut top: Vec<(f32, &IndexEntry)> = Vec::with_capacity(limit.min(32));
     for (i, e) in entries.iter().enumerate() {
         let mut s = if let Some(cache) = hay_cache {
-            daizo_core::text_utils::compute_match_score_precomputed_with_hay(
+            buddha_core::text_utils::compute_match_score_precomputed_with_hay(
                 e,
                 &cache.hay_norm[i],
                 &cache.hay_ws[i],
                 &pq,
             )
         } else {
-            daizo_core::text_utils::compute_match_score_precomputed(e, &pq)
+            buddha_core::text_utils::compute_match_score_precomputed(e, &pq)
         };
         if let Some(meta) = &e.meta {
             // CBETA: bias toward Taisho canon by default (common user expectation).
@@ -1196,9 +1203,9 @@ fn best_match<'a>(entries: &'a [IndexEntry], q: &str, limit: usize) -> Vec<Score
 
 fn best_match_tipitaka<'a>(entries: &'a [IndexEntry], q: &str, limit: usize) -> Vec<ScoredHit<'a>> {
     let mut top: Vec<(f32, &IndexEntry)> = Vec::with_capacity(limit.min(32));
-    let pq = daizo_core::text_utils::PrecomputedQuery::new(q, true);
+    let pq = buddha_core::text_utils::PrecomputedQuery::new(q, true);
     for e in entries.iter() {
-        let s = daizo_core::text_utils::compute_match_score_precomputed(e, &pq);
+        let s = buddha_core::text_utils::compute_match_score_precomputed(e, &pq);
         topk_insert(&mut top, (s, e), limit);
     }
     top.into_iter()
@@ -1208,9 +1215,9 @@ fn best_match_tipitaka<'a>(entries: &'a [IndexEntry], q: &str, limit: usize) -> 
 
 fn best_match_gretil<'a>(entries: &'a [IndexEntry], q: &str, limit: usize) -> Vec<ScoredHit<'a>> {
     let nq = normalized(q);
-    let nq_ws = daizo_core::text_utils::normalized_with_spaces(q);
+    let nq_ws = buddha_core::text_utils::normalized_with_spaces(q);
     let nq_nospace = nq_ws.replace(' ', "");
-    let nq_fold = daizo_core::text_utils::normalized_sanskrit(q);
+    let nq_fold = buddha_core::text_utils::normalized_sanskrit(q);
     let q_tokens: std::collections::HashSet<String> =
         nq_ws.split_whitespace().map(|w| w.to_string()).collect();
     let has_digit = q.chars().any(|c| c.is_ascii_digit());
@@ -1272,8 +1279,8 @@ fn best_match_gretil<'a>(entries: &'a [IndexEntry], q: &str, limit: usize) -> Ve
                 .as_ref()
                 .and_then(|m| m.get("alias").map(|s| s.as_str()))
                 .unwrap_or("");
-            let nalias = daizo_core::text_utils::normalized_with_spaces(alias).replace(' ', "");
-            let nalias_fold = daizo_core::text_utils::normalized_sanskrit(alias);
+            let nalias = buddha_core::text_utils::normalized_with_spaces(alias).replace(' ', "");
+            let nalias_fold = buddha_core::text_utils::normalized_sanskrit(alias);
             if !nalias.is_empty() {
                 if nalias.split_whitespace().any(|a| a == nq_nospace)
                     || nalias.contains(&nq_nospace)
@@ -1312,9 +1319,9 @@ fn best_match_sarit<'a>(entries: &'a [IndexEntry], q: &str, limit: usize) -> Vec
     // SARIT は多表記（デーヴァナーガリー/ローマナイズ等）を含むため、
     // GRETIL と同等の正規化・折り畳みロジックを使う。
     let nq = normalized(q);
-    let nq_ws = daizo_core::text_utils::normalized_with_spaces(q);
+    let nq_ws = buddha_core::text_utils::normalized_with_spaces(q);
     let nq_nospace = nq_ws.replace(' ', "");
-    let nq_fold = daizo_core::text_utils::normalized_sanskrit(q);
+    let nq_fold = buddha_core::text_utils::normalized_sanskrit(q);
     let q_tokens: std::collections::HashSet<String> =
         nq_ws.split_whitespace().map(|w| w.to_string()).collect();
     let has_digit = q.chars().any(|c| c.is_ascii_digit());
@@ -1375,8 +1382,8 @@ fn best_match_sarit<'a>(entries: &'a [IndexEntry], q: &str, limit: usize) -> Vec
                 .as_ref()
                 .and_then(|m| m.get("alias").map(|s| s.as_str()))
                 .unwrap_or("");
-            let nalias = daizo_core::text_utils::normalized_with_spaces(alias).replace(' ', "");
-            let nalias_fold = daizo_core::text_utils::normalized_sanskrit(alias);
+            let nalias = buddha_core::text_utils::normalized_with_spaces(alias).replace(' ', "");
+            let nalias_fold = buddha_core::text_utils::normalized_sanskrit(alias);
             if !nalias.is_empty() {
                 if nalias.split_whitespace().any(|a| a == nq_nospace)
                     || nalias.contains(&nq_nospace)
@@ -1419,9 +1426,9 @@ fn best_match_muktabodha<'a>(
     // サンスクリット向け（IAST）として GRETIL と同じ方式でスコアリング。
     // MUKTABODHA は .txt も混ざる想定だが、タイトル/ID/メタでマッチさせる。
     let nq = normalized(q);
-    let nq_ws = daizo_core::text_utils::normalized_with_spaces(q);
+    let nq_ws = buddha_core::text_utils::normalized_with_spaces(q);
     let nq_nospace = nq_ws.replace(' ', "");
-    let nq_fold = daizo_core::text_utils::normalized_sanskrit(q);
+    let nq_fold = buddha_core::text_utils::normalized_sanskrit(q);
     let q_tokens: std::collections::HashSet<String> =
         nq_ws.split_whitespace().map(|w| w.to_string()).collect();
     let has_digit = q.chars().any(|c| c.is_ascii_digit());
@@ -1482,8 +1489,8 @@ fn best_match_muktabodha<'a>(
                 .as_ref()
                 .and_then(|m| m.get("alias").map(|s| s.as_str()))
                 .unwrap_or("");
-            let nalias = daizo_core::text_utils::normalized_with_spaces(alias).replace(' ', "");
-            let nalias_fold = daizo_core::text_utils::normalized_sanskrit(alias);
+            let nalias = buddha_core::text_utils::normalized_with_spaces(alias).replace(' ', "");
+            let nalias_fold = buddha_core::text_utils::normalized_sanskrit(alias);
             if !nalias.is_empty() {
                 if nalias.split_whitespace().any(|a| a == nq_nospace)
                     || nalias.contains(&nq_nospace)
@@ -1530,7 +1537,7 @@ struct ResolveCrosswalk {
     gretil_title: Option<&'static str>,
 }
 
-// Curated cross-corpus aliases for daizo_resolve. Keep this small and high precision.
+// Curated cross-corpus aliases for buddha_resolve. Keep this small and high precision.
 static RESOLVE_CROSSWALK: &[ResolveCrosswalk] = &[
     ResolveCrosswalk {
         key: "heart-sutra",
@@ -1876,9 +1883,9 @@ fn resolve_title_candidates_muktabodha(
     out
 }
 
-// jaccard and is_subsequence moved to daizo_core::text_utils
+// jaccard and is_subsequence moved to buddha_core::text_utils
 
-// resolve_cbeta_path moved to daizo_core::path_resolver
+// resolve_cbeta_path moved to buddha_core::path_resolver
 
 // removed: unused helper
 
@@ -1975,12 +1982,15 @@ fn slice_text_bounds(
 fn handle_info_all(id: serde_json::Value) -> serde_json::Value {
     let version_resp = handle_call(
         id.clone(),
-        &json!({"name": "daizo_version", "arguments": {}}),
+        &json!({"name": "buddha_version", "arguments": {}}),
     );
-    let usage_resp = handle_call(id.clone(), &json!({"name": "daizo_usage", "arguments": {}}));
+    let usage_resp = handle_call(
+        id.clone(),
+        &json!({"name": "buddha_usage", "arguments": {}}),
+    );
     let prompt_resp = handle_call(
         id.clone(),
-        &json!({"name": "daizo_system_prompt", "arguments": {}}),
+        &json!({"name": "buddha_system_prompt", "arguments": {}}),
     );
 
     let version_text = version_resp
@@ -2043,7 +2053,7 @@ fn handle_call(id: serde_json::Value, params: &serde_json::Value) -> serde_json:
         };
     let name = name.as_str();
     let content_text = match name {
-        "daizo_version" => {
+        "buddha_version" => {
             let data_status = json!({
                 "cbeta": cbeta_root().exists(),
                 "tipitaka": tipitaka_root().exists(),
@@ -2053,11 +2063,11 @@ fn handle_call(id: serde_json::Value, params: &serde_json::Value) -> serde_json:
             });
             let version_info = json!({
                 "version": VERSION,
-                "name": "daizo-mcp",
+                "name": "buddha-mcp",
                 "description": "MCP server for Buddhist scripture retrieval (CBETA, Tipitaka, GRETIL, SARIT, MUKTABODHA, SAT, JOZEN, Tibetan online search)",
-                "homepage": "https://github.com/sinryo/daizo-mcp",
+                "homepage": "https://github.com/sinryo/buddha-cli",
                 "data_available": data_status,
-                "data_path": daizo_home().to_string_lossy(),
+                "data_path": buddha_home().to_string_lossy(),
                 "optimizations": [
                     "ripgrep-based regex search",
                     "ignore-based parallel file walking",
@@ -2084,8 +2094,8 @@ fn handle_call(id: serde_json::Value, params: &serde_json::Value) -> serde_json:
                 }
             });
         }
-        "daizo_usage" => {
-            let guide = r#"Daizo usage guide:
+        "buddha_usage" => {
+            let guide = r#"Buddha usage guide:
 
 ## FASTEST: Direct ID access (no search needed!)
 
@@ -2170,18 +2180,18 @@ Flow: search({source:"jozen"}) -> fetch with lineno
             return json!({
                 "jsonrpc":"2.0",
                 "id": id,
-                "result": { "content": [{"type":"text","text": guide}], "_meta": {"source": "daizo_usage"} }
+                "result": { "content": [{"type":"text","text": guide}], "_meta": {"source": "buddha_usage"} }
             });
         }
-        "daizo_system_prompt" => {
-            let prompt = include_str!("../../docs/daizo_system_prompt.txt");
+        "buddha_system_prompt" => {
+            let prompt = include_str!("../../docs/buddha_system_prompt.txt");
             return json!({
                 "jsonrpc":"2.0",
                 "id": id,
-                "result": { "content": [{"type":"text","text": prompt}], "_meta": {"source": "daizo_system_prompt"} }
+                "result": { "content": [{"type":"text","text": prompt}], "_meta": {"source": "buddha_system_prompt"} }
             });
         }
-        "daizo_profile" => {
+        "buddha_profile" => {
             let tool = args
                 .get("tool")
                 .and_then(|v| v.as_str())
@@ -2204,7 +2214,7 @@ Flow: search({source:"jozen"}) -> fetch with lineno
                 .and_then(|v| v.as_bool())
                 .unwrap_or(false);
 
-            if tool.is_empty() || tool == "daizo_profile" {
+            if tool.is_empty() || tool == "buddha_profile" {
                 return json!({"jsonrpc":"2.0","id": id, "result": { "content": [{"type":"text","text": "invalid tool"}], "_meta": {"tool": tool, "ok": false} }});
             }
 
@@ -2246,7 +2256,7 @@ Flow: search({source:"jozen"}) -> fetch with lineno
             let p99 = pct(0.99);
 
             let summary = format!(
-                "daizo_profile tool={}\niterations={} warmup={}\nmin={:.3}ms p50={:.3}ms mean={:.3}ms p90={:.3}ms p95={:.3}ms p99={:.3}ms max={:.3}ms\n",
+                "buddha_profile tool={}\niterations={} warmup={}\nmin={:.3}ms p50={:.3}ms mean={:.3}ms p90={:.3}ms p95={:.3}ms p99={:.3}ms max={:.3}ms\n",
                 tool, iterations, warmup, min_ms, p50, mean_ms, p90, p95, p99, max_ms
             );
 
@@ -2266,7 +2276,7 @@ Flow: search({source:"jozen"}) -> fetch with lineno
 
             return json!({"jsonrpc":"2.0","id": id, "result": { "content": [{"type":"text","text": summary}], "_meta": meta }});
         }
-        "daizo_resolve" => {
+        "buddha_resolve" => {
             let q = args
                 .get("query")
                 .and_then(|v| v.as_str())
@@ -2664,7 +2674,7 @@ Flow: search({source:"jozen"}) -> fetch with lineno
             // 高速化: IDが指定されている場合は直接パス解決を試み、インデックスのロードを回避
             if let Some(id) = args.get("id").and_then(|v| v.as_str()) {
                 // まず直接パス解決を試みる（インデックス不要、高速）
-                if let Some(direct_path) = daizo_core::path_resolver::resolve_cbeta_path_direct(id)
+                if let Some(direct_path) = buddha_core::path_resolver::resolve_cbeta_path_direct(id)
                 {
                     matched_id = Some(id.to_string());
                     path = direct_path;
@@ -2784,7 +2794,7 @@ Flow: search({source:"jozen"}) -> fetch with lineno
                                 false,
                             )
                         } else {
-                            let context_text = daizo_core::extract_xml_around_line_asymmetric(
+                            let context_text = buddha_core::extract_xml_around_line_asymmetric(
                                 &xml,
                                 xml_line,
                                 context_before,
@@ -2867,7 +2877,7 @@ Flow: search({source:"jozen"}) -> fetch with lineno
                         false,
                     )
                 } else {
-                    let context_text = daizo_core::extract_xml_around_line_asymmetric(
+                    let context_text = buddha_core::extract_xml_around_line_asymmetric(
                         &xml,
                         line_num as usize,
                         context_before,
@@ -3008,7 +3018,7 @@ Flow: search({source:"jozen"}) -> fetch with lineno
                     };
                     if let Some((sb, _eb)) = span {
                         let line_no = text[..sb].lines().count() + 1;
-                        let ctx = daizo_core::extract_text_around_line_asymmetric(
+                        let ctx = buddha_core::extract_text_around_line_asymmetric(
                             &text, line_no, before, after,
                         );
                         if !ctx.trim().is_empty() {
@@ -3167,7 +3177,7 @@ Flow: search({source:"jozen"}) -> fetch with lineno
             let mut path: PathBuf = if let Some(id) = args.get("id").and_then(|v| v.as_str()) {
                 // まず直接パス解決を試みる（インデックス不要、高速）
                 if let Some(direct_path) =
-                    daizo_core::path_resolver::resolve_tipitaka_path_direct(id)
+                    buddha_core::path_resolver::resolve_tipitaka_path_direct(id)
                 {
                     matched_id = Path::new(&direct_path)
                         .file_stem()
@@ -3277,7 +3287,7 @@ Flow: search({source:"jozen"}) -> fetch with lineno
                             .and_then(|v| v.as_u64())
                             .unwrap_or(100),
                     ) as usize;
-                    let context_text = daizo_core::extract_xml_around_line_asymmetric(
+                    let context_text = buddha_core::extract_xml_around_line_asymmetric(
                         &xml,
                         line_num as usize,
                         context_before,
@@ -3378,12 +3388,14 @@ Flow: search({source:"jozen"}) -> fetch with lineno
                 .get("highlightPrefix")
                 .and_then(|v| v.as_str())
                 .map(|s| s.to_string())
+                .or_else(|| std::env::var("BUDDHA_HL_PREFIX").ok())
                 .or_else(|| std::env::var("DAIZO_HL_PREFIX").ok())
                 .unwrap_or_else(|| ">>> ".to_string());
             let hsuf = args
                 .get("highlightSuffix")
                 .and_then(|v| v.as_str())
                 .map(|s| s.to_string())
+                .or_else(|| std::env::var("BUDDHA_HL_SUFFIX").ok())
                 .or_else(|| std::env::var("DAIZO_HL_SUFFIX").ok())
                 .unwrap_or_else(|| " <<<".to_string());
             let mut highlight_positions: Vec<serde_json::Value> = Vec::new();
@@ -3527,7 +3539,8 @@ Flow: search({source:"jozen"}) -> fetch with lineno
                     }
                 }
 
-                let hint_top = std::env::var("DAIZO_HINT_TOP")
+                let hint_top = std::env::var("BUDDHA_HINT_TOP")
+                    .or_else(|_| std::env::var("DAIZO_HINT_TOP"))
                     .ok()
                     .and_then(|s| s.parse::<usize>().ok())
                     .unwrap_or(5);
@@ -3965,7 +3978,8 @@ Flow: search({source:"jozen"}) -> fetch with lineno
             };
 
             let parsed = jozen_parse_search_html(&html, &q, max_results, max_snippet_chars);
-            let hint_top = std::env::var("DAIZO_HINT_TOP")
+            let hint_top = std::env::var("BUDDHA_HINT_TOP")
+                .or_else(|_| std::env::var("DAIZO_HINT_TOP"))
                 .ok()
                 .and_then(|s| s.parse::<usize>().ok())
                 .unwrap_or(1);
@@ -4120,7 +4134,8 @@ Flow: search({source:"jozen"}) -> fetch with lineno
                 summary.push_str("NOTE: Results may be truncated by maxResults. Increase maxResults to see more.\n");
             }
             // Lightweight next-call hints for AI clients (low token cost)
-            let hint_top = std::env::var("DAIZO_HINT_TOP")
+            let hint_top = std::env::var("BUDDHA_HINT_TOP")
+                .or_else(|_| std::env::var("DAIZO_HINT_TOP"))
                 .ok()
                 .and_then(|s| s.parse::<usize>().ok())
                 .unwrap_or(1);
@@ -4212,7 +4227,11 @@ Flow: search({source:"jozen"}) -> fetch with lineno
                 .get("autoFetch")
                 .and_then(|v| v.as_bool())
                 .unwrap_or(false);
-            let force_no_auto = std::env::var("DAIZO_FORCE_NO_AUTO").ok().as_deref() == Some("1");
+            let force_no_auto = std::env::var("BUDDHA_FORCE_NO_AUTO")
+                .or_else(|_| std::env::var("DAIZO_FORCE_NO_AUTO"))
+                .ok()
+                .as_deref()
+                == Some("1");
             let auto_fetch_files = args
                 .get("autoFetchFiles")
                 .and_then(|v| v.as_u64())
@@ -4255,24 +4274,28 @@ Flow: search({source:"jozen"}) -> fetch with lineno
                 .get("highlightPrefix")
                 .and_then(|v| v.as_str())
                 .map(|s| s.to_string())
+                .or_else(|| std::env::var("BUDDHA_HL_PREFIX").ok())
                 .or_else(|| std::env::var("DAIZO_HL_PREFIX").ok())
                 .unwrap_or_else(|| ">>> ".to_string());
             let hl_suf = args
                 .get("highlightSuffix")
                 .and_then(|v| v.as_str())
                 .map(|s| s.to_string())
+                .or_else(|| std::env::var("BUDDHA_HL_SUFFIX").ok())
                 .or_else(|| std::env::var("DAIZO_HL_SUFFIX").ok())
                 .unwrap_or_else(|| " <<<".to_string());
             let snip_pre = args
                 .get("snippetPrefix")
                 .and_then(|v| v.as_str())
                 .map(|s| s.to_string())
+                .or_else(|| std::env::var("BUDDHA_SNIPPET_PREFIX").ok())
                 .or_else(|| std::env::var("DAIZO_SNIPPET_PREFIX").ok())
                 .unwrap_or_else(|| ">>> ".to_string());
             let snip_suf = args
                 .get("snippetSuffix")
                 .and_then(|v| v.as_str())
                 .map(|s| s.to_string())
+                .or_else(|| std::env::var("BUDDHA_SNIPPET_SUFFIX").ok())
                 .or_else(|| std::env::var("DAIZO_SNIPPET_SUFFIX").ok())
                 .unwrap_or_else(String::new);
             let full = args.get("full").and_then(|v| v.as_bool()).unwrap_or(false);
@@ -4376,7 +4399,7 @@ Flow: search({source:"jozen"}) -> fetch with lineno
                         }
                         for m in r.matches.iter().take(per_file_limit) {
                             if let Some(ln) = m.line_number {
-                                let mut ctx = daizo_core::extract_xml_around_line_asymmetric(
+                                let mut ctx = buddha_core::extract_xml_around_line_asymmetric(
                                     &xml,
                                     ln,
                                     context_before,
@@ -4538,7 +4561,7 @@ Flow: search({source:"jozen"}) -> fetch with lineno
             let mut path: PathBuf = PathBuf::new();
             if let Some(id_str) = args.get("id").and_then(|v| v.as_str()) {
                 // 直接パス解決を最初に試行（インデックスロード不要で最速）
-                if let Some(p) = daizo_core::path_resolver::resolve_gretil_path_direct(id_str) {
+                if let Some(p) = buddha_core::path_resolver::resolve_gretil_path_direct(id_str) {
                     path = p.clone();
                     matched_id = Some(id_str.to_string());
                     // タイトルはキャッシュがあれば取得（なくても問題なし）
@@ -4550,7 +4573,8 @@ Flow: search({source:"jozen"}) -> fetch with lineno
                 } else {
                     // フォールバック: インデックスベースの解決
                     let idx = load_or_build_gretil_index();
-                    if let Some(p) = daizo_core::path_resolver::resolve_gretil_by_id(&idx, id_str) {
+                    if let Some(p) = buddha_core::path_resolver::resolve_gretil_by_id(&idx, id_str)
+                    {
                         matched_id = Path::new(&p)
                             .file_stem()
                             .map(|s| s.to_string_lossy().into_owned());
@@ -4594,7 +4618,7 @@ Flow: search({source:"jozen"}) -> fetch with lineno
                             .and_then(|v| v.as_u64())
                             .unwrap_or(100),
                     ) as usize;
-                    let context_text = daizo_core::extract_xml_around_line_asymmetric(
+                    let context_text = buddha_core::extract_xml_around_line_asymmetric(
                         &xml,
                         line_num as usize,
                         before,
@@ -4763,7 +4787,8 @@ Flow: search({source:"jozen"}) -> fetch with lineno
                 summary.push('\n');
             }
             // Lightweight next-call hints (low token) for GRETIL
-            let hint_top = std::env::var("DAIZO_HINT_TOP")
+            let hint_top = std::env::var("BUDDHA_HINT_TOP")
+                .or_else(|_| std::env::var("DAIZO_HINT_TOP"))
                 .ok()
                 .and_then(|s| s.parse::<usize>().ok())
                 .unwrap_or(1);
@@ -4827,7 +4852,11 @@ Flow: search({source:"jozen"}) -> fetch with lineno
                 json!({ "searchPattern": q, "totalFiles": results.len(), "results": results });
             let summary = format!("Found {} files with matches for '{}'", results.len(), q);
             content_items.push(json!({"type":"text","text": summary}));
-            let force_no_auto = std::env::var("DAIZO_FORCE_NO_AUTO").ok().as_deref() == Some("1");
+            let force_no_auto = std::env::var("BUDDHA_FORCE_NO_AUTO")
+                .or_else(|_| std::env::var("DAIZO_FORCE_NO_AUTO"))
+                .ok()
+                .as_deref()
+                == Some("1");
             let mut auto_fetch = args
                 .get("autoFetch")
                 .and_then(|v| v.as_bool())
@@ -4852,24 +4881,28 @@ Flow: search({source:"jozen"}) -> fetch with lineno
                     .get("highlightPrefix")
                     .and_then(|v| v.as_str())
                     .map(|s| s.to_string())
+                    .or_else(|| std::env::var("BUDDHA_HL_PREFIX").ok())
                     .or_else(|| std::env::var("DAIZO_HL_PREFIX").ok())
                     .unwrap_or_else(|| ">>> ".to_string());
                 let hl_suf = args
                     .get("highlightSuffix")
                     .and_then(|v| v.as_str())
                     .map(|s| s.to_string())
+                    .or_else(|| std::env::var("BUDDHA_HL_SUFFIX").ok())
                     .or_else(|| std::env::var("DAIZO_HL_SUFFIX").ok())
                     .unwrap_or_else(|| " <<<".to_string());
                 let sn_pre = args
                     .get("snippetPrefix")
                     .and_then(|v| v.as_str())
                     .map(|s| s.to_string())
+                    .or_else(|| std::env::var("BUDDHA_SNIPPET_PREFIX").ok())
                     .or_else(|| std::env::var("DAIZO_SNIPPET_PREFIX").ok())
                     .unwrap_or_else(|| ">>> ".to_string());
                 let sn_suf = args
                     .get("snippetSuffix")
                     .and_then(|v| v.as_str())
                     .map(|s| s.to_string())
+                    .or_else(|| std::env::var("BUDDHA_SNIPPET_SUFFIX").ok())
                     .or_else(|| std::env::var("DAIZO_SNIPPET_SUFFIX").ok())
                     .unwrap_or_else(|| "".to_string());
                 let mut file_highlights_all: Vec<Vec<serde_json::Value>> = Vec::new();
@@ -4890,7 +4923,7 @@ Flow: search({source:"jozen"}) -> fetch with lineno
                         let mut file_highlights: Vec<serde_json::Value> = Vec::new();
                         for m in r.matches.iter().take(per_file_limit) {
                             if let Some(ln) = m.line_number {
-                                let mut ctx = daizo_core::extract_xml_around_line_asymmetric(
+                                let mut ctx = buddha_core::extract_xml_around_line_asymmetric(
                                     &xml,
                                     ln,
                                     context_before,
@@ -5114,7 +5147,7 @@ Flow: search({source:"jozen"}) -> fetch with lineno
                             .and_then(|v| v.as_u64())
                             .unwrap_or(100),
                     ) as usize;
-                    let context_text = daizo_core::extract_xml_around_line_asymmetric(
+                    let context_text = buddha_core::extract_xml_around_line_asymmetric(
                         &xml,
                         line_num as usize,
                         before,
@@ -5180,7 +5213,7 @@ Flow: search({source:"jozen"}) -> fetch with lineno
                     }
                 } else if !hpat.is_empty() {
                     let (decorated, count, positions) =
-                        daizo_core::text_utils::highlight_text(&sliced, hpat, false, hpre, hsuf);
+                        buddha_core::text_utils::highlight_text(&sliced, hpat, false, hpre, hsuf);
                     sliced = decorated;
                     highlight_count = count;
                     highlight_positions = positions
@@ -5269,7 +5302,8 @@ Flow: search({source:"jozen"}) -> fetch with lineno
             }
 
             // lightweight next-call hints
-            let hint_top = std::env::var("DAIZO_MCP_SUGGEST_TOP")
+            let hint_top = std::env::var("BUDDHA_MCP_SUGGEST_TOP")
+                .or_else(|_| std::env::var("DAIZO_MCP_SUGGEST_TOP"))
                 .ok()
                 .and_then(|s| s.parse::<usize>().ok())
                 .unwrap_or(1);
@@ -5334,7 +5368,11 @@ Flow: search({source:"jozen"}) -> fetch with lineno
                 json!({ "searchPattern": q, "totalFiles": results.len(), "results": results });
             let summary = format!("Found {} files with matches for '{}'", results.len(), q);
             content_items.push(json!({"type":"text","text": summary}));
-            let force_no_auto = std::env::var("DAIZO_FORCE_NO_AUTO").ok().as_deref() == Some("1");
+            let force_no_auto = std::env::var("BUDDHA_FORCE_NO_AUTO")
+                .or_else(|_| std::env::var("DAIZO_FORCE_NO_AUTO"))
+                .ok()
+                .as_deref()
+                == Some("1");
             let mut auto_fetch = args
                 .get("autoFetch")
                 .and_then(|v| v.as_bool())
@@ -5359,24 +5397,28 @@ Flow: search({source:"jozen"}) -> fetch with lineno
                     .get("highlightPrefix")
                     .and_then(|v| v.as_str())
                     .map(|s| s.to_string())
+                    .or_else(|| std::env::var("BUDDHA_HL_PREFIX").ok())
                     .or_else(|| std::env::var("DAIZO_HL_PREFIX").ok())
                     .unwrap_or_else(|| ">>> ".to_string());
                 let hl_suf = args
                     .get("highlightSuffix")
                     .and_then(|v| v.as_str())
                     .map(|s| s.to_string())
+                    .or_else(|| std::env::var("BUDDHA_HL_SUFFIX").ok())
                     .or_else(|| std::env::var("DAIZO_HL_SUFFIX").ok())
                     .unwrap_or_else(|| " <<<".to_string());
                 let sn_pre = args
                     .get("snippetPrefix")
                     .and_then(|v| v.as_str())
                     .map(|s| s.to_string())
+                    .or_else(|| std::env::var("BUDDHA_SNIPPET_PREFIX").ok())
                     .or_else(|| std::env::var("DAIZO_SNIPPET_PREFIX").ok())
                     .unwrap_or_else(|| ">>> ".to_string());
                 let sn_suf = args
                     .get("snippetSuffix")
                     .and_then(|v| v.as_str())
                     .map(|s| s.to_string())
+                    .or_else(|| std::env::var("BUDDHA_SNIPPET_SUFFIX").ok())
                     .or_else(|| std::env::var("DAIZO_SNIPPET_SUFFIX").ok())
                     .unwrap_or_else(|| "".to_string());
                 for r in results.iter().take(tf) {
@@ -5396,7 +5438,7 @@ Flow: search({source:"jozen"}) -> fetch with lineno
                         let mut file_highlights: Vec<serde_json::Value> = Vec::new();
                         for m in r.matches.iter().take(per_file_limit) {
                             if let Some(ln) = m.line_number {
-                                let mut ctx = daizo_core::extract_xml_around_line_asymmetric(
+                                let mut ctx = buddha_core::extract_xml_around_line_asymmetric(
                                     &xml,
                                     ln,
                                     context_before,
@@ -5626,7 +5668,7 @@ Flow: search({source:"jozen"}) -> fetch with lineno
                             .and_then(|v| v.as_u64())
                             .unwrap_or(100),
                     ) as usize;
-                    let context_text = daizo_core::extract_xml_around_line_asymmetric(
+                    let context_text = buddha_core::extract_xml_around_line_asymmetric(
                         &xml,
                         line_num as usize,
                         before,
@@ -5668,7 +5710,7 @@ Flow: search({source:"jozen"}) -> fetch with lineno
                     .and_then(|v| v.as_str())
                     .unwrap_or(" <<<");
                 let (decorated, count, positions) =
-                    daizo_core::text_utils::highlight_text(&sliced, hpat, use_re, hpre, hsuf);
+                    buddha_core::text_utils::highlight_text(&sliced, hpat, use_re, hpre, hsuf);
                 sliced = decorated;
                 highlight_count = count;
                 highlight_positions = positions
@@ -5821,7 +5863,11 @@ Flow: search({source:"jozen"}) -> fetch with lineno
             let summary = format!("Found {} files with matches for '{}'", results.len(), q);
             content_items.push(json!({"type":"text","text": summary}));
 
-            let force_no_auto = std::env::var("DAIZO_FORCE_NO_AUTO").ok().as_deref() == Some("1");
+            let force_no_auto = std::env::var("BUDDHA_FORCE_NO_AUTO")
+                .or_else(|_| std::env::var("DAIZO_FORCE_NO_AUTO"))
+                .ok()
+                .as_deref()
+                == Some("1");
             let mut auto_fetch = args
                 .get("autoFetch")
                 .and_then(|v| v.as_bool())
@@ -5863,7 +5909,7 @@ Flow: search({source:"jozen"}) -> fetch with lineno
                         let mut combined = String::new();
                         for m in r.matches.iter().take(per_file_limit) {
                             if let Some(ln) = m.line_number {
-                                let ctx = daizo_core::extract_xml_around_line_asymmetric(
+                                let ctx = buddha_core::extract_xml_around_line_asymmetric(
                                     &xml,
                                     ln,
                                     context_before,
@@ -5974,7 +6020,8 @@ Flow: search({source:"jozen"}) -> fetch with lineno
                 summary.push('\n');
             }
             // Lightweight next-call hints for Tipitaka (no pipeline tool)
-            let hint_top = std::env::var("DAIZO_HINT_TOP")
+            let hint_top = std::env::var("BUDDHA_HINT_TOP")
+                .or_else(|_| std::env::var("DAIZO_HINT_TOP"))
                 .ok()
                 .and_then(|s| s.parse::<usize>().ok())
                 .unwrap_or(1);
@@ -6010,7 +6057,7 @@ Flow: search({source:"jozen"}) -> fetch with lineno
     })
 }
 
-// find_tipitaka_content_for_base and find_exact_file_by_name moved to daizo_core::path_resolver
+// find_tipitaka_content_for_base and find_exact_file_by_name moved to buddha_core::path_resolver
 
 fn cache_path_for(url: &str) -> PathBuf {
     let mut hasher = Sha1::new();
@@ -6095,7 +6142,7 @@ fn http_client() -> &'static Client {
     static CLIENT: OnceLock<Client> = OnceLock::new();
     CLIENT.get_or_init(|| {
         Client::builder()
-            .user_agent("daizo-mcp/0.1 (+https://github.com/sinryo/daizo-mcp)")
+            .user_agent("buddha-mcp/0.1 (+https://github.com/sinryo/buddha-cli)")
             .connect_timeout(Duration::from_secs(5))
             .timeout(Duration::from_secs(12))
             .build()
@@ -7287,7 +7334,7 @@ fn section_by_head_bounds(
     let mut heads: Vec<(usize, usize, String)> = Vec::new();
     for cap in re.captures_iter(xml) {
         let m = cap.get(0).unwrap();
-        let text = daizo_core::strip_tags(&cap[1]);
+        let text = buddha_core::strip_tags(&cap[1]);
         heads.push((m.start(), m.end(), text));
     }
     if heads.is_empty() {
@@ -7581,7 +7628,7 @@ mod tests {
 
 pub fn run_stdio_server() -> Result<()> {
     // Initialize optional repo policy from env (rate limits / future robots compliance)
-    daizo_core::repo::init_policy_from_env();
+    buddha_core::repo::init_policy_from_env();
     let stdin = std::io::stdin();
     let mut stdin = BufReader::new(stdin.lock());
     let mut stdout = std::io::stdout();

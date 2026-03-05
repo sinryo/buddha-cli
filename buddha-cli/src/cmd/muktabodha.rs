@@ -3,9 +3,9 @@ use crate::{
     decode_xml_bytes, load_or_build_muktabodha_index_cli, resolve_muktabodha_path_cli,
     slice_text_cli, SliceArgs,
 };
-use daizo_core::path_resolver::muktabodha_root;
-use daizo_core::text_utils::highlight_text;
-use daizo_core::{extract_text_opts, list_heads_generic, muktabodha_grep};
+use buddha_core::path_resolver::muktabodha_root;
+use buddha_core::text_utils::highlight_text;
+use buddha_core::{extract_text_opts, list_heads_generic, muktabodha_grep};
 
 pub fn muktabodha_title_search(query: &str, limit: usize, json: bool) -> anyhow::Result<()> {
     let idx = load_or_build_muktabodha_index_cli();
@@ -78,7 +78,7 @@ pub fn muktabodha_fetch(args: &crate::Commands) -> anyhow::Result<()> {
             let before = context_lines.unwrap_or(*context_before);
             let after = context_lines.unwrap_or(*context_after);
             let ctx =
-                daizo_core::extract_xml_around_line_asymmetric(&content, *line_num, before, after);
+                buddha_core::extract_xml_around_line_asymmetric(&content, *line_num, before, after);
             (
                 ctx,
                 format!("line-context-{}-{}-{}", line_num, before, after),

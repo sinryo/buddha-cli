@@ -4,6 +4,17 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [0.6.10] - 2026-03-05
+
+### Changed
+- Renamed repository from `daizo-mcp` to `buddha-cli`.
+- Renamed all internal crates: `daizo-core` → `buddha-core`, `daizo-cli` → `buddha-cli`, `daizo-mcp` → `buddha-mcp`.
+- Renamed CLI binary: `daizo-cli` → `buddha`. Legacy aliases (`daizo`, `daizo-cli`, `daizo-mcp`) maintained for backward compatibility.
+- Updated all scripts, READMEs, and documentation to reflect the new names.
+
+### Changed
+- Version bumped: `buddha-core` 0.6.10, `buddha` 0.6.10, `buddha-mcp` 0.6.10.
+
 ## [0.6.9] - 2026-02-27
 
 ### Changed

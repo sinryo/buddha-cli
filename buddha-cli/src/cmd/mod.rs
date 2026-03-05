@@ -1,6 +1,9 @@
 pub mod cbeta;
 pub mod gretil;
+pub mod jozen;
 pub mod muktabodha;
+pub mod resolve;
 pub mod sarit;
 pub mod sat;
+pub mod tibetan;
 pub mod tipitaka;

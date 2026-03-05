@@ -2,9 +2,9 @@ use crate::{
     decode_xml_bytes, load_or_build_cbeta_index_cli, resolve_cbeta_path_cli, slice_text_cli,
     SliceArgs,
 };
-use daizo_core::path_resolver::cbeta_root;
-use daizo_core::text_utils::highlight_text;
-use daizo_core::{
+use buddha_core::path_resolver::cbeta_root;
+use buddha_core::text_utils::highlight_text;
+use buddha_core::{
     cbeta_grep, extract_cbeta_juan, extract_text, extract_text_opts, list_heads_cbeta,
 };
 
@@ -72,7 +72,7 @@ pub fn cbeta_fetch(args: &crate::Commands) -> anyhow::Result<()> {
             let before = context_lines.unwrap_or(*context_before);
             let after = context_lines.unwrap_or(*context_after);
             let context_text =
-                daizo_core::extract_xml_around_line_asymmetric(&xml, *line_num, before, after);
+                buddha_core::extract_xml_around_line_asymmetric(&xml, *line_num, before, after);
             (
                 context_text,
                 format!("line-context-{}-{}-{}", line_num, before, after),
@@ -114,7 +114,7 @@ pub fn cbeta_fetch(args: &crate::Commands) -> anyhow::Result<()> {
             let mut hl_is_regex = *highlight_regex;
             let hpat = if !hl_is_regex && !looks_like_regex {
                 hl_is_regex = true;
-                daizo_core::text_utils::ws_cjk_variant_fuzzy_regex_literal(hpat0)
+                buddha_core::text_utils::ws_cjk_variant_fuzzy_regex_literal(hpat0)
             } else {
                 hpat0.to_string()
             };
@@ -202,7 +202,7 @@ pub fn cbeta_pipeline(args: &crate::Commands) -> anyhow::Result<()> {
         let q = if looks_like_regex {
             query.clone()
         } else {
-            daizo_core::text_utils::ws_cjk_variant_fuzzy_regex_literal(&query)
+            buddha_core::text_utils::ws_cjk_variant_fuzzy_regex_literal(&query)
         };
         let results = cbeta_grep(&root, &q, *max_results, *max_matches_per_file);
         let mut summary = format!(
@@ -229,7 +229,7 @@ pub fn cbeta_pipeline(args: &crate::Commands) -> anyhow::Result<()> {
             if let Some(m) = result.matches.first() {
                 if let Some(ln) = m.line_number {
                     suggestions.push(serde_json::json!({
-                    "cmd": "daizo-cli cbeta-fetch --id <ID> --line-number <LN> --context-before <B> --context-after <A>",
+                    "cmd": "buddha cbeta-fetch --id <ID> --line-number <LN> --context-before <B> --context-after <A>",
                     "id": result.file_id, "lineNumber": ln, "contextBefore": context_before, "contextAfter": context_after
                 }));
                 }
@@ -268,7 +268,7 @@ pub fn cbeta_pipeline(args: &crate::Commands) -> anyhow::Result<()> {
                     let ssuf = snippet_suffix.as_deref().unwrap_or("");
                     for m in r.matches.iter().take(per_file_limit) {
                         if let Some(ln) = m.line_number {
-                            let mut ctx = daizo_core::extract_xml_around_line_asymmetric(
+                            let mut ctx = buddha_core::extract_xml_around_line_asymmetric(
                                 &xml,
                                 ln,
                                 *context_before,
@@ -303,7 +303,7 @@ pub fn cbeta_pipeline(args: &crate::Commands) -> anyhow::Result<()> {
                                     let mut hlr = *highlight_regex;
                                     let pat = if !hlr && !looks_like {
                                         hlr = true;
-                                        daizo_core::text_utils::ws_cjk_variant_fuzzy_regex_literal(
+                                        buddha_core::text_utils::ws_cjk_variant_fuzzy_regex_literal(
                                             pat0,
                                         )
                                     } else {
@@ -380,7 +380,7 @@ pub fn cbeta_pipeline(args: &crate::Commands) -> anyhow::Result<()> {
                 let mut file_ctx_highlights: Vec<Vec<serde_json::Value>> = Vec::new();
                 for m in r.matches.iter().take(per_file_limit) {
                     if let Some(ln) = m.line_number {
-                        let ctx = daizo_core::extract_xml_around_line_asymmetric(
+                        let ctx = buddha_core::extract_xml_around_line_asymmetric(
                             &xml,
                             ln,
                             *context_before,
@@ -392,7 +392,7 @@ pub fn cbeta_pipeline(args: &crate::Commands) -> anyhow::Result<()> {
                             let mut hlr = *highlight_regex;
                             let pat = if !hlr && !looks_like {
                                 hlr = true;
-                                daizo_core::text_utils::ws_cjk_variant_fuzzy_regex_literal(pat0)
+                                buddha_core::text_utils::ws_cjk_variant_fuzzy_regex_literal(pat0)
                             } else {
                                 pat0.to_string()
                             };
@@ -457,7 +457,7 @@ pub fn cbeta_search(
     let q = if looks_like_regex {
         query.to_string()
     } else {
-        daizo_core::text_utils::ws_cjk_variant_fuzzy_regex_literal(query)
+        buddha_core::text_utils::ws_cjk_variant_fuzzy_regex_literal(query)
     };
     let results = cbeta_grep(&cbeta_root(), &q, max_results, max_matches_per_file);
     if json {

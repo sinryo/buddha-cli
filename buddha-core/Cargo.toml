@@ -1,6 +1,6 @@
 [package]
-name = "daizo-core"
-version = "0.6.9"
+name = "buddha-core"
+version = "0.6.10"
 edition = "2021"
 license = "MIT OR Apache-2.0"
 

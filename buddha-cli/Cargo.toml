@@ -1,6 +1,6 @@
 [package]
-name = "daizo-cli"
-version = "0.6.9"
+name = "buddha"
+version = "0.6.10"
 edition = "2021"
 license = "MIT OR Apache-2.0"
 
@@ -9,7 +9,7 @@ clap = { version = "4.5", features = ["derive"] }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 ignore = "0.4"
-daizo-core = { path = "../daizo-core" }
+buddha-core = { path = "../buddha-core" }
 anyhow = "1.0"
 regex = "1.11"
 unicode-normalization = "0.1"
@@ -21,4 +21,5 @@ idna = "1.0"
 sha1 = "0.10"
 encoding_rs = "0.8"
 quick-xml = "0.38.3"
-daizo-mcp = { path = "../daizo-mcp" }
+buddha-mcp = { path = "../buddha-mcp" }
+ewts = "0.1.3"

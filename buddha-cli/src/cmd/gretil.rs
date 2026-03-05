@@ -3,9 +3,9 @@ use crate::{
     decode_xml_bytes, load_or_build_gretil_index_cli, resolve_gretil_path_cli, slice_text_cli,
     SliceArgs,
 };
-use daizo_core::path_resolver::gretil_root;
-use daizo_core::text_utils::highlight_text;
-use daizo_core::{extract_text_opts, gretil_grep, list_heads_generic};
+use buddha_core::path_resolver::gretil_root;
+use buddha_core::text_utils::highlight_text;
+use buddha_core::{extract_text_opts, gretil_grep, list_heads_generic};
 
 pub fn gretil_title_search(query: &str, limit: usize, json: bool) -> anyhow::Result<()> {
     let idx = load_or_build_gretil_index_cli();
@@ -70,7 +70,7 @@ pub fn gretil_fetch(args: &crate::Commands) -> anyhow::Result<()> {
             let before = context_lines.unwrap_or(*context_before);
             let after = context_lines.unwrap_or(*context_after);
             let context_text =
-                daizo_core::extract_xml_around_line_asymmetric(&xml, *line_num, before, after);
+                buddha_core::extract_xml_around_line_asymmetric(&xml, *line_num, before, after);
             (
                 context_text,
                 format!("line-context-{}-{}-{}", line_num, before, after),
@@ -215,21 +215,25 @@ pub fn gretil_pipeline(args: &crate::Commands) -> anyhow::Result<()> {
                     let hl_pre = highlight_prefix
                         .as_deref()
                         .map(|s| s.to_string())
+                        .or_else(|| std::env::var("BUDDHA_HL_PREFIX").ok())
                         .or_else(|| std::env::var("DAIZO_HL_PREFIX").ok())
                         .unwrap_or_else(|| ">>> ".to_string());
                     let hl_suf = highlight_suffix
                         .as_deref()
                         .map(|s| s.to_string())
+                        .or_else(|| std::env::var("BUDDHA_HL_SUFFIX").ok())
                         .or_else(|| std::env::var("DAIZO_HL_SUFFIX").ok())
                         .unwrap_or_else(|| " <<<".to_string());
                     let sn_pre = snippet_prefix
                         .as_deref()
                         .map(|s| s.to_string())
+                        .or_else(|| std::env::var("BUDDHA_SNIPPET_PREFIX").ok())
                         .or_else(|| std::env::var("DAIZO_SNIPPET_PREFIX").ok())
                         .unwrap_or_else(|| ">>> ".to_string());
                     let sn_suf = snippet_suffix
                         .as_deref()
                         .map(|s| s.to_string())
+                        .or_else(|| std::env::var("BUDDHA_SNIPPET_SUFFIX").ok())
                         .or_else(|| std::env::var("DAIZO_SNIPPET_SUFFIX").ok())
                         .unwrap_or_else(|| "".to_string());
                     let mut file_highlights: Vec<Vec<serde_json::Value>> = Vec::new();
@@ -237,7 +241,7 @@ pub fn gretil_pipeline(args: &crate::Commands) -> anyhow::Result<()> {
                     let mut count = 0usize;
                     for m in r.matches.iter().take(per_file_limit) {
                         if let Some(ln) = m.line_number {
-                            let mut ctx = daizo_core::extract_xml_around_line_asymmetric(
+                            let mut ctx = buddha_core::extract_xml_around_line_asymmetric(
                                 &xml,
                                 ln,
                                 *context_before,

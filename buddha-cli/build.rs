@@ -15,7 +15,7 @@ fn main() {
     // Mirror package version into a build-script driven env var so version bumps
     // reliably propagate even if cargo doesn't rebuild on manifest-only changes.
     if let Ok(ver) = std::env::var("CARGO_PKG_VERSION") {
-        println!("cargo:rustc-env=DAIZO_VERSION={}", ver);
+        println!("cargo:rustc-env=BUDDHA_VERSION={}", ver);
     }
 
     // Git コミットハッシュを取得（利用可能な場合）

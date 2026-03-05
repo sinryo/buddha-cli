@@ -1,4 +1,4 @@
-# daizo-mcp
+# buddha-cli
 
 面向 CBETA（中文）、巴利三藏（羅馬化）、GRETIL（梵文 TEI）、SARIT（TEI P5）、SAT（線上）、浄土宗全書（線上），以及透過線上語料進行的藏文全文搜尋（BUDA/BDRC、Adarshah）的高速佛典搜尋與擷取。包含 MCP 伺服器與 CLI，採用 Rust 實作，專注於速度與穩定性。
 
@@ -23,14 +23,14 @@
 快速安裝：
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/sinryo/daizo-mcp/main/scripts/bootstrap.sh | bash -s -- --yes --write-path
+curl -fsSL https://raw.githubusercontent.com/sinryo/buddha-cli/main/scripts/bootstrap.sh | bash -s -- --yes --write-path
 ```
 
 手動安裝：
 
 ```bash
 cargo build --release
-scripts/install.sh --prefix "$HOME/.daizo" --write-path
+scripts/install.sh --prefix "$HOME/.buddha" --write-path
 ```
 
 ## MCP 客戶端整合
@@ -38,18 +38,18 @@ scripts/install.sh --prefix "$HOME/.daizo" --write-path
 Claude Code CLI：
 
 ```bash
-claude mcp add daizo "$HOME/.daizo/bin/daizo-cli" mcp
+claude mcp add buddha "$HOME/.buddha/bin/buddha" mcp
 ```
 
 Codex CLI（`~/.codex/config.toml`）：
 
 ```toml
-[mcp_servers.daizo]
-command = "/Users/you/.daizo/bin/daizo-cli"
+[mcp_servers.buddha]
+command = "/Users/you/.buddha/bin/buddha"
 args = ["mcp"]
 ```
 
-相容性：`$HOME/.daizo/bin/daizo-mcp` 仍可作為相容 alias 使用。
+相容性：`$HOME/.buddha/bin/buddha-mcp` 仍可作為相容 alias 使用。舊版 alias `daizo`, `daizo-mcp`, `daizo-cli` 亦保持向下相容。
 
 ## CLI 範例
 
@@ -59,79 +59,79 @@ args = ["mcp"]
 
 ```bash
 # CBETA：大正藏號（T + 4 位數字）
-daizo-cli cbeta-fetch --id T0001      # 長阿含經
-daizo-cli cbeta-fetch --id T0262      # 妙法蓮華經
-daizo-cli cbeta-fetch --id T0235      # 金剛般若波羅蜜經
+buddha cbeta-fetch --id T0001      # 長阿含經
+buddha cbeta-fetch --id T0262      # 妙法蓮華經
+buddha cbeta-fetch --id T0235      # 金剛般若波羅蜜經
 
 # Tipitaka：尼柯耶代碼（DN, MN, SN, AN, KN）
-daizo-cli tipitaka-fetch --id DN1     # 梵網經
-daizo-cli tipitaka-fetch --id MN1     # 根本法門經
-daizo-cli tipitaka-fetch --id SN1     # 相應部第一
+buddha tipitaka-fetch --id DN1     # 梵網經
+buddha tipitaka-fetch --id MN1     # 根本法門經
+buddha tipitaka-fetch --id SN1     # 相應部第一
 
 # GRETIL：梵文文本名稱
-daizo-cli gretil-fetch --id saddharmapuNDarIka         # 法華經（梵文）
-daizo-cli gretil-fetch --id vajracchedikA              # 金剛般若經（梵文）
-daizo-cli gretil-fetch --id prajJApAramitAhRdayasUtra  # 般若心經（梵文）
+buddha gretil-fetch --id saddharmapuNDarIka         # 法華經（梵文）
+buddha gretil-fetch --id vajracchedikA              # 金剛般若經（梵文）
+buddha gretil-fetch --id prajJApAramitAhRdayasUtra  # 般若心經（梵文）
 
 # SARIT：TEI P5 語料（檔名 stem）
-daizo-cli sarit-fetch --id asvaghosa-buddhacarita
+buddha sarit-fetch --id asvaghosa-buddhacarita
 
-# MUKTABODHA：梵文資料庫（檔名 stem；本機檔案置於 $DAIZO_DIR/MUKTABODHA）
-daizo-cli muktabodha-fetch --id "<file-stem>"
+# MUKTABODHA：梵文資料庫（檔名 stem；本機檔案置於 $BUDDHA_DIR/MUKTABODHA）
+buddha muktabodha-fetch --id "<file-stem>"
 ```
 
 ### 搜尋
 
 ```bash
 # 標題搜尋
-daizo-cli cbeta-title-search --query "楞伽經" --json
-daizo-cli tipitaka-title-search --query "dn 1" --json
-daizo-cli sarit-title-search --query "buddhacarita" --json
-daizo-cli muktabodha-title-search --query "yoga" --json
+buddha cbeta-title-search --query "楞伽經" --json
+buddha tipitaka-title-search --query "dn 1" --json
+buddha sarit-title-search --query "buddhacarita" --json
+buddha muktabodha-title-search --query "yoga" --json
 
 # 內容搜尋（附行號）
-daizo-cli cbeta-search --query "阿彌陀" --max-results 10
-daizo-cli tipitaka-search --query "nibbana|vipassana" --max-results 15
-daizo-cli gretil-search --query "yoga" --max-results 10
-daizo-cli sarit-search --query "yoga" --max-results 10
-daizo-cli muktabodha-search --query "yoga" --max-results 10
+buddha cbeta-search --query "阿彌陀" --max-results 10
+buddha tipitaka-search --query "nibbana|vipassana" --max-results 15
+buddha gretil-search --query "yoga" --max-results 10
+buddha sarit-search --query "yoga" --max-results 10
+buddha muktabodha-search --query "yoga" --max-results 10
 ```
 
 ### 附上下文取得
 
 ```bash
 # 依 ID 取得（附選項）
-daizo-cli cbeta-fetch --id T0858 --part 1 --max-chars 4000 --json
-daizo-cli tipitaka-fetch --id s0101m.mul --max-chars 2000 --json
-daizo-cli gretil-fetch --id buddhacarita --max-chars 4000 --json
-daizo-cli sarit-fetch --id asvaghosa-buddhacarita --max-chars 4000 --json
-daizo-cli muktabodha-fetch --id "<file-stem>" --max-chars 4000 --json
+buddha cbeta-fetch --id T0858 --part 1 --max-chars 4000 --json
+buddha tipitaka-fetch --id s0101m.mul --max-chars 2000 --json
+buddha gretil-fetch --id buddhacarita --max-chars 4000 --json
+buddha sarit-fetch --id asvaghosa-buddhacarita --max-chars 4000 --json
+buddha muktabodha-fetch --id "<file-stem>" --max-chars 4000 --json
 
 # 行號上下文（搜尋後）
-daizo-cli cbeta-fetch --id T0858 --line-number 342 --context-before 10 --context-after 200
-daizo-cli tipitaka-fetch --id s0305m.mul --line-number 158 --context-before 5 --context-after 100
+buddha cbeta-fetch --id T0858 --line-number 342 --context-before 10 --context-after 200
+buddha tipitaka-fetch --id s0305m.mul --line-number 158 --context-before 5 --context-after 100
 ```
 
 ### 管理
 
 ```bash
-daizo-cli init                      # 首次設定（下載資料、建立索引）
-daizo-cli doctor --verbose          # 檢查安裝與資料
-daizo-cli index-rebuild --source all
-daizo-cli uninstall --purge         # 移除二進位與資料/快取
-daizo-cli update --yes              # 重新安裝 CLI
+buddha init                      # 首次設定（下載資料、建立索引）
+buddha doctor --verbose          # 檢查安裝與資料
+buddha index-rebuild --source all
+buddha uninstall --purge         # 移除二進位與資料/快取
+buddha update --yes              # 重新安裝 CLI
 ```
 
 ## MCP 工具
 
 核心：
-- `daizo_version`（伺服器版本/建置資訊）
-- `daizo_usage`（AI 用戶端使用指南；低代幣流程）
-- `daizo_system_prompt`（AI 用 system prompt 範本（單頁）；包含低代幣預設值）
-- `daizo_profile`（工具呼叫的簡易效能量測）
+- `buddha_version`（伺服器版本/建置資訊）
+- `buddha_usage`（AI 用戶端使用指南；低代幣流程）
+- `buddha_system_prompt`（AI 用 system prompt 範本（單頁）；包含低代幣預設值）
+- `buddha_profile`（工具呼叫的簡易效能量測）
 
 解決：
-- `daizo_resolve`（將標題/別名/ID 解析為跨語料庫的候選 ID 與建議下一步 fetch 呼叫；範圍：cbeta/tipitaka/gretil/sarit/muktabodha）
+- `buddha_resolve`（將標題/別名/ID 解析為跨語料庫的候選 ID 與建議下一步 fetch 呼叫；範圍：cbeta/tipitaka/gretil/sarit/muktabodha）
 
 搜尋：
 - `cbeta_title_search`, `cbeta_search`
@@ -192,14 +192,14 @@ daizo-cli update --yes              # 重新安裝 CLI
 
 ### 標準流程（ID 未知時）
 
-1. 先用 `daizo_resolve` 做 crosswalk（橫向解析），挑出語料庫與候選 ID
+1. 先用 `buddha_resolve` 做 crosswalk（橫向解析），挑出語料庫與候選 ID
 2. 直接呼叫 `*_fetch({id})`（必要時加上 `lineNumber`/`contextBefore`/`contextAfter` 等）
 3. 若要精確片段：`*_search` → 讀取 `_meta.fetchSuggestions` → `*_fetch(lineNumber)`
 4. 僅在需要多檔案摘要時使用 `*_pipeline`，且預設 `autoFetch=false`
 
 工具描述中已標示此指引；`initialize` 亦提供 `prompts.low-token-guide` 以提示用法。
 
-提示：以 `DAIZO_HINT_TOP` 控制建議數量（預設 1）。
+提示：以 `BUDDHA_HINT_TOP` 控制建議數量（預設 1）。
 
 ## 資料來源
 
@@ -207,7 +207,7 @@ daizo-cli update --yes              # 重新安裝 CLI
 - Tipitaka（羅馬化）: https://github.com/VipassanaTech/tipitaka-xml
 - GRETIL（梵文 TEI）: https://gretil.sub.uni-goettingen.de/
 - SARIT（TEI P5）: https://github.com/sarit/SARIT-corpus
-- MUKTABODHA（梵文；本機檔案）: 將文本放在 `$DAIZO_DIR/MUKTABODHA/`
+- MUKTABODHA（梵文；本機檔案）: 將文本放在 `$BUDDHA_DIR/MUKTABODHA/`
 - SAT（線上）: wrap7 / detail 端點
 - 浄土宗全書（線上）: jodoshuzensho.jp
 - BUDA/BDRC（藏文線上）: library.bdrc.io / autocomplete.bdrc.io
@@ -215,21 +215,21 @@ daizo-cli update --yes              # 重新安裝 CLI
 
 ## 目錄與環境變數
 
-- `DAIZO_DIR`（預設：`~/.daizo`）
+- `BUDDHA_DIR`（預設：`~/.buddha`、舊版後援：`DAIZO_DIR` / `~/.daizo`）
   - 資料：`xml-p5/`, `tipitaka-xml/romn/`, `GRETIL/`, `SARIT-corpus/`, `MUKTABODHA/`
   - 快取：`cache/`
   - 二進位：`bin/`
-- `DAIZO_DEBUG=1` 啟用簡易 MCP 除錯日誌
-- 高亮設定：`DAIZO_HL_PREFIX`, `DAIZO_HL_SUFFIX`, `DAIZO_SNIPPET_PREFIX`, `DAIZO_SNIPPET_SUFFIX`
+- `BUDDHA_DEBUG=1` 啟用簡易 MCP 除錯日誌（舊版：`DAIZO_DEBUG`）
+- 高亮設定：`BUDDHA_HL_PREFIX`, `BUDDHA_HL_SUFFIX`, `BUDDHA_SNIPPET_PREFIX`, `BUDDHA_SNIPPET_SUFFIX`
 - 取得策略（頻率/robots）：
-  - `DAIZO_REPO_MIN_DELAY_MS`, `DAIZO_REPO_USER_AGENT`, `DAIZO_REPO_RESPECT_ROBOTS`
+  - `BUDDHA_REPO_MIN_DELAY_MS`, `BUDDHA_REPO_USER_AGENT`, `BUDDHA_REPO_RESPECT_ROBOTS`
 
 ## 腳本
 
 | 腳本 | 用途 |
 |------|------|
-| `scripts/bootstrap.sh` | 一鍵安裝：檢查依賴 → clone 倉庫 → 執行 install.sh → 自動註冊 MCP（`daizo-cli mcp`） |
-| `scripts/install.sh` | 主安裝程式：建置 `daizo-cli` → 安裝二進位（含 `daizo-mcp` 相容 alias）→ 下載 GRETIL → 重建索引 |
+| `scripts/bootstrap.sh` | 一鍵安裝：檢查依賴 → clone 倉庫 → 執行 install.sh → 自動註冊 MCP（`buddha mcp`） |
+| `scripts/install.sh` | 主安裝程式：建置 `buddha` → 安裝二進位（含 `buddha-mcp` 相容 alias）→ 下載 GRETIL → 重建索引 |
 | `scripts/link-binaries.sh` | 開發用：建立指向 release 二進位的符號連結 |
 | `scripts/release.sh` | 釋出用：版本升級 → 建立標籤 → GitHub Release |
 
@@ -237,13 +237,13 @@ daizo-cli update --yes              # 重新安裝 CLI
 
 ```bash
 # 全自動（bump → commit → tag → push → GitHub 釋出，自動筆記）
-scripts/release.sh 0.6.9 --all
+scripts/release.sh 0.6.10 --all
 
 # 使用 CHANGELOG 筆記
-scripts/release.sh 0.6.9 --push --release
+scripts/release.sh 0.6.10 --push --release
 
 # 模擬執行
-scripts/release.sh 0.6.9 --all --dry-run
+scripts/release.sh 0.6.10 --all --dry-run
 ```
 
 ## 授權
@@ -252,4 +252,4 @@ MIT 或 Apache-2.0 © 2025 Shinryo Taniguchi
 
 ## 貢獻
 
-歡迎 Issue 與 PR。提交 bug 報告時請附上 `daizo-cli doctor --verbose` 輸出。
+歡迎 Issue 與 PR。提交 bug 報告時請附上 `buddha doctor --verbose` 輸出。

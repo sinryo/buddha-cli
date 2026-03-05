@@ -1,6 +1,6 @@
 use crate::{slice_text_cli, SliceArgs};
-use daizo_core::path_resolver::cache_dir;
-use daizo_core::text_utils::{
+use buddha_core::path_resolver::cache_dir;
+use buddha_core::text_utils::{
     find_highlight_positions, is_subsequence, jaccard, normalized, token_jaccard,
     ws_cjk_variant_fuzzy_regex_literal,
 };

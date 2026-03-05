@@ -5,33 +5,45 @@ use regex::Regex;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
-pub fn daizo_home() -> PathBuf {
+pub fn buddha_home() -> PathBuf {
+    // BUDDHA_DIR takes priority
+    if let Ok(p) = std::env::var("BUDDHA_DIR") {
+        return PathBuf::from(p);
+    }
+    // Fallback: legacy DAIZO_DIR
     if let Ok(p) = std::env::var("DAIZO_DIR") {
         return PathBuf::from(p);
     }
-    std::env::var_os("HOME")
+    let home = std::env::var_os("HOME")
         .map(PathBuf::from)
-        .unwrap_or_else(|| PathBuf::from("."))
-        .join(".daizo")
+        .unwrap_or_else(|| PathBuf::from("."));
+    // Prefer ~/.buddha, fallback to ~/.daizo if it exists
+    let new_dir = home.join(".buddha");
+    let old_dir = home.join(".daizo");
+    if new_dir.exists() || !old_dir.exists() {
+        new_dir
+    } else {
+        old_dir
+    }
 }
 
 pub fn cbeta_root() -> PathBuf {
-    daizo_home().join("xml-p5")
+    buddha_home().join("xml-p5")
 }
 pub fn tipitaka_root() -> PathBuf {
-    daizo_home().join("tipitaka-xml").join("romn")
+    buddha_home().join("tipitaka-xml").join("romn")
 }
 pub fn gretil_root() -> PathBuf {
-    daizo_home().join("GRETIL").join("1_sanskr").join("tei")
+    buddha_home().join("GRETIL").join("1_sanskr").join("tei")
 }
 pub fn sarit_root() -> PathBuf {
-    daizo_home().join("SARIT-corpus")
+    buddha_home().join("SARIT-corpus")
 }
 pub fn muktabodha_root() -> PathBuf {
-    daizo_home().join("MUKTABODHA")
+    buddha_home().join("MUKTABODHA")
 }
 pub fn cache_dir() -> PathBuf {
-    daizo_home().join("cache")
+    buddha_home().join("cache")
 }
 
 pub fn find_in_dir(root: &Path, stem_hint: &str) -> Option<PathBuf> {

@@ -3,9 +3,9 @@ use crate::{
     decode_xml_bytes, load_or_build_tipitaka_index_cli, resolve_tipitaka_path, slice_text_cli,
     SliceArgs,
 };
-use daizo_core::path_resolver::tipitaka_root;
-use daizo_core::text_utils::highlight_text;
-use daizo_core::{extract_text, list_heads_generic, tipitaka_grep};
+use buddha_core::path_resolver::tipitaka_root;
+use buddha_core::text_utils::highlight_text;
+use buddha_core::{extract_text, list_heads_generic, tipitaka_grep};
 use std::path::Path;
 
 pub fn tipitaka_title_search(query: &str, limit: usize, json: bool) -> anyhow::Result<()> {
@@ -74,7 +74,7 @@ pub fn tipitaka_fetch(args: &crate::Commands) -> anyhow::Result<()> {
         let mut text = if let Some(line_num) = line_number {
             let before = context_lines.unwrap_or(*context_before);
             let after = context_lines.unwrap_or(*context_after);
-            daizo_core::extract_xml_around_line_asymmetric(&xml, *line_num, before, after)
+            buddha_core::extract_xml_around_line_asymmetric(&xml, *line_num, before, after)
         } else if let Some(ref hq) = head_query {
             super::super::extract_section_by_head(&xml, None, Some(hq))
                 .unwrap_or_else(|| extract_text(&xml))

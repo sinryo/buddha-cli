@@ -28,11 +28,18 @@ link_bin() {
   fi
 }
 
-link_bin daizo-cli
+link_bin buddha
 
-if [ -x "$ROOT_DIR/daizo-cli" ]; then
-  ln -sfn "daizo-cli" "$ROOT_DIR/daizo-mcp"
-  echo "[link] daizo-mcp -> daizo-cli (compat alias)"
+if [ -x "$ROOT_DIR/buddha" ]; then
+  ln -sfn "buddha" "$ROOT_DIR/buddha-mcp"
+  echo "[link] buddha-mcp -> buddha (MCP alias)"
+  # Backward compat aliases
+  ln -sfn "buddha" "$ROOT_DIR/daizo"
+  echo "[link] daizo -> buddha (compat alias)"
+  ln -sfn "buddha" "$ROOT_DIR/daizo-mcp"
+  echo "[link] daizo-mcp -> buddha (compat alias)"
+  ln -sfn "buddha" "$ROOT_DIR/daizo-cli"
+  echo "[link] daizo-cli -> buddha (legacy compat alias)"
 fi
 
-echo "[link] done. You can now run ./daizo-cli mcp (or ./daizo-mcp)"
+echo "[link] done. You can now run ./buddha mcp (or ./buddha-mcp)"

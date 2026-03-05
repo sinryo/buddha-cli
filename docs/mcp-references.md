@@ -1,6 +1,6 @@
 # MCP 開発に必要なドキュメント索引
 
-このプロジェクト（daizo-mcp）の開発・運用で参照頻度が高いMCP関連ドキュメントを厳選してまとめました。各リンクは公式仕様・実装ガイド・クライアント統合の観点で整理しています。
+このプロジェクト（buddha-cli）の開発・運用で参照頻度が高いMCP関連ドキュメントを厳選してまとめました。各リンクは公式仕様・実装ガイド・クライアント統合の観点で整理しています。
 
 ## 公式仕様（Model Context Protocol）
 - 概要・導入: https://modelcontextprotocol.io/introduction
@@ -45,8 +45,8 @@
 - ロギング/計測: デバッグ可観測性（環境変数でのON/OFF、ログサイズ管理）
 - 互換性: `protocolVersion`やContentフォーマットの将来互換性に注意
 
-## daizo-mcp 実装との対応付け（抜粋）
-- stdio/行区切り対応フレーミング: `daizo-mcp/src/main.rs` の `read_message` / `write_message`
+## buddha-mcp 実装との対応付け（抜粋）
+- stdio/行区切り対応フレーミング: `buddha-mcp/src/main.rs` の `read_message` / `write_message`
 - initializeとcapabilities: `handle_initialize`（tools/resources/prompts/logging空集合を広告）
 - Tools定義群とディスパッチ: `tools_list` と `match method { ... }`
 - 外部サイト（SAT）アクセス: バックオフ+キャッシュ有（HTTP公開時はレート配慮）

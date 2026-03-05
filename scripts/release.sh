@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# daizo release helper
+# buddha release helper
 #
 # What it does (when bump enabled):
-# - Bumps workspace crate versions (daizo-core/daizo-cli/daizo-mcp)
-# - Updates docs/daizo_system_prompt.txt header (version/date)
+# - Bumps workspace crate versions (buddha-core/buddha-cli/buddha-mcp)
+# - Updates docs/buddha_system_prompt.txt header (version/date)
 # - Updates README release examples version strings
 # - Moves CHANGELOG [Unreleased] contents into a new version section
 # - Runs cargo fmt + cargo test (unless disabled)
@@ -53,7 +53,7 @@ usage() {
 Usage: scripts/release.sh <version>|--patch [options]
 
 Options:
-  --patch        Auto-increment patch version from daizo-mcp/Cargo.toml (e.g., 0.6.2 -> 0.6.3)
+  --patch        Auto-increment patch version from buddha-mcp/Cargo.toml (e.g., 0.6.2 -> 0.6.3)
   --push         git push origin HEAD
   --tag          create annotated tag vX.Y.Z
   --release      create GitHub release via gh (requires --tag)
@@ -111,8 +111,8 @@ if [[ "$release_flag" -eq 1 && "$tag_flag" -ne 1 ]]; then
 fi
 
 read_current_version() {
-  # Reads version from daizo-mcp/Cargo.toml
-  perl -ne 'if (/^version[ \t]*=[ \t]*"(\d+\.\d+\.\d+)"[ \t]*$/) { print "$1\n"; exit }' daizo-mcp/Cargo.toml
+  # Reads version from buddha-mcp/Cargo.toml
+  perl -ne 'if (/^version[ \t]*=[ \t]*"(\d+\.\d+\.\d+)"[ \t]*$/) { print "$1\n"; exit }' buddha-mcp/Cargo.toml
 }
 
 inc_patch() {
@@ -123,7 +123,7 @@ inc_patch() {
 ver_no_v=""
 if [[ "$patch_flag" -eq 1 ]]; then
   cur="$(read_current_version)"
-  [[ -n "$cur" ]] || die "failed to read current version from daizo-mcp/Cargo.toml"
+  [[ -n "$cur" ]] || die "failed to read current version from buddha-mcp/Cargo.toml"
   ver_no_v="$(inc_patch "$cur")" || die "failed to increment patch from: $cur"
 else
   ver_no_v="${ver#v}"
@@ -135,7 +135,7 @@ today="$(date +%F)"
 
 update_versions() {
   local v="$1"
-  local files=(daizo-core/Cargo.toml daizo-cli/Cargo.toml daizo-mcp/Cargo.toml)
+  local files=(buddha-core/Cargo.toml buddha-cli/Cargo.toml buddha-mcp/Cargo.toml)
   for f in "${files[@]}"; do
     if [[ "$dry_run" -eq 1 ]]; then
       echo "[dry-run] set $f version = \"$v\""
@@ -148,13 +148,13 @@ update_versions() {
 update_system_prompt_header() {
   local v="$1"
   local d="$2"
-  local f="docs/daizo_system_prompt.txt"
-  [[ -f "$f" ]] || die "missing $f (expected by daizo_system_prompt tool)"
+  local f="docs/buddha_system_prompt.txt"
+  [[ -f "$f" ]] || die "missing $f (expected by buddha_system_prompt tool)"
   if [[ "$dry_run" -eq 1 ]]; then
-    echo "[dry-run] update $f header -> Daizo MCP system prompt (v${v}, ${d})"
+    echo "[dry-run] update $f header -> Buddha MCP system prompt (v${v}, ${d})"
     return 0
   fi
-  perl -pi -e 'if ($.==1) { $_="Daizo MCP system prompt (v'"$v"', '"$d"')\n" }' "$f"
+  perl -pi -e 'if ($.==1) { $_="Buddha MCP system prompt (v'"$v"', '"$d"')\n" }' "$f"
 }
 
 update_readme_release_examples() {
@@ -174,8 +174,8 @@ check_readme_has_system_prompt_tool() {
   local files=(README.md README.ja.md README.zh-TW.md)
   for f in "${files[@]}"; do
     [[ -f "$f" ]] || continue
-    if ! rg -q "daizo_system_prompt" "$f"; then
-      die "$f does not mention daizo_system_prompt (please add it under MCP Tools -> Core)"
+    if ! rg -q "buddha_system_prompt" "$f"; then
+      die "$f does not mention buddha_system_prompt (please add it under MCP Tools -> Core)"
     fi
   done
 }
@@ -191,10 +191,10 @@ update_changelog_rollover() {
     return 0
   fi
 
-  DAIZO_REL_VER="$v" DAIZO_REL_DATE="$d" perl -0777 -i -pe '
-    my $v = $ENV{DAIZO_REL_VER};
-    my $d = $ENV{DAIZO_REL_DATE};
-    my $bump = "- Version bumped: `daizo-core` $v, `daizo-cli` $v, `daizo-mcp` $v.\n";
+  BUDDHA_REL_VER="$v" BUDDHA_REL_DATE="$d" perl -0777 -i -pe '
+    my $v = $ENV{BUDDHA_REL_VER};
+    my $d = $ENV{BUDDHA_REL_DATE};
+    my $bump = "- Version bumped: `buddha-core` $v, `buddha` $v, `buddha-mcp` $v.\n";
 
     my $needle = "## [Unreleased]\n";
     index($_, $needle) >= 0 or die "CHANGELOG missing ## [Unreleased]\n";
@@ -238,9 +238,9 @@ if [[ "$bump_flag" -eq 1 ]]; then
     run "cargo fmt"
   fi
   if [[ "$test_flag" -eq 1 ]]; then
-    run "cargo test -q -p daizo-mcp"
-    run "cargo test -q -p daizo-core"
-    run "cargo test -q -p daizo-cli"
+    run "cargo test -q -p buddha-mcp"
+    run "cargo test -q -p buddha-core"
+    run "cargo test -q -p buddha-cli"
   fi
 fi
 
@@ -276,10 +276,10 @@ if [[ "$release_flag" -eq 1 ]]; then
     run "gh release create \"$tag\" --title \"$ver_no_v\" --generate-notes --latest"
   else
     # Extract notes for this version from CHANGELOG.md and pass to gh.
-    notes_file="$(mktemp -t daizo-release-notes.XXXXXX)"
+    notes_file="$(mktemp -t buddha-release-notes.XXXXXX)"
     trap 'rm -f "$notes_file"' EXIT
-    DAIZO_REL_VER="$ver_no_v" perl -ne '
-      our ($v,$on)=($ENV{DAIZO_REL_VER},0);
+    BUDDHA_REL_VER="$ver_no_v" perl -ne '
+      our ($v,$on)=($ENV{BUDDHA_REL_VER},0);
       if (/^## \[$v\] - /) { $on=1; next }
       if ($on && /^## \[/) { exit }
       print if $on;

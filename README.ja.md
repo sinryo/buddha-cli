@@ -1,4 +1,4 @@
-# daizo-mcp
+# buddha-cli
 
 CBETA（漢文）、パーリ三蔵（ローマ字）、GRETIL（サンスクリット TEI）、SARIT（TEI P5）、SAT（オンライン）、浄土宗全書（オンライン）に加え、チベット大蔵経系のオンライン全文検索（BUDA/BDRC・Adarshah）にも対応した、高速な仏教テキスト検索・取得のための MCP サーバーおよび CLI です。Rust で実装し、高速・堅牢に動作します。
 
@@ -8,7 +8,7 @@ CBETA（漢文）、パーリ三蔵（ローマ字）、GRETIL（サンスクリ
 
 - **ダイレクトIDアクセス**: テキストIDが分かっていれば即座に取得（最速！）
 - CBETA / Tipitaka / GRETIL / SARIT / MUKTABODHA に対する高速な正規表現検索（行番号つき）
-- CBETA検索は新字体など“現代の表記”でもヒットするよう正規化（旧字体・簡繁などの揺れを吸収）
+- CBETA検索は新字体など"現代の表記"でもヒットするよう正規化（旧字体・簡繁などの揺れを吸収）
 - タイトル検索（CBETA / Tipitaka / GRETIL / SARIT / MUKTABODHA）
 - 行番号や文字位置での前後コンテキスト取得
 - SAT オンライン検索（スマートキャッシュ付き）
@@ -23,14 +23,14 @@ CBETA（漢文）、パーリ三蔵（ローマ字）、GRETIL（サンスクリ
 クイックインストール:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/sinryo/daizo-mcp/main/scripts/bootstrap.sh | bash -s -- --yes --write-path
+curl -fsSL https://raw.githubusercontent.com/sinryo/buddha-cli/main/scripts/bootstrap.sh | bash -s -- --yes --write-path
 ```
 
 手動セットアップ:
 
 ```bash
 cargo build --release
-scripts/install.sh --prefix "$HOME/.daizo" --write-path
+scripts/install.sh --prefix "$HOME/.buddha" --write-path
 ```
 
 ## MCP クライアント連携
@@ -38,18 +38,18 @@ scripts/install.sh --prefix "$HOME/.daizo" --write-path
 Claude Code CLI:
 
 ```bash
-claude mcp add daizo "$HOME/.daizo/bin/daizo-cli" mcp
+claude mcp add buddha "$HOME/.buddha/bin/buddha" mcp
 ```
 
 Codex CLI（`~/.codex/config.toml`）:
 
 ```toml
-[mcp_servers.daizo]
-command = "/Users/you/.daizo/bin/daizo-cli"
+[mcp_servers.buddha]
+command = "/Users/you/.buddha/bin/buddha"
 args = ["mcp"]
 ```
 
-互換性: `$HOME/.daizo/bin/daizo-mcp` も互換aliasとして当面利用できます。
+互換性: `$HOME/.buddha/bin/buddha-mcp` も互換aliasとして利用できます。レガシーalias `daizo`, `daizo-mcp`, `daizo-cli` も後方互換のため維持されています。
 
 ## CLI 例
 
@@ -59,79 +59,79 @@ args = ["mcp"]
 
 ```bash
 # CBETA: 大正番号（T + 4桁の数字）
-daizo-cli cbeta-fetch --id T0001      # 長阿含經
-daizo-cli cbeta-fetch --id T0262      # 妙法蓮華經
-daizo-cli cbeta-fetch --id T0235      # 金剛般若波羅蜜經
+buddha cbeta-fetch --id T0001      # 長阿含經
+buddha cbeta-fetch --id T0262      # 妙法蓮華經
+buddha cbeta-fetch --id T0235      # 金剛般若波羅蜜經
 
 # Tipitaka: ニカーヤコード（DN, MN, SN, AN, KN）
-daizo-cli tipitaka-fetch --id DN1     # 梵網経
-daizo-cli tipitaka-fetch --id MN1     # 根本法門経
-daizo-cli tipitaka-fetch --id SN1     # 相応部第1
+buddha tipitaka-fetch --id DN1     # 梵網経
+buddha tipitaka-fetch --id MN1     # 根本法門経
+buddha tipitaka-fetch --id SN1     # 相応部第1
 
 # GRETIL: サンスクリットテキスト名
-daizo-cli gretil-fetch --id saddharmapuNDarIka         # 法華経（梵文）
-daizo-cli gretil-fetch --id vajracchedikA              # 金剛般若経（梵文）
-daizo-cli gretil-fetch --id prajJApAramitAhRdayasUtra  # 般若心経（梵文）
+buddha gretil-fetch --id saddharmapuNDarIka         # 法華経（梵文）
+buddha gretil-fetch --id vajracchedikA              # 金剛般若経（梵文）
+buddha gretil-fetch --id prajJApAramitAhRdayasUtra  # 般若心経（梵文）
 
 # SARIT: TEI P5 コーパス（ファイルstem）
-daizo-cli sarit-fetch --id asvaghosa-buddhacarita
+buddha sarit-fetch --id asvaghosa-buddhacarita
 
-# MUKTABODHA: 梵文ライブラリ（ファイルstem。ローカルに $DAIZO_DIR/MUKTABODHA を配置）
-daizo-cli muktabodha-fetch --id "<file-stem>"
+# MUKTABODHA: 梵文ライブラリ（ファイルstem。ローカルに $BUDDHA_DIR/MUKTABODHA を配置）
+buddha muktabodha-fetch --id "<file-stem>"
 ```
 
 ### 検索
 
 ```bash
 # タイトル検索
-daizo-cli cbeta-title-search --query "楞伽經" --json
-daizo-cli tipitaka-title-search --query "dn 1" --json
-daizo-cli sarit-title-search --query "buddhacarita" --json
-daizo-cli muktabodha-title-search --query "yoga" --json
+buddha cbeta-title-search --query "楞伽經" --json
+buddha tipitaka-title-search --query "dn 1" --json
+buddha sarit-title-search --query "buddhacarita" --json
+buddha muktabodha-title-search --query "yoga" --json
 
 # 内容検索（行番号つき）
-daizo-cli cbeta-search --query "阿弥陀" --max-results 10
-daizo-cli tipitaka-search --query "nibbana|vipassana" --max-results 15
-daizo-cli gretil-search --query "yoga" --max-results 10
-daizo-cli sarit-search --query "yoga" --max-results 10
-daizo-cli muktabodha-search --query "yoga" --max-results 10
+buddha cbeta-search --query "阿弥陀" --max-results 10
+buddha tipitaka-search --query "nibbana|vipassana" --max-results 15
+buddha gretil-search --query "yoga" --max-results 10
+buddha sarit-search --query "yoga" --max-results 10
+buddha muktabodha-search --query "yoga" --max-results 10
 ```
 
 ### コンテキスト付き取得
 
 ```bash
 # IDとオプション指定で取得
-daizo-cli cbeta-fetch --id T0858 --part 1 --max-chars 4000 --json
-daizo-cli tipitaka-fetch --id s0101m.mul --max-chars 2000 --json
-daizo-cli gretil-fetch --id buddhacarita --max-chars 4000 --json
-daizo-cli sarit-fetch --id asvaghosa-buddhacarita --max-chars 4000 --json
-daizo-cli muktabodha-fetch --id "<file-stem>" --max-chars 4000 --json
+buddha cbeta-fetch --id T0858 --part 1 --max-chars 4000 --json
+buddha tipitaka-fetch --id s0101m.mul --max-chars 2000 --json
+buddha gretil-fetch --id buddhacarita --max-chars 4000 --json
+buddha sarit-fetch --id asvaghosa-buddhacarita --max-chars 4000 --json
+buddha muktabodha-fetch --id "<file-stem>" --max-chars 4000 --json
 
 # 行番号の前後コンテキスト
-daizo-cli cbeta-fetch --id T0858 --line-number 342 --context-before 10 --context-after 200
-daizo-cli tipitaka-fetch --id s0305m.mul --line-number 158 --context-before 5 --context-after 100
+buddha cbeta-fetch --id T0858 --line-number 342 --context-before 10 --context-after 200
+buddha tipitaka-fetch --id s0305m.mul --line-number 158 --context-before 5 --context-after 100
 ```
 
 ### 管理
 
 ```bash
-daizo-cli init                      # 初期セットアップ（データ取得とインデックス構築）
-daizo-cli doctor --verbose          # インストール/データ診断
-daizo-cli index-rebuild --source all
-daizo-cli uninstall --purge         # バイナリとデータ/キャッシュを削除
-daizo-cli update --yes              # CLI の再インストール
+buddha init                      # 初期セットアップ（データ取得とインデックス構築）
+buddha doctor --verbose          # インストール/データ診断
+buddha index-rebuild --source all
+buddha uninstall --purge         # バイナリとデータ/キャッシュを削除
+buddha update --yes              # CLI の再インストール
 ```
 
 ## MCP ツール
 
 基本:
-- `daizo_version`（サーバーのバージョン/ビルド情報）
-- `daizo_usage`（AI クライアント向けの使い方ガイド。低トークン運用の推奨フロー）
-- `daizo_system_prompt`（AI向けのsystem promptテンプレ（1枚）。低トークン運用の既定値をまとめたもの）
-- `daizo_profile`（ツール呼び出しの簡易ベンチマーク）
+- `buddha_version`（サーバーのバージョン/ビルド情報）
+- `buddha_usage`（AI クライアント向けの使い方ガイド。低トークン運用の推奨フロー）
+- `buddha_system_prompt`（AI向けのsystem promptテンプレ（1枚）。低トークン運用の既定値をまとめたもの）
+- `buddha_profile`（ツール呼び出しの簡易ベンチマーク）
 
 解決:
-- `daizo_resolve`（タイトル/別名/ID からコーパス候補と、次に呼ぶべき取得ツール呼び出しを返す。対象: cbeta/tipitaka/gretil/sarit/muktabodha）
+- `buddha_resolve`（タイトル/別名/ID からコーパス候補と、次に呼ぶべき取得ツール呼び出しを返す。対象: cbeta/tipitaka/gretil/sarit/muktabodha）
 
 検索:
 - `cbeta_title_search`, `cbeta_search`
@@ -192,21 +192,21 @@ daizo-cli update --yes              # CLI の再インストール
 
 ### 通常フロー（IDが不明な場合）
 
-1. `daizo_resolve` で候補ID（コーパス）を決める
+1. `buddha_resolve` で候補ID（コーパス）を決める
 2. `*_fetch` を `{ id }`（必要なら `part` や `headQuery` など）で呼ぶ
 3. フレーズ検索が必要なら `*_search` → `_meta.fetchSuggestions` → `*_fetch`（`lineNumber`）を使う
 4. `*_pipeline` は多ファイル要約が必要な時のみ使用。既定で `autoFetch=false` を推奨
 
 ### crosswalk（横断解決）とは
 
-daizo でいう **crosswalk** は、「人間のクエリ（経典名・別名・略称など）」から「実際に叩くべきコーパスID」と「次に呼ぶべき `*_fetch`」へ最短で橋渡しすることです。
+buddha でいう **crosswalk** は、「人間のクエリ（経典名・別名・略称など）」から「実際に叩くべきコーパスID」と「次に呼ぶべき `*_fetch`」へ最短で橋渡しすることです。
 
-- `daizo_resolve({query})` を呼ぶ
+- `buddha_resolve({query})` を呼ぶ
 - 返ってくる候補と `_meta.fetchSuggestions` を使って、最小トークンで `*_fetch` に移る
 
 各ツールの description にも案内を記載。`initialize` 応答の `prompts.low-token-guide` でも方針を提示します。
 
-Tips: `DAIZO_HINT_TOP` でサジェスト件数を制御（既定 1）。
+Tips: `BUDDHA_HINT_TOP` でサジェスト件数を制御（既定 1）。
 
 ## データソース
 
@@ -214,7 +214,7 @@ Tips: `DAIZO_HINT_TOP` でサジェスト件数を制御（既定 1）。
 - Tipitaka (romanized): https://github.com/VipassanaTech/tipitaka-xml
 - GRETIL (Sanskrit TEI): https://gretil.sub.uni-goettingen.de/
 - SARIT（TEI P5）: https://github.com/sarit/SARIT-corpus
-- MUKTABODHA（梵文。ローカルファイル）: `$DAIZO_DIR/MUKTABODHA/` に配置
+- MUKTABODHA（梵文。ローカルファイル）: `$BUDDHA_DIR/MUKTABODHA/` に配置
 - SAT (online): wrap7 / detail エンドポイント
 - 浄土宗全書（オンライン）: jodoshuzensho.jp
 - BUDA/BDRC（チベット語オンライン）: library.bdrc.io / autocomplete.bdrc.io
@@ -222,21 +222,21 @@ Tips: `DAIZO_HINT_TOP` でサジェスト件数を制御（既定 1）。
 
 ## ディレクトリと環境変数
 
-- `DAIZO_DIR`（既定: `~/.daizo`）
+- `BUDDHA_DIR`（既定: `~/.buddha`、レガシーフォールバック: `DAIZO_DIR` / `~/.daizo`）
   - データ: `xml-p5/`, `tipitaka-xml/romn/`, `GRETIL/`, `SARIT-corpus/`, `MUKTABODHA/`
   - キャッシュ: `cache/`
   - バイナリ: `bin/`
-- `DAIZO_DEBUG=1` で簡易 MCP デバッグログ
-- ハイライト関連: `DAIZO_HL_PREFIX`, `DAIZO_HL_SUFFIX`, `DAIZO_SNIPPET_PREFIX`, `DAIZO_SNIPPET_SUFFIX`
+- `BUDDHA_DEBUG=1` で簡易 MCP デバッグログ（レガシー: `DAIZO_DEBUG`）
+- ハイライト関連: `BUDDHA_HL_PREFIX`, `BUDDHA_HL_SUFFIX`, `BUDDHA_SNIPPET_PREFIX`, `BUDDHA_SNIPPET_SUFFIX`
 - 取得ポリシー（レート/robots 配慮）:
-  - `DAIZO_REPO_MIN_DELAY_MS`, `DAIZO_REPO_USER_AGENT`, `DAIZO_REPO_RESPECT_ROBOTS`
+  - `BUDDHA_REPO_MIN_DELAY_MS`, `BUDDHA_REPO_USER_AGENT`, `BUDDHA_REPO_RESPECT_ROBOTS`
 
 ## スクリプト
 
 | スクリプト | 役割 |
 |------------|------|
-| `scripts/bootstrap.sh` | ワンライナーインストーラー: 依存チェック → リポジトリclone → install.sh実行 → MCP自動登録（`daizo-cli mcp`） |
-| `scripts/install.sh` | メインインストーラー: `daizo-cli` をビルド → バイナリ配置（`daizo-mcp` 互換alias含む） → GRETILダウンロード → インデックス構築 |
+| `scripts/bootstrap.sh` | ワンライナーインストーラー: 依存チェック → リポジトリclone → install.sh実行 → MCP自動登録（`buddha mcp`） |
+| `scripts/install.sh` | メインインストーラー: `buddha` をビルド → バイナリ配置（`buddha-mcp` 互換alias含む） → GRETILダウンロード → インデックス構築 |
 | `scripts/link-binaries.sh` | 開発用: リリースバイナリへのシンボリックリンク作成 |
 | `scripts/release.sh` | リリース用: バージョンバンプ → タグ作成 → GitHub Release |
 
@@ -244,13 +244,13 @@ Tips: `DAIZO_HINT_TOP` でサジェスト件数を制御（既定 1）。
 
 ```bash
 # 自動一括（バンプ → コミット → タグ → プッシュ → GitHub リリース自動ノート）
-scripts/release.sh 0.6.9 --all
+scripts/release.sh 0.6.10 --all
 
 # CHANGELOG をノートに使用
-scripts/release.sh 0.6.9 --push --release
+scripts/release.sh 0.6.10 --push --release
 
 # ドライラン
-scripts/release.sh 0.6.9 --all --dry-run
+scripts/release.sh 0.6.10 --all --dry-run
 ```
 
 ## ライセンス
@@ -259,4 +259,4 @@ MIT または Apache-2.0 © 2025 Shinryo Taniguchi
 
 ## コントリビューション
 
-Issue や PR を歓迎します。バグ報告には `daizo-cli doctor --verbose` の出力を添付してください。
+Issue や PR を歓迎します。バグ報告には `buddha doctor --verbose` の出力を添付してください。
