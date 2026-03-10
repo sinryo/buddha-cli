@@ -270,13 +270,13 @@ buddha schema --command cbeta-fetch    # 單一指令架構
 
 ```bash
 # 全自動（bump → commit → tag → push → GitHub 釋出，自動筆記）
-scripts/release.sh 0.6.12 --all
+scripts/release.sh 0.6.13 --all
 
 # 使用 CHANGELOG 筆記
-scripts/release.sh 0.6.12 --push --release
+scripts/release.sh 0.6.13 --push --release
 
 # 模擬執行
-scripts/release.sh 0.6.12 --all --dry-run
+scripts/release.sh 0.6.13 --all --dry-run
 ```
 
 ## 授權

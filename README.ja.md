@@ -277,13 +277,13 @@ Tips: `BUDDHA_HINT_TOP` でサジェスト件数を制御（既定 1）。
 
 ```bash
 # 自動一括（バンプ → コミット → タグ → プッシュ → GitHub リリース自動ノート）
-scripts/release.sh 0.6.12 --all
+scripts/release.sh 0.6.13 --all
 
 # CHANGELOG をノートに使用
-scripts/release.sh 0.6.12 --push --release
+scripts/release.sh 0.6.13 --push --release
 
 # ドライラン
-scripts/release.sh 0.6.12 --all --dry-run
+scripts/release.sh 0.6.13 --all --dry-run
 ```
 
 ## ライセンス

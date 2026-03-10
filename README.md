@@ -277,13 +277,13 @@ Tip: Control number of suggestions via `BUDDHA_HINT_TOP` (default 1).
 
 ```bash
 # Auto (bump → commit → tag → push → GitHub release with auto-notes)
-scripts/release.sh 0.6.12 --all
+scripts/release.sh 0.6.13 --all
 
 # CHANGELOG notes instead of auto-notes
-scripts/release.sh 0.6.12 --push --release
+scripts/release.sh 0.6.13 --push --release
 
 # Dry run
-scripts/release.sh 0.6.12 --all --dry-run
+scripts/release.sh 0.6.13 --all --dry-run
 ```
 
 ## License
