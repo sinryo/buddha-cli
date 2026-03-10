@@ -3,6 +3,7 @@ name = "buddha-core"
 version = "0.6.12"
 edition = "2021"
 license = "MIT OR Apache-2.0"
+rust-version.workspace = true
 
 [dependencies]
 ignore = "0.4"

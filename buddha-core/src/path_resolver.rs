@@ -17,14 +17,16 @@ pub fn buddha_home() -> PathBuf {
     let home = std::env::var_os("HOME")
         .map(PathBuf::from)
         .unwrap_or_else(|| PathBuf::from("."));
-    // Prefer ~/.buddha, fallback to ~/.daizo if it exists
     let new_dir = home.join(".buddha");
     let old_dir = home.join(".daizo");
-    if new_dir.exists() || !old_dir.exists() {
-        new_dir
-    } else {
-        old_dir
+    // ~/.daizo → ~/.buddha migration
+    if !new_dir.exists() && old_dir.exists() {
+        let _ = std::fs::rename(&old_dir, &new_dir);
     }
+    if !new_dir.exists() {
+        let _ = std::fs::create_dir_all(&new_dir);
+    }
+    new_dir
 }
 
 pub fn cbeta_root() -> PathBuf {

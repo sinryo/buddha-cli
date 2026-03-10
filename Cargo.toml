@@ -6,6 +6,9 @@ members = [
 ]
 resolver = "2"
 
+[workspace.package]
+rust-version = "1.85"
+
 # Performance optimizations
 [profile.release]
 lto = "thin"           # Link-Time Optimization (faster compile, good speedup)
