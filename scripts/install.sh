@@ -53,6 +53,19 @@ if [ -z "${PREFIX}" ]; then
   PREFIX="$HOME/.buddha"
 fi
 
+# ~/.daizo → ~/.buddha migration
+# If PREFIX still points to the old path, redirect to new path
+if [ "$PREFIX" = "$HOME/.daizo" ]; then
+  PREFIX="$HOME/.buddha"
+fi
+if [ -d "$HOME/.daizo" ] && [ ! -d "$HOME/.buddha" ]; then
+  echo "[migrate] mv $HOME/.daizo -> $HOME/.buddha"
+  mv "$HOME/.daizo" "$HOME/.buddha"
+fi
+if [ ! -d "$PREFIX" ]; then
+  mkdir -p "$PREFIX"
+fi
+
 REPO_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 BIN_OUT="$PREFIX/bin"
 

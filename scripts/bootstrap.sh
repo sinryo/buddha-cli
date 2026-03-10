@@ -41,6 +41,19 @@ while [ $# -gt 0 ]; do
 done
 
 if [ -z "${PREFIX}" ]; then PREFIX="$HOME/.buddha"; fi
+
+# ~/.daizo → ~/.buddha migration
+if [ "$PREFIX" = "$HOME/.daizo" ]; then
+  PREFIX="$HOME/.buddha"
+fi
+if [ -d "$HOME/.daizo" ] && [ ! -d "$HOME/.buddha" ]; then
+  echo "[migrate] mv $HOME/.daizo -> $HOME/.buddha"
+  mv "$HOME/.daizo" "$HOME/.buddha"
+fi
+if [ ! -d "$PREFIX" ]; then
+  mkdir -p "$PREFIX"
+fi
+
 export BUDDHA_DIR="$PREFIX"
 
 need() {

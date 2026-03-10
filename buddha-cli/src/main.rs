@@ -689,9 +689,9 @@ enum Commands {
         #[arg(long, default_value_t = false)]
         verbose: bool,
     },
-    /// Uninstall binaries from $DAIZO_DIR/bin (and optionally data/cache)
+    /// Uninstall binaries from $BUDDHA_DIR/bin (and optionally data/cache)
     Uninstall {
-        /// Also remove data (xml-p5, tipitaka-xml, SARIT-corpus, MUKTABODHA) and cache under $DAIZO_DIR
+        /// Also remove data (xml-p5, tipitaka-xml, SARIT-corpus, MUKTABODHA) and cache under $BUDDHA_DIR
         #[arg(long, default_value_t = false)]
         purge: bool,
     },
@@ -1162,22 +1162,7 @@ struct IndexResult<'a> {
 }
 
 fn default_buddha() -> PathBuf {
-    if let Ok(p) = std::env::var("BUDDHA_DIR") {
-        return PathBuf::from(p);
-    }
-    if let Ok(p) = std::env::var("DAIZO_DIR") {
-        return PathBuf::from(p);
-    }
-    let home = std::env::var_os("HOME")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| PathBuf::from("."));
-    let new_dir = home.join(".buddha");
-    let old_dir = home.join(".daizo");
-    if new_dir.exists() || !old_dir.exists() {
-        new_dir
-    } else {
-        old_dir
-    }
+    buddha_core::path_resolver::buddha_home()
 }
 
 fn ensure_dir(p: &PathBuf) -> anyhow::Result<()> {
