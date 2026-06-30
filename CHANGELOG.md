@@ -4,6 +4,24 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [0.6.14] - 2026-06-30
+
+### Added
+- MCP responses can spill oversized inline text to `cache/mcp-spill/` via `BUDDHA_MCP_INLINE_MAX_CHARS`, returning a file URI instead of flooding the client.
+- Shared CLI helpers for title-search rendering, fetch metadata, corpus grep summaries, retrying online requests, and fuzzy highlight/query compilation.
+
+### Changed
+- README files were reorganized across English, Japanese, and Traditional Chinese to match the current `buddha` CLI/MCP behavior, unified tools, data layout, and release flow.
+- CLI JSON output is more compact and stable for agent use; SAT result metadata avoids duplicating large `body` payloads.
+- Build metadata now mirrors the package version through `BUDDHA_VERSION` and tolerates environments without the `date` command.
+
+### Fixed
+- Default-true CLI boolean flags now accept explicit `--flag=false` values.
+- `sat-fetch` now validates that `--useid` or `--url` is provided and avoids permanently caching empty SAT extractions.
+- Direct Tipitaka resolution now only consumes leading numeric IDs, avoiding bogus matches from later digits in prose queries.
+- GRETIL/SARIT/MUKTABODHA/Tipitaka section extraction and CBETA direct path lookup were tightened for deterministic behavior.
+- Version bumped: `buddha-core` 0.6.14, `buddha` 0.6.14, `buddha-mcp` 0.6.14.
+
 ## [0.6.13] - 2026-03-10
 
 ### Changed

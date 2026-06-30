@@ -1,5 +1,4 @@
 use crate::{slice_text_cli, SliceArgs};
-use buddha_core::path_resolver::cache_dir;
 use buddha_core::text_utils::{
     find_highlight_positions, is_subsequence, jaccard, normalized, token_jaccard,
     ws_cjk_variant_fuzzy_regex_literal,
@@ -13,49 +12,58 @@ pub(crate) struct SatHit {
     pub snippet: String,
 }
 
+/// Clone a Solr doc with the (potentially huge) `body` field removed, so it can
+/// be embedded in `_meta` without duplicating the full text already returned as
+/// the response content.
+fn doc_without_body(doc: &serde_json::Value) -> serde_json::Value {
+    let mut v = doc.clone();
+    if let Some(obj) = v.as_object_mut() {
+        obj.remove("body");
+    }
+    v
+}
+
 pub(crate) fn http_client() -> &'static reqwest::blocking::Client {
     use std::sync::OnceLock;
     static CLI: OnceLock<reqwest::blocking::Client> = OnceLock::new();
     CLI.get_or_init(|| {
         reqwest::blocking::Client::builder()
             .timeout(std::time::Duration::from_secs(15))
+            .user_agent(concat!("buddha-cli/", env!("CARGO_PKG_VERSION")))
             .build()
             .unwrap()
     })
 }
 
 pub(crate) fn cache_path_for(url: &str) -> PathBuf {
-    let mut hasher = sha1::Sha1::new();
-    use sha1::Digest;
-    hasher.update(url.as_bytes());
-    let h = hasher.finalize();
-    let fname = format!("{:x}.txt", h);
-    let dir = cache_dir().join("sat");
-    let _ = std::fs::create_dir_all(&dir);
-    dir.join(fname)
+    crate::cmd::common::cache_path("sat", url, "txt")
 }
 
 pub(crate) fn sat_fetch_cli(url: &str) -> String {
     let cache = cache_path_for(url);
     if let Ok(t) = std::fs::read_to_string(&cache) {
-        return t;
-    }
-    let mut backoff = 500u64;
-    for _ in 0..3 {
-        let res = http_client().get(url).send();
-        if let Ok(r) = res {
-            if r.status().is_success() {
-                if let Ok(html) = r.text() {
-                    let t = sat_extract_text(&html);
-                    let _ = std::fs::write(&cache, &t);
-                    return t;
-                }
-            }
+        // Treat an empty cached file as a miss so a prior empty extraction
+        // doesn't poison the cache permanently.
+        if !t.trim().is_empty() {
+            return t;
         }
-        std::thread::sleep(std::time::Duration::from_millis(backoff));
-        backoff = (backoff * 2).min(8000);
     }
-    String::new()
+    crate::cmd::common::send_with_retry(
+        || http_client().get(url),
+        |r| {
+            let html = r.text().ok()?;
+            let t = sat_extract_text(&html);
+            // Only cache non-empty extractions.
+            if !t.trim().is_empty() {
+                let _ = std::fs::write(&cache, &t);
+            }
+            Some(t)
+        },
+        3,
+        500,
+        |_| true,
+    )
+    .unwrap_or_default()
 }
 
 pub(crate) fn sat_extract_text(html: &str) -> String {
@@ -103,18 +111,16 @@ pub(crate) fn sat_wrap7_search_json(
     fq: &Vec<String>,
 ) -> Option<serde_json::Value> {
     let url = sat_wrap7_build_url(q, rows, offs, fields, fq);
-    for _ in 0..2 {
-        if let Ok(r) = http_client().get(&url).send() {
-            if r.status().is_success() {
-                if let Ok(txt) = r.text() {
-                    if let Ok(json) = serde_json::from_str::<serde_json::Value>(&txt) {
-                        return Some(json);
-                    }
-                }
-            }
-        }
-    }
-    None
+    crate::cmd::common::send_with_retry(
+        || http_client().get(&url),
+        |r| {
+            let txt = r.text().ok()?;
+            serde_json::from_str::<serde_json::Value>(&txt).ok()
+        },
+        2,
+        0,
+        |_| true,
+    )
 }
 
 fn sat_wrap7_ensure_fields(fields: &str, required: &[&str]) -> String {
@@ -140,12 +146,16 @@ pub(crate) fn sat_detail_build_url(useid: &str) -> String {
 }
 
 pub(crate) fn title_score(title: &str, query: &str) -> f32 {
-    let a = normalized(title);
-    let b = normalized(query);
-    let s_char = jaccard(&a, &b);
-    let s_tok = token_jaccard(title, query);
+    title_score_norm(&normalized(title), &normalized(query), title, query)
+}
+
+/// Same as [`title_score`] but takes pre-normalized title/query to avoid
+/// recomputing `normalized()` in hot loops.
+pub(crate) fn title_score_norm(nt: &str, nq: &str, title_raw: &str, query_raw: &str) -> f32 {
+    let s_char = jaccard(nt, nq);
+    let s_tok = token_jaccard(title_raw, query_raw);
     let mut sc = s_char.max(s_tok);
-    if sc < 0.95 && (is_subsequence(&a, &b) || is_subsequence(&b, &a)) {
+    if sc < 0.95 && (is_subsequence(nt, nq) || is_subsequence(nq, nt)) {
         sc = sc.max(0.85);
     }
     sc
@@ -158,12 +168,13 @@ fn sat_candidate_order(docs: &[serde_json::Value], query: &str) -> Vec<(usize, &
     let mut title_contains: Vec<(usize, f32)> = Vec::new();
     for (i, d) in docs.iter().enumerate() {
         let title = d.get("fascnm").and_then(|v| v.as_str()).unwrap_or("");
-        let sc = title_score(title, query);
+        let nt = normalized(title);
+        let sc = title_score_norm(&nt, &nq, title, query);
         any.push((i, sc));
         if nq.is_empty() {
             continue;
         }
-        if normalized(title).contains(&nq) {
+        if nt.contains(&nq) {
             title_contains.push((i, sc));
         }
         let b = d.get("body").and_then(|v| v.as_str()).unwrap_or("");
@@ -269,14 +280,14 @@ pub fn sat_search(
                         "sourceUrl": url,
                         "extractionMethod": "sat-detail-extract",
                         "search": {"q": qt, "qSent": q_sent, "exact": exact, "rows": rows, "offs": offs, "fl": fields, "fq": fq, "count": count},
-                        "chosen": chosen,
+                        "chosen": doc_without_body(chosen),
                         "titleScore": best_sc,
                     });
                     let envelope = serde_json::json!({
                         "jsonrpc":"2.0","id": serde_json::Value::Null,
                         "result": { "content": [{"type":"text","text": sliced}], "_meta": meta }
                     });
-                    println!("{}", serde_json::to_string_pretty(&envelope)?);
+                    println!("{}", serde_json::to_string(&envelope)?);
                 } else {
                     println!("{}", sliced);
                     eprintln!(
@@ -293,7 +304,7 @@ pub fn sat_search(
         if json {
             println!(
                 "{}",
-                serde_json::to_string_pretty(&serde_json::json!({
+                serde_json::to_string(&serde_json::json!({
             "jsonrpc":"2.0","id":null,
             "result": {"content":[{"type":"text","text": text}],"_meta": {"count":0}} }))?
             );
@@ -340,7 +351,7 @@ pub fn sat_search(
         if json {
             println!(
                 "{}",
-                serde_json::to_string_pretty(&serde_json::json!({
+                serde_json::to_string(&serde_json::json!({
             "jsonrpc":"2.0","id":null,
             "result": {"content":[{"type":"text","text": text}],"_meta": {"count":0}} }))?
             );
@@ -395,7 +406,7 @@ pub fn sat_search(
             "jsonrpc":"2.0","id": serde_json::Value::Null,
             "result": { "content": [{"type":"text","text": summary}], "_meta": meta }
         });
-        println!("{}", serde_json::to_string_pretty(&envelope)?);
+        println!("{}", serde_json::to_string(&envelope)?);
     } else {
         print!("{}", summary);
         // Preserve these args for reproducibility.
@@ -448,7 +459,7 @@ pub fn sat_fetch(
             "jsonrpc":"2.0","id": serde_json::Value::Null,
             "result": { "content": [{"type":"text","text": sliced}], "_meta": meta }
         });
-        println!("{}", serde_json::to_string_pretty(&envelope)?);
+        println!("{}", serde_json::to_string(&envelope)?);
     } else {
         println!("{}", sliced);
     }
@@ -484,7 +495,7 @@ pub fn sat_detail(
         "jsonrpc":"2.0","id": serde_json::Value::Null,
         "result": { "content": [{"type":"text","text": sliced}], "_meta": meta }
     });
-    println!("{}", serde_json::to_string_pretty(&envelope)?);
+    println!("{}", serde_json::to_string(&envelope)?);
     Ok(())
 }
 
@@ -590,7 +601,7 @@ pub fn sat_pipeline(
                     "sourceUrl": url,
                     "extractionMethod": "sat-detail-extract",
                     "search": {"rows": rows, "offs": offs, "flRequested": fields, "flUsed": fields_used, "fq": fq, "count": count},
-                    "chosen": chosen,
+                    "chosen": doc_without_body(chosen),
                     "chosenBy": chosen_by,
                     "titleScore": chosen_sc,
                     "focus": focus,
@@ -600,7 +611,7 @@ pub fn sat_pipeline(
                     "jsonrpc":"2.0","id": serde_json::Value::Null,
                     "result": { "content": [{"type":"text","text": sliced}], "_meta": meta }
                 });
-                println!("{}", serde_json::to_string_pretty(&envelope)?);
+                println!("{}", serde_json::to_string(&envelope)?);
             } else {
                 println!("{}", sliced);
                 eprintln!(
@@ -615,7 +626,7 @@ pub fn sat_pipeline(
             if json {
                 println!(
                     "{}",
-                    serde_json::to_string_pretty(&serde_json::json!({
+                    serde_json::to_string(&serde_json::json!({
                 "jsonrpc":"2.0","id":null,
                 "result": {"content":[{"type":"text","text": text}],"_meta": {"count":0}} }))?
                 );
@@ -628,7 +639,7 @@ pub fn sat_pipeline(
         if json {
             println!(
                 "{}",
-                serde_json::to_string_pretty(&serde_json::json!({
+                serde_json::to_string(&serde_json::json!({
             "jsonrpc":"2.0","id":null,
             "result": {"content":[{"type":"text","text": text}],"_meta": {"count":0}} }))?
             );
@@ -707,15 +718,24 @@ pub(crate) fn sat_search_results_cli(
     let base = "https://21dzk.l.u-tokyo.ac.jp/SAT2018/sat/satdb2018.php";
     let url = format!("{}?use=func&ui_lang=ja&form=0&smode=1&dpnum=10&db_num=100&tbl=SAT&jtype=AND&wk=&line=0&part=0&eps=&keyword={}&o8=1&l8=&o9=1&l9=&o4=2&l4=rb&spage={}&perpage={}",
         base, urlencoding::encode(q), offs, rows);
-    let mut backoff = 500u64;
-    for _ in 0..3 {
-        if let Ok(r) = http_client().get(&url).send() {
-            if let Ok(html) = r.text() {
-                return parse_sat_search_html(&html, q, rows, offs, exact, titles_only);
-            }
-        }
-        std::thread::sleep(std::time::Duration::from_millis(backoff));
-        backoff = (backoff * 2).min(8000);
-    }
-    Vec::new()
+    crate::cmd::common::send_with_retry(
+        || http_client().get(&url),
+        |r| {
+            // Gate on a 2xx status so a 4xx/5xx error page falls through to retry
+            // instead of being parsed as an (empty) result.
+            let html = r.text().ok()?;
+            Some(parse_sat_search_html(
+                &html,
+                q,
+                rows,
+                offs,
+                exact,
+                titles_only,
+            ))
+        },
+        3,
+        500,
+        |_| true,
+    )
+    .unwrap_or_default()
 }

@@ -1,47 +1,65 @@
-# buddha-cli
+# buddha
 
-CBETA（漢文）、パーリ三蔵（ローマ字）、GRETIL（サンスクリット TEI）、SARIT（TEI P5）、SAT（オンライン）、浄土宗全書（オンライン）に加え、チベット大蔵経系のオンライン全文検索（BUDA/BDRC・Adarshah）にも対応した、高速な仏教テキスト検索・取得のための MCP サーバーおよび CLI です。Rust で実装し、高速・堅牢に動作します。
+人間と AI エージェントのための、高速な仏教テキスト検索・取得ツールです。このリポジトリは Rust 製 CLI (`buddha`) と MCP stdio サーバー (`buddha mcp`) を提供します。
 
-関連: [English README](README.md) | [繁體中文 README](README.zh-TW.md)
+言語: [English](README.md) | 日本語 | [繁體中文](README.zh-TW.md)
 
-## 特長
+> 旧プロジェクト名 / 旧バイナリ名（`daizo`, `daizo-cli`, `daizo-mcp`）は互換 alias として残しています。現在の開発名は `buddha` です。
 
-- **ダイレクトIDアクセス**: テキストIDが分かっていれば即座に取得（最速！）
-- CBETA / Tipitaka / GRETIL / SARIT / MUKTABODHA に対する高速な正規表現検索（行番号つき）
-- CBETA検索は新字体など"現代の表記"でもヒットするよう正規化（旧字体・簡繁などの揺れを吸収）
-- タイトル検索（CBETA / Tipitaka / GRETIL / SARIT / MUKTABODHA）
-- 行番号や文字位置での前後コンテキスト取得
-- SAT オンライン検索（スマートキャッシュ付き）
-- 浄土宗全書（オンライン）の検索・本文取得（キャッシュ付き）
-- チベット語のオンライン全文検索（BUDA/BDRC + Adarshah、EWTS/Wylieの簡易自動変換つき）
-- ワンコマンド・ブートストラップとインデックス構築
+## 対応範囲
+
+| コーパス | モード | 主なアクセス |
+|----------|--------|--------------|
+| CBETA / 漢文大蔵経 | 初期化後ローカル | タイトル検索、正規表現検索、`T0001` 形式の直接取得 |
+| Tipitaka / ローマ字パーリ聖典 | 初期化後ローカル | `DN1` などのニカーヤID、タイトル検索、正規表現検索 |
+| GRETIL / 梵文 TEI | install/init 後ローカル | タイトル検索、正規表現検索、TEI 取得 |
+| SARIT / TEI P5 | install/init 後ローカル | タイトル検索、正規表現検索、TEI 取得 |
+| MUKTABODHA / 梵文ライブラリ | `$BUDDHA_DIR/MUKTABODHA` 配下のローカルファイル | タイトル検索、正規表現検索、text/XML 取得 |
+| SAT 大蔵経DB | オンライン、キャッシュあり | 検索、詳細取得、pipeline |
+| 浄土宗全書 | オンライン、キャッシュあり | 検索、`lineno` によるページ取得 |
+| チベット語コーパス | オンライン、キャッシュあり | BUDA/BDRC と Adarshah の全文検索 |
+
+主な特徴:
+
+- テキストIDが分かっている場合は直接取得が最速です。
+- 検索結果には行アンカーと `_meta.fetchSuggestions` が含まれ、低トークンで後続取得できます。
+- CBETA検索では新旧字体などの CJK 異体字を正規化し、現代表記でも本文に届きやすくしています。
+- CLI の JSON 出力は MCP 風 envelope で、エージェントから扱いやすい形式です。
+- MCP は既定で compact な unified tools を出しつつ、旧個別ツールも互換維持しています。
+- 大きな MCP 本文レスポンスは `cache/mcp-spill/` に退避し、クライアント過負荷を避けられます。
 
 ## インストール
 
-前提: Git が必要です。
-
-クイックインストール:
+前提: Git と Rust/Cargo。クイックインストーラーは依存を確認し、Rust がない場合は案内します。
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/sinryo/buddha-cli/main/scripts/bootstrap.sh | bash -s -- --yes --write-path
 ```
 
-手動セットアップ:
+手動ビルド / インストール:
 
 ```bash
-cargo build --release
+cargo build --release -p buddha
 scripts/install.sh --prefix "$HOME/.buddha" --write-path
 ```
 
-## MCP クライアント連携
+インストーラーは `$BUDDHA_DIR/bin` にバイナリを配置し、`buddha-mcp` と旧 `daizo*` alias を作成し、対応するローカルコーパスの取得/更新とインデックス再構築を行います。
 
-Claude Code CLI:
+## MCP 設定
+
+サーバー起動:
+
+```bash
+buddha mcp
+```
+
+Claude Code:
 
 ```bash
 claude mcp add buddha "$HOME/.buddha/bin/buddha" mcp
 ```
 
-Codex CLI（`~/.codex/config.toml`）:
+Codex (`~/.codex/config.toml`):
 
 ```toml
 [mcp_servers.buddha]
@@ -49,247 +67,216 @@ command = "/Users/you/.buddha/bin/buddha"
 args = ["mcp"]
 ```
 
-互換性: `$HOME/.buddha/bin/buddha-mcp` も互換aliasとして利用できます。レガシーalias `daizo`, `daizo-mcp`, `daizo-cli` も後方互換のため維持されています。
-
-## CLI 例
-
-### ダイレクトIDアクセス（最速！）
-
-テキストIDが分かっていれば、検索をスキップして直接取得:
-
-```bash
-# CBETA: 大正番号（T + 4桁の数字）
-buddha cbeta-fetch --id T0001      # 長阿含經
-buddha cbeta-fetch --id T0262      # 妙法蓮華經
-buddha cbeta-fetch --id T0235      # 金剛般若波羅蜜經
-
-# Tipitaka: ニカーヤコード（DN, MN, SN, AN, KN）
-buddha tipitaka-fetch --id DN1     # 梵網経
-buddha tipitaka-fetch --id MN1     # 根本法門経
-buddha tipitaka-fetch --id SN1     # 相応部第1
-
-# GRETIL: サンスクリットテキスト名
-buddha gretil-fetch --id saddharmapuNDarIka         # 法華経（梵文）
-buddha gretil-fetch --id vajracchedikA              # 金剛般若経（梵文）
-buddha gretil-fetch --id prajJApAramitAhRdayasUtra  # 般若心経（梵文）
-
-# SARIT: TEI P5 コーパス（ファイルstem）
-buddha sarit-fetch --id asvaghosa-buddhacarita
-
-# MUKTABODHA: 梵文ライブラリ（ファイルstem。ローカルに $BUDDHA_DIR/MUKTABODHA を配置）
-buddha muktabodha-fetch --id "<file-stem>"
-```
-
-### 検索
-
-```bash
-# タイトル検索
-buddha cbeta-title-search --query "楞伽經" --json
-buddha tipitaka-title-search --query "dn 1" --json
-buddha sarit-title-search --query "buddhacarita" --json
-buddha muktabodha-title-search --query "yoga" --json
-
-# 内容検索（行番号つき）
-buddha cbeta-search --query "阿弥陀" --max-results 10
-buddha tipitaka-search --query "nibbana|vipassana" --max-results 15
-buddha gretil-search --query "yoga" --max-results 10
-buddha sarit-search --query "yoga" --max-results 10
-buddha muktabodha-search --query "yoga" --max-results 10
-```
-
-### コンテキスト付き取得
-
-```bash
-# IDとオプション指定で取得
-buddha cbeta-fetch --id T0858 --part 1 --max-chars 4000 --json
-buddha tipitaka-fetch --id s0101m.mul --max-chars 2000 --json
-buddha gretil-fetch --id buddhacarita --max-chars 4000 --json
-buddha sarit-fetch --id asvaghosa-buddhacarita --max-chars 4000 --json
-buddha muktabodha-fetch --id "<file-stem>" --max-chars 4000 --json
-
-# 行番号の前後コンテキスト
-buddha cbeta-fetch --id T0858 --line-number 342 --context-before 10 --context-after 200
-buddha tipitaka-fetch --id s0305m.mul --line-number 158 --context-before 5 --context-after 100
-```
-
-### 管理
-
-```bash
-buddha init                      # 初期セットアップ（データ取得とインデックス構築）
-buddha doctor --verbose          # インストール/データ診断
-buddha index-rebuild --source all
-buddha uninstall --purge         # バイナリとデータ/キャッシュを削除
-buddha update --yes              # CLI の再インストール
-```
-
-## AI エージェント連携
-
-buddha CLI は AI エージェント（Claude Code、Codex など）から直接呼べるよう設計されています。
-
-**非TTY時のJSON自動出力:** stdout がパイプやリダイレクトの場合、自動的にJSON出力になります。毎回 `--json` を指定する必要はありません。
-
-```bash
-buddha cbeta-title-search --query "般若" | jq .    # 自動JSON（パイプ時）
-BUDDHA_JSON=1 buddha cbeta-title-search --query "般若"  # 環境変数でJSON強制
-buddha --json cbeta-title-search --query "般若"    # グローバル --json フラグ
-```
-
-**静音モード (`--quiet` / `-q`):** stderr への進捗メッセージを抑制し、出力パースを容易にします。
-
-**コマンド自己発見 (`buddha schema`):** 全サブコマンドと引数スキーマを機械可読JSONで取得できます。
-
-```bash
-buddha schema                          # 全コマンド一覧
-buddha schema --command cbeta-fetch    # 特定コマンドのスキーマ
-```
-
-**構造化エラー出力:** JSONモード時、エラーは stderr に `{"error":{"message":"...","code":"NOT_FOUND"}}` 形式で出力されます。
-
-| 終了コード | 意味 |
-|-----------|------|
-| 0 | 成功 |
-| 1 | 汎用エラー |
-| 2 | 使用方法エラー（引数不正） |
-| 10 | データ未検出（結果なし） |
-| 11 | ネットワークエラー（タイムアウト、接続） |
-| 12 | データ未準備（clone/download が必要） |
+互換性: `$HOME/.buddha/bin/buddha-mcp`, `daizo`, `daizo-cli`, `daizo-mcp` はすべて同じ CLI を指します。古いクライアント設定をそのまま使えます。
 
 ## MCP ツール
 
-基本:
-- `buddha_version`（サーバーのバージョン/ビルド情報）
-- `buddha_usage`（AI クライアント向けの使い方ガイド。低トークン運用の推奨フロー）
-- `buddha_system_prompt`（AI向けのsystem promptテンプレ（1枚）。低トークン運用の既定値をまとめたもの）
-- `buddha_profile`（ツール呼び出しの簡易ベンチマーク）
+unified MCP tools は既定で有効です（`BUDDHA_UNIFIED_TOOLS=0` で無効化）。
 
-解決:
-- `buddha_resolve`（タイトル/別名/ID からコーパス候補と、次に呼ぶべき取得ツール呼び出しを返す。対象: cbeta/tipitaka/gretil/sarit/muktabodha）
+| ツール | 用途 |
+|--------|------|
+| `fetch` | ID、`useid`、`lineno`、query、行番号、章節、文字範囲で本文取得 |
+| `search` | `cbeta`, `tipitaka`, `gretil`, `sarit`, `muktabodha`, `sat`, `jozen` の全文検索 |
+| `title_search` | ローカル indexed corpus のタイトル検索 |
+| `pipeline` | `cbeta`, `gretil`, `sarit`, `muktabodha`, `sat` の検索 + 任意の自動取得 |
+| `resolve` | 人間の経典名/別名/ID を候補IDと次の fetch 呼び出しへ橋渡し |
+| `info` | version、usage guide、system prompt、または全部 |
+| `profile` | warm cache でのツール呼び出し時間計測 |
+| `tibetan_search` | チベット語オンライン全文検索。単独ツールとして維持 |
 
-検索:
-- `cbeta_title_search`, `cbeta_search`
-- `tipitaka_title_search`, `tipitaka_search`
-- `gretil_title_search`, `gretil_search`
-- `sarit_title_search`, `sarit_search`
-- `muktabodha_title_search`, `muktabodha_search`
-- `sat_search`（SAT大正新脩大蔵経の検索。`_meta.results` + `sat_detail` 用の `_meta.fetchSuggestions` を返す。`fq` でT番号レンジ絞り込み可）
-- `jozen_search`
-- `tibetan_search`（チベット語のオンライン全文検索。`sources:["buda","adarshah"]`。BUDAは `exact` でフレーズ検索、Adarshahは `wildcard`、`maxSnippetChars` でスニペット長）
+unified mode を無効にした場合、または古いクライアントが個別名を保持している場合でも、`cbeta_fetch`, `cbeta_search`, `gretil_pipeline`, `sat_detail`, `jozen_fetch`, `buddha_version` などの legacy tools は利用できます。
 
-取得:
-- `cbeta_fetch`（`lb`, `lineNumber`, `contextBefore`, `contextAfter`, `headQuery`, `headIndex`, `format:"plain"`, `focusHighlight` をサポート。`plain` は XMLタグ除去・gaiji解決・teiHeader除外・改行保持。`focusHighlight` は最初のハイライト一致箇所付近にジャンプ）
-- `tipitaka_fetch`（`lineNumber`, `contextBefore`, `contextAfter` をサポート）
-- `gretil_fetch`（`lineNumber`, `contextBefore`, `contextAfter`, `headQuery`, `headIndex` をサポート）
-- `sarit_fetch`（`lineNumber`, `contextBefore`, `contextAfter` をサポート）
-- `muktabodha_fetch`（`lineNumber`, `contextBefore`, `contextAfter` をサポート）
-- `sat_fetch`, `sat_detail`, `sat_pipeline`（SAT詳細取得。`sat_pipeline` はベストヒットを選んで自動取得。`exact` をサポート。デフォルトはフレーズ検索）
-- `jozen_fetch`（`lineno` 指定で1ページ取得。`[J..] ...` 形式で返す）
+## CLI クイックスタート
 
-パイプライン:
-- `cbeta_pipeline`, `gretil_pipeline`, `sarit_pipeline`, `muktabodha_pipeline`, `sat_pipeline`（要約優先なら `autoFetch=false` 推奨）
+ID が分かっている場合は直接取得します。
 
-## 低トークン運用（AI クライアント向け）
+```bash
+buddha cbeta-fetch --id T0262 --max-chars 4000 --json
+buddha tipitaka-fetch --id DN1 --max-chars 2000 --json
+buddha gretil-fetch --id saddharmapuNDarIka --max-chars 4000 --json
+buddha sarit-fetch --id asvaghosa-buddhacarita --max-chars 4000 --json
+buddha muktabodha-fetch --id "<file-stem>" --max-chars 4000 --json
+```
 
-### 最速: ダイレクトIDアクセス
+題名や通称から ID を探す場合:
 
-テキストIDが分かっている場合は **検索をスキップ**:
+```bash
+buddha resolve --query "法華経" --json
+buddha cbeta-title-search --query "楞伽經" --json
+buddha tipitaka-title-search --query "dn 1" --json
+buddha gretil-title-search --query "vajracchedika" --json
+```
 
-| コーパス | ID形式 | 例 |
-|----------|--------|-----|
-| CBETA | `T` + 4桁数字 | `cbeta_fetch({id: "T0262"})` |
-| Tipitaka | `DN`, `MN`, `SN`, `AN`, `KN` + 番号 | `tipitaka_fetch({id: "DN1"})` |
-| GRETIL | サンスクリットテキスト名 | `gretil_fetch({id: "saddharmapuNDarIka"})` |
-| SARIT | TEIファイルstem | `sarit_fetch({id: "asvaghosa-buddhacarita"})` |
-| MUKTABODHA | ファイルstem | `muktabodha_fetch({id: "FILE_STEM"})` |
+本文検索と前後コンテキスト取得:
 
-### よく使うID一覧
+```bash
+buddha cbeta-search --query "阿弥陀" --max-results 10 --json
+buddha cbeta-fetch --id T0858 --line-number 342 --context-before 2 --context-after 6 --highlight "阿弥陀" --json
+buddha tipitaka-search --query "nibbana|vipassana" --max-results 15 --json
+buddha gretil-search --query "dharma" --max-results 10 --json
+```
 
-**CBETA（漢文大蔵経）**:
-- T0001 = 長阿含經
-- T0099 = 雜阿含經
-- T0262 = 妙法蓮華經（法華経）
-- T0235 = 金剛般若波羅蜜經（金剛経）
-- T0251 = 般若波羅蜜多心經（般若心経）
+オンラインソース:
 
-**Tipitaka（パーリ三蔵）**:
-- DN1-DN34 = 長部（Dīghanikāya）
-- MN1-MN152 = 中部（Majjhimanikāya）
-- SN = 相応部（Saṃyuttanikāya）
-- AN = 増支部（Aṅguttaranikāya）
+```bash
+buddha sat-search --query "般若" --json
+buddha sat-fetch --useid "<startid-from-search>" --max-chars 3000 --json
+buddha jozen-search --query "念仏" --json
+buddha jozen-fetch --lineno "J01_0200B19" --json
+buddha tibetan-search --query "bde ba" --json
+```
 
-**GRETIL（梵文）**:
-- saddharmapuNDarIka = 法華経
-- vajracchedikA = 金剛般若経
-- prajJApAramitAhRdayasUtra = 般若心経
-- buddhacarita = 仏所行讃（馬鳴）
+管理と発見:
 
-### 通常フロー（IDが不明な場合）
+```bash
+buddha init
+buddha doctor --verbose
+buddha index-rebuild --source all
+buddha schema
+buddha schema --command cbeta-fetch
+buddha version
+```
 
-1. `buddha_resolve` で候補ID（コーパス）を決める
-2. `*_fetch` を `{ id }`（必要なら `part` や `headQuery` など）で呼ぶ
-3. フレーズ検索が必要なら `*_search` → `_meta.fetchSuggestions` → `*_fetch`（`lineNumber`）を使う
-4. `*_pipeline` は多ファイル要約が必要な時のみ使用。既定で `autoFetch=false` を推奨
+## AI エージェント向けの使い方
 
-### crosswalk（横断解決）とは
+低トークン運用では次の順に使います。
 
-buddha でいう **crosswalk** は、「人間のクエリ（経典名・別名・略称など）」から「実際に叩くべきコーパスID」と「次に呼ぶべき `*_fetch`」へ最短で橋渡しすることです。
+1. ID が分かっていれば `fetch` を直接呼びます。
+2. コーパスや ID が曖昧なら `resolve` を呼びます。
+3. それ以外は `search` を呼び、`_meta.fetchSuggestions` を読んで、提案された `id` と `lineNumber` または `lb` で `fetch` します。
+4. コンテキスト取得時は検索語を `highlight` に入れます。
+5. `pipeline` は複数ファイル要約や自動 search-to-fetch が必要な時だけ使います。
 
-- `buddha_resolve({query})` を呼ぶ
-- 返ってくる候補と `_meta.fetchSuggestions` を使って、最小トークンで `*_fetch` に移る
+よく使う直接ID:
 
-各ツールの description にも案内を記載。`initialize` 応答の `prompts.low-token-guide` でも方針を提示します。
+| コーパス | ID例 |
+|----------|------|
+| CBETA | `T0001`, `T0099`, `T0235`, `T0251`, `T0262` |
+| Tipitaka | `DN1`, `MN1`, `SN1`, `AN1`, `s0101m.mul` |
+| GRETIL | `saddharmapuNDarIka`, `vajracchedikA`, `prajJApAramitAhRdayasUtra` |
+| SARIT | `asvaghosa-buddhacarita` |
+| 浄土宗全書 | `J01_0200B19` 形式の `lineno` |
 
-Tips: `BUDDHA_HINT_TOP` でサジェスト件数を制御（既定 1）。
+## 出力とエラー
 
-## データソース
+`--json` で compact な機械可読 JSON を返します。非TTYでは原則として自動で JSON 出力になります。
 
-- CBETA: https://github.com/cbeta-org/xml-p5
-- Tipitaka (romanized): https://github.com/VipassanaTech/tipitaka-xml
-- GRETIL (Sanskrit TEI): https://gretil.sub.uni-goettingen.de/
-- SARIT（TEI P5）: https://github.com/sarit/SARIT-corpus
-- MUKTABODHA（梵文。ローカルファイル）: `$BUDDHA_DIR/MUKTABODHA/` に配置
-- SAT (online): wrap7 / detail エンドポイント
-- 浄土宗全書（オンライン）: jodoshuzensho.jp
-- BUDA/BDRC（チベット語オンライン）: library.bdrc.io / autocomplete.bdrc.io
-- Adarshah（チベット語オンライン）: online.adarshah.org / api.adarshah.org
+```bash
+buddha cbeta-title-search --query "般若" | jq .
+BUDDHA_JSON=1 buddha cbeta-title-search --query "般若"
+buddha --json cbeta-title-search --query "般若"
+```
+
+JSON mode のエラーは stderr に出ます。
+
+```json
+{"error":{"message":"...","code":"NOT_FOUND"}}
+```
+
+終了コード:
+
+| コード | 意味 |
+|--------|------|
+| 0 | 成功 |
+| 1 | 汎用エラー |
+| 2 | 使い方エラー |
+| 10 | 見つからない |
+| 11 | ネットワークエラー |
+| 12 | データ未準備 |
 
 ## ディレクトリと環境変数
 
-- `BUDDHA_DIR`（既定: `~/.buddha`、レガシーフォールバック: `DAIZO_DIR` / `~/.daizo`）
-  - データ: `xml-p5/`, `tipitaka-xml/romn/`, `GRETIL/`, `SARIT-corpus/`, `MUKTABODHA/`
-  - キャッシュ: `cache/`
-  - バイナリ: `bin/`
-- `BUDDHA_JSON=1` で全 CLI コマンドをJSON出力に強制（`--json` と同等）
-- `BUDDHA_DEBUG=1` で簡易 MCP デバッグログ（レガシー: `DAIZO_DEBUG`）
-- ハイライト関連: `BUDDHA_HL_PREFIX`, `BUDDHA_HL_SUFFIX`, `BUDDHA_SNIPPET_PREFIX`, `BUDDHA_SNIPPET_SUFFIX`
-- 取得ポリシー（レート/robots 配慮）:
-  - `BUDDHA_REPO_MIN_DELAY_MS`, `BUDDHA_REPO_USER_AGENT`, `BUDDHA_REPO_RESPECT_ROBOTS`
+`BUDDHA_DIR` の既定は `~/.buddha` です。旧 `DAIZO_DIR` と `~/.daizo` も fallback として認識します。
 
-## スクリプト
+典型的な配置:
 
-| スクリプト | 役割 |
-|------------|------|
-| `scripts/bootstrap.sh` | ワンライナーインストーラー: 依存チェック → リポジトリclone → install.sh実行 → MCP自動登録（`buddha mcp`） |
-| `scripts/install.sh` | メインインストーラー: `buddha` をビルド → バイナリ配置（`buddha-mcp` 互換alias含む） → GRETILダウンロード → インデックス構築 |
-| `scripts/link-binaries.sh` | 開発用: リリースバイナリへのシンボリックリンク作成 |
-| `scripts/release.sh` | リリース用: バージョンバンプ → タグ作成 → GitHub Release |
+```text
+$BUDDHA_DIR/
+  bin/
+  cache/
+  xml-p5/
+  tipitaka-xml/romn/
+  GRETIL/
+  SARIT-corpus/
+  MUKTABODHA/
+```
 
-### リリース補助の例
+主な環境変数:
+
+| 変数 | 意味 |
+|------|------|
+| `BUDDHA_JSON=1` | CLI JSON 出力を強制 |
+| `BUDDHA_DEBUG=1` | 簡易 MCP debug log |
+| `BUDDHA_UNIFIED_TOOLS=0` | unified tools ではなく legacy MCP tools を公開 |
+| `BUDDHA_HINT_TOP` | fetch suggestion の件数 |
+| `BUDDHA_MCP_MAX_CHARS` | MCP fetch の既定文字数上限 |
+| `BUDDHA_MCP_SNIPPET_LEN` | MCP snippet の既定長 |
+| `BUDDHA_MCP_AUTO_FILES` | 自動取得する既定ファイル数 |
+| `BUDDHA_MCP_AUTO_MATCHES` | 自動取得する既定 match 数 |
+| `BUDDHA_MCP_INLINE_MAX_CHARS` | MCP inline text の上限。超過時は `cache/mcp-spill/` へ退避。`0` で無効 |
+| `BUDDHA_HL_PREFIX`, `BUDDHA_HL_SUFFIX` | highlight marker |
+| `BUDDHA_SNIPPET_PREFIX`, `BUDDHA_SNIPPET_SUFFIX` | pipeline snippet marker |
+| `BUDDHA_REPO_MIN_DELAY_MS`, `BUDDHA_REPO_USER_AGENT`, `BUDDHA_REPO_RESPECT_ROBOTS` | データ取得時の rate/robots 配慮 |
+
+多くの変数は旧 `DAIZO_*` 名にも対応しています。
+
+## リポジトリ構成
+
+| パス | 役割 |
+|------|------|
+| `buddha-core/` | indexing、search、TEI extraction、path resolution、データ取得ポリシー |
+| `buddha-cli/` | `buddha` CLI と CLI 側 command handler |
+| `buddha-mcp/` | MCP stdio server、unified tool dispatch、legacy tool handler |
+| `docs/` | MCP notes、system prompt、architecture notes |
+| `scripts/` | bootstrap、install、binary link、release helpers |
+| `tasks/golden/` | CLI 出力の frozen regression harness |
+
+## 開発
 
 ```bash
-# 自動一括（バンプ → コミット → タグ → プッシュ → GitHub リリース自動ノート）
-scripts/release.sh 0.6.13 --all
-
-# CHANGELOG をノートに使用
-scripts/release.sh 0.6.13 --push --release
-
-# ドライラン
-scripts/release.sh 0.6.13 --all --dry-run
+cargo fmt
+cargo test -p buddha-core
+cargo test -p buddha-mcp
+cargo test -p buddha
+cargo build --release -p buddha
 ```
+
+golden regression check:
+
+```bash
+bash tasks/golden/verify.sh local
+```
+
+golden 出力には CLI version も含まれるため、release bump では `tasks/golden/*/version.text.out` だけが意図的に変わる場合があります。
+
+## リリース
+
+現在のリリースバージョン: `0.6.14`
+
+バージョン番号の反映先:
+
+- `buddha-core/Cargo.toml`
+- `buddha-cli/Cargo.toml`
+- `buddha-mcp/Cargo.toml`
+- `Cargo.lock`
+- `CHANGELOG.md`
+- `docs/buddha_system_prompt.txt`
+
+リリース補助:
+
+```bash
+# 次の patch release を変更なしで確認
+scripts/release.sh --patch --dry-run --no-fmt --no-test
+
+# commit、branch push、v0.6.14 tag、tag push、GitHub Release を作成
+scripts/release.sh 0.6.14 --push --tag --release --auto-notes
+
+# GitHub generated notes ではなく CHANGELOG を release notes に使う
+scripts/release.sh 0.6.14 --push --tag --release
+```
+
+注意: `scripts/release.sh` は `git add -A` して commit します。無関係な変更があると巻き込むため、実行前に worktree を必ず確認してください。
 
 ## ライセンス
 
-MIT または Apache-2.0 © 2025 Shinryo Taniguchi
-
-## コントリビューション
-
-Issue や PR を歓迎します。バグ報告には `buddha doctor --verbose` の出力を添付してください。
+MIT OR Apache-2.0 © 2026 Shinryo Taniguchi

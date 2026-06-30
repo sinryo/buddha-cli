@@ -1,40 +1,15 @@
+use crate::regex_utils::{apply_highlight, compile_query, FuzzyMode};
 use crate::{
     decode_xml_bytes, load_or_build_cbeta_index_cli, resolve_cbeta_path_cli, slice_text_cli,
     SliceArgs,
 };
 use buddha_core::path_resolver::cbeta_root;
-use buddha_core::text_utils::highlight_text;
-use buddha_core::{
-    cbeta_grep, extract_cbeta_juan, extract_text, extract_text_opts, list_heads_cbeta,
-};
+use buddha_core::{cbeta_grep, extract_cbeta_juan, extract_text_opts, list_heads_cbeta};
 
 pub fn cbeta_title_search(query: &str, limit: usize, json: bool) -> anyhow::Result<()> {
     let idx = load_or_build_cbeta_index_cli();
     let hits = super::super::best_match(&idx, query, limit);
-    if json {
-        let items: Vec<_> = hits
-            .iter()
-            .map(|h| {
-                serde_json::json!({
-                    "id": h.entry.id,
-                    "title": h.entry.title,
-                    "path": h.entry.path,
-                    "score": h.score,
-                })
-            })
-            .collect();
-        println!(
-            "{}",
-            serde_json::to_string_pretty(
-                &serde_json::json!({"count": items.len(), "results": items})
-            )?
-        );
-    } else {
-        for (i, h) in hits.iter().enumerate() {
-            println!("{}. {}  {}", i + 1, h.entry.id, h.entry.title);
-        }
-    }
-    Ok(())
+    super::common::print_title_search(&hits, json, super::common::TitleIdSource::EntryId, false)
 }
 
 pub fn cbeta_fetch(args: &crate::Commands) -> anyhow::Result<()> {
@@ -107,28 +82,18 @@ pub fn cbeta_fetch(args: &crate::Commands) -> anyhow::Result<()> {
         } else {
             slice_text_cli(&text, &slice)
         };
-        let mut highlighted = 0usize;
-        let mut hl_positions: Vec<serde_json::Value> = Vec::new();
-        if let Some(hpat0) = highlight.as_deref() {
-            let looks_like_regex = hpat0.chars().any(|c| ".+*?[](){}|\\".contains(c));
-            let mut hl_is_regex = *highlight_regex;
-            let hpat = if !hl_is_regex && !looks_like_regex {
-                hl_is_regex = true;
-                buddha_core::text_utils::ws_cjk_variant_fuzzy_regex_literal(hpat0)
-            } else {
-                hpat0.to_string()
-            };
-            let hpre = highlight_prefix.as_deref().unwrap_or(">>> ");
-            let hsuf = highlight_suffix.as_deref().unwrap_or(" <<<");
-            let (decorated, count, positions) =
-                highlight_text(&sliced, &hpat, hl_is_regex, hpre, hsuf);
-            sliced = decorated;
-            highlighted = count;
-            hl_positions = positions
-                .into_iter()
-                .map(|p| serde_json::json!({"startChar": p.start_char, "endChar": p.end_char}))
-                .collect();
-        }
+        // Snapshot the real returned length before highlight markers inflate `sliced`,
+        // so `returnedEnd`/`truncated` reflect the actual slice, not the decoration.
+        let returned_len = sliced.len();
+        let (decorated, highlighted, hl_positions) = apply_highlight(
+            &sliced,
+            highlight.as_deref(),
+            *highlight_regex,
+            highlight_prefix.as_deref(),
+            highlight_suffix.as_deref(),
+            FuzzyMode::CjkVariant,
+        );
+        sliced = decorated;
         let heads = list_heads_cbeta(&xml);
         if *json {
             let idx = load_or_build_cbeta_index_cli();
@@ -145,27 +110,35 @@ pub fn cbeta_fetch(args: &crate::Commands) -> anyhow::Result<()> {
             } else {
                 (id.clone(), None, None)
             };
-            let meta = serde_json::json!({
-                "totalLength": text.len(),
-                "returnedStart": slice.start().unwrap_or(0),
-                "returnedEnd": slice.end_bound(text.len(), sliced.len()),
-                "truncated": (sliced.len() as u64) < (text.len() as u64),
-                "sourcePath": path.to_string_lossy(),
-                "extractionMethod": extraction_method,
-                "partMatched": part_matched,
-                "headingsTotal": heads.len(),
-                "headingsPreview": heads.into_iter().take(*headings_limit).collect::<Vec<_>>(),
-                "matchedId": matched_id,
-                "matchedTitle": matched_title,
-                "matchedScore": matched_score,
-                "highlighted": if highlighted > 0 { Some(highlighted) } else { None::<usize> },
-                "highlightPositions": if !hl_positions.is_empty() { Some(hl_positions) } else { None::<Vec<serde_json::Value>> },
+            let meta = super::common::build_fetch_meta(super::common::FetchMetaParams {
+                total_length: text.len(),
+                returned_start: slice.start().unwrap_or(0),
+                returned_end: slice.end_bound(text.len(), returned_len),
+                truncated: (returned_len as u64) < (text.len() as u64),
+                source_path: path.to_string_lossy(),
+                extraction_method: extraction_method.into(),
+                part_matched: Some(part_matched),
+                heads,
+                headings_limit: *headings_limit,
+                matched_id,
+                matched_title,
+                matched_score,
+                highlighted: if highlighted > 0 {
+                    Some(highlighted)
+                } else {
+                    None::<usize>
+                },
+                highlight_positions: if !hl_positions.is_empty() {
+                    Some(hl_positions)
+                } else {
+                    None::<Vec<serde_json::Value>>
+                },
             });
             let envelope = serde_json::json!({
                 "jsonrpc":"2.0","id": serde_json::Value::Null,
                 "result": { "content": [{"type":"text","text": sliced}], "_meta": meta }
             });
-            println!("{}", serde_json::to_string_pretty(&envelope)?);
+            println!("{}", serde_json::to_string(&envelope)?);
         } else {
             println!("{}", sliced);
         }
@@ -198,12 +171,7 @@ pub fn cbeta_pipeline(args: &crate::Commands) -> anyhow::Result<()> {
     } = args
     {
         let root = cbeta_root();
-        let looks_like_regex = query.chars().any(|c| ".+*?[](){}|\\".contains(c));
-        let q = if looks_like_regex {
-            query.clone()
-        } else {
-            buddha_core::text_utils::ws_cjk_variant_fuzzy_regex_literal(&query)
-        };
+        let q = compile_query(query, FuzzyMode::CjkVariant, false, false).0;
         let results = cbeta_grep(&root, &q, *max_results, *max_matches_per_file);
         let mut summary = format!(
             "Found {} files with matches for '{}':\n\n",
@@ -250,11 +218,9 @@ pub fn cbeta_pipeline(args: &crate::Commands) -> anyhow::Result<()> {
             for r in results.iter().take(take_files) {
                 let xml = std::fs::read_to_string(&r.file_path).unwrap_or_default();
                 if *full {
-                    let text = if *include_notes {
-                        extract_text_opts(&xml, true)
-                    } else {
-                        extract_text(&xml)
-                    };
+                    // Mirror the fetch path: honor --include-notes consistently
+                    // (extract_text() and extract_text_opts(.., false) can differ).
+                    let text = extract_text_opts(&xml, *include_notes);
                     contents.push(serde_json::json!({"type":"text","text": text}));
                     fetched.push(serde_json::json!({"id": r.file_id, "full": true}));
                 } else {
@@ -298,17 +264,12 @@ pub fn cbeta_pipeline(args: &crate::Commands) -> anyhow::Result<()> {
                                 }
                                 let mut chigh: Vec<serde_json::Value> = Vec::new();
                                 if let Some(pat0) = highlight.as_deref() {
-                                    let looks_like =
-                                        pat0.chars().any(|c| ".+*?[](){}|\\".contains(c));
-                                    let mut hlr = *highlight_regex;
-                                    let pat = if !hlr && !looks_like {
-                                        hlr = true;
-                                        buddha_core::text_utils::ws_cjk_variant_fuzzy_regex_literal(
-                                            pat0,
-                                        )
-                                    } else {
-                                        pat0.to_string()
-                                    };
+                                    let (pat, hlr) = compile_query(
+                                        pat0,
+                                        FuzzyMode::CjkVariant,
+                                        *highlight_regex,
+                                        false,
+                                    );
                                     if hlr {
                                         if let Ok(re) = regex::Regex::new(&pat) {
                                             for mm in re.find_iter(&ctx) {
@@ -325,27 +286,24 @@ pub fn cbeta_pipeline(args: &crate::Commands) -> anyhow::Result<()> {
                                                 .into_owned();
                                         }
                                     } else if !pat.is_empty() {
-                                        let mut i2 = 0usize;
-                                        while let Some(pos2) = ctx[i2..].find(&pat) {
-                                            let abs2 = i2 + pos2;
+                                        // Single pass: record each match position (against the
+                                        // original ctx) and build the decorated output together.
+                                        let mut out2 = String::with_capacity(ctx.len());
+                                        let mut k = 0usize;
+                                        while let Some(pos2) = ctx[k..].find(&pat) {
+                                            let abs2 = k + pos2;
                                             let sc = ctx[..abs2].chars().count();
                                             let ec = sc + pat.chars().count();
                                             chigh.push(
                                                 serde_json::json!({"startChar": sc, "endChar": ec}),
                                             );
-                                            i2 = abs2 + pat.len();
-                                        }
-                                        let mut out2 = String::with_capacity(ctx.len());
-                                        let mut j2 = 0usize;
-                                        while let Some(pos2) = ctx[j2..].find(&pat) {
-                                            let abs2 = j2 + pos2;
-                                            out2.push_str(&ctx[j2..abs2]);
+                                            out2.push_str(&ctx[k..abs2]);
                                             out2.push_str(hpre);
                                             out2.push_str(&pat);
                                             out2.push_str(hsuf);
-                                            j2 = abs2 + pat.len();
+                                            k = abs2 + pat.len();
                                         }
-                                        out2.push_str(&ctx[j2..]);
+                                        out2.push_str(&ctx[k..]);
                                         ctx = out2;
                                     }
                                 }
@@ -388,14 +346,8 @@ pub fn cbeta_pipeline(args: &crate::Commands) -> anyhow::Result<()> {
                         );
                         let mut chigh: Vec<serde_json::Value> = Vec::new();
                         if let Some(pat0) = highlight.as_deref() {
-                            let looks_like = pat0.chars().any(|c| ".+*?[](){}|\\".contains(c));
-                            let mut hlr = *highlight_regex;
-                            let pat = if !hlr && !looks_like {
-                                hlr = true;
-                                buddha_core::text_utils::ws_cjk_variant_fuzzy_regex_literal(pat0)
-                            } else {
-                                pat0.to_string()
-                            };
+                            let (pat, hlr) =
+                                compile_query(pat0, FuzzyMode::CjkVariant, *highlight_regex, false);
                             if hlr {
                                 if let Ok(re) = regex::Regex::new(&pat) {
                                     for mm in re.find_iter(&ctx) {
@@ -435,7 +387,7 @@ pub fn cbeta_pipeline(args: &crate::Commands) -> anyhow::Result<()> {
                 "jsonrpc":"2.0","id": serde_json::Value::Null,
                 "result": { "content": contents, "_meta": meta }
             });
-            println!("{}", serde_json::to_string_pretty(&envelope)?);
+            println!("{}", serde_json::to_string(&envelope)?);
         } else {
             for c in contents {
                 if let Some(t) = c.get("text").and_then(|v| v.as_str()) {
@@ -453,57 +405,13 @@ pub fn cbeta_search(
     max_matches_per_file: usize,
     json: bool,
 ) -> anyhow::Result<()> {
-    let looks_like_regex = query.chars().any(|c| ".+*?[](){}|\\".contains(c));
-    let q = if looks_like_regex {
-        query.to_string()
-    } else {
-        buddha_core::text_utils::ws_cjk_variant_fuzzy_regex_literal(query)
-    };
+    let q = compile_query(query, FuzzyMode::CjkVariant, false, false).0;
     let results = cbeta_grep(&cbeta_root(), &q, max_results, max_matches_per_file);
-    if json {
-        let meta = serde_json::json!({
-            "searchPattern": q,
-            "totalFiles": results.len(),
-            "results": results,
-            "hint": "Use cbeta-fetch with the file_id and recommended parts to get full content"
-        });
-        let summary = format!("Found {} files with matches for '{}'", results.len(), q);
-        let envelope = serde_json::json!({
-            "jsonrpc":"2.0","id": serde_json::Value::Null,
-            "result": { "content": [{"type":"text","text": summary}], "_meta": meta }
-        });
-        println!("{}", serde_json::to_string_pretty(&envelope)?);
-    } else {
-        println!("Found {} files with matches for '{}':\n", results.len(), q);
-        for (i, result) in results.iter().enumerate() {
-            println!("{}. {} ({})", i + 1, result.title, result.file_id);
-            println!(
-                "   {} matches, {}",
-                result.total_matches,
-                result
-                    .fetch_hints
-                    .total_content_size
-                    .as_deref()
-                    .unwrap_or("unknown size")
-            );
-            for (j, m) in result.matches.iter().enumerate().take(2) {
-                println!(
-                    "   Match {}: ...{}...",
-                    j + 1,
-                    m.context.chars().take(100).collect::<String>()
-                );
-            }
-            if result.matches.len() > 2 {
-                println!("   ... and {} more matches", result.matches.len() - 2);
-            }
-            if !result.fetch_hints.recommended_parts.is_empty() {
-                println!(
-                    "   Recommended parts: {}",
-                    result.fetch_hints.recommended_parts.join(", ")
-                );
-            }
-            println!();
-        }
-    }
-    Ok(())
+    super::common::corpus_grep_summary(
+        &q,
+        &results,
+        "Use cbeta-fetch with the file_id and recommended parts to get full content",
+        json,
+        super::common::SearchExtra::RecommendedParts,
+    )
 }

@@ -22,7 +22,7 @@ use std::fs;
 use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, OnceLock};
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 /// Version constant for the MCP server
 const VERSION: &str = env!("CARGO_PKG_VERSION");
@@ -258,6 +258,151 @@ fn default_auto_files() -> usize {
 }
 fn default_auto_matches() -> usize {
     env_usize_fb("BUDDHA_MCP_AUTO_MATCHES", "DAIZO_MCP_AUTO_MATCHES", 1)
+}
+fn default_inline_max_chars() -> usize {
+    env_usize_fb(
+        "BUDDHA_MCP_INLINE_MAX_CHARS",
+        "DAIZO_MCP_INLINE_MAX_CHARS",
+        12_000,
+    )
+}
+
+fn mcp_spill_dir() -> PathBuf {
+    cache_dir().join("mcp-spill")
+}
+
+fn content_text_char_count(content: &[serde_json::Value]) -> usize {
+    content
+        .iter()
+        .filter_map(|item| item.get("text").and_then(|v| v.as_str()))
+        .map(|text| text.chars().count())
+        .sum()
+}
+
+fn content_text_preview(content: &[serde_json::Value], max_chars: usize) -> String {
+    let mut joined = String::new();
+    for text in content
+        .iter()
+        .filter_map(|item| item.get("text").and_then(|v| v.as_str()))
+    {
+        if !joined.is_empty() {
+            joined.push_str("\n\n");
+        }
+        joined.push_str(text);
+        if joined.chars().count() >= max_chars {
+            break;
+        }
+    }
+    truncate_chars(&joined, max_chars)
+}
+
+fn spill_large_content_response(resp: serde_json::Value) -> serde_json::Value {
+    let inline_max_chars = default_inline_max_chars();
+    if inline_max_chars == 0 {
+        return resp;
+    }
+    spill_large_content_response_to(resp, inline_max_chars, &mcp_spill_dir())
+}
+
+fn spill_large_content_response_to(
+    mut resp: serde_json::Value,
+    inline_max_chars: usize,
+    spill_dir: &Path,
+) -> serde_json::Value {
+    if inline_max_chars == 0 {
+        return resp;
+    }
+
+    let Some(content) = resp
+        .pointer("/result/content")
+        .and_then(|v| v.as_array())
+        .cloned()
+    else {
+        return resp;
+    };
+
+    let total_text_chars = content_text_char_count(&content);
+    if total_text_chars <= inline_max_chars {
+        return resp;
+    }
+
+    ensure_dir(spill_dir);
+    let content_bytes = serde_json::to_vec(&content).unwrap_or_default();
+    let mut hasher = Sha1::new();
+    hasher.update(&content_bytes);
+    let digest = format!("{:x}", hasher.finalize());
+    let now_ms = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_millis())
+        .unwrap_or(0);
+    let filename = format!("{}-{}.json", now_ms, &digest[..12]);
+    let path = spill_dir.join(filename);
+    let file_uri = url::Url::from_file_path(&path)
+        .ok()
+        .map(|u| u.to_string())
+        .unwrap_or_else(|| format!("file://{}", path.to_string_lossy()));
+
+    let payload = json!({
+        "version": 1,
+        "stored": "mcp_result_content",
+        "totalTextChars": total_text_chars,
+        "inlineThresholdChars": inline_max_chars,
+        "content": content,
+    });
+    if fs::write(
+        &path,
+        serde_json::to_vec_pretty(&payload).unwrap_or_default(),
+    )
+    .is_err()
+    {
+        return resp;
+    }
+
+    let preview_chars = std::cmp::min(inline_max_chars, 1200);
+    let preview = content_text_preview(
+        payload
+            .get("content")
+            .and_then(|v| v.as_array())
+            .map(|v| v.as_slice())
+            .unwrap_or(&[]),
+        preview_chars,
+    );
+    let replacement_text = format!(
+        "Large MCP response content was stored outside the inline response.\npath: {}\nuri: {}\ntextChars: {}\ninlineThresholdChars: {}\n\nPreview:\n{}",
+        path.to_string_lossy(),
+        file_uri,
+        total_text_chars,
+        inline_max_chars,
+        preview
+    );
+
+    if let Some(result) = resp.get_mut("result").and_then(|v| v.as_object_mut()) {
+        result.insert(
+            "content".to_string(),
+            json!([{ "type": "text", "text": replacement_text }]),
+        );
+        let meta = result
+            .entry("_meta".to_string())
+            .or_insert_with(|| json!({}));
+        if !meta.is_object() {
+            *meta = json!({});
+        }
+        if let Some(meta_obj) = meta.as_object_mut() {
+            meta_obj.insert(
+                "spilledContent".to_string(),
+                json!({
+                    "reason": "inline_text_chars_exceeded",
+                    "path": path.to_string_lossy(),
+                    "uri": file_uri,
+                    "textChars": total_text_chars,
+                    "inlineThresholdChars": inline_max_chars,
+                    "previewChars": preview_chars,
+                }),
+            );
+        }
+    }
+
+    resp
 }
 
 #[derive(Deserialize)]
@@ -7468,6 +7613,7 @@ mod tests {
     use super::{
         cbeta_extract_lb_from_line_near, cbeta_part_arg, jozen_extract_detail,
         jozen_parse_search_html, sat_pick_best_doc, should_focus_highlight, slice_text_bounds,
+        spill_large_content_response_to,
     };
     use serde_json::json;
 
@@ -7535,6 +7681,46 @@ mod tests {
 
         let with_lb = json!({"lb":"0114b27", "highlight":"般若"});
         assert!(!should_focus_highlight(&with_lb));
+    }
+
+    #[test]
+    fn spill_large_content_response_stores_content_and_returns_key() {
+        let spill_dir =
+            std::env::temp_dir().join(format!("buddha-mcp-spill-test-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&spill_dir);
+        let resp = json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "result": {
+                "content": [
+                    {"type": "text", "text": "0123456789"},
+                    {"type": "text", "text": "abcdefghij"}
+                ],
+                "_meta": {"source": "test"}
+            }
+        });
+
+        let compacted = spill_large_content_response_to(resp, 12, &spill_dir);
+        let meta = compacted
+            .pointer("/result/_meta/spilledContent")
+            .expect("spill metadata");
+        assert_eq!(meta["reason"], "inline_text_chars_exceeded");
+        assert_eq!(meta["textChars"], 20);
+        let path = meta["path"].as_str().expect("spill path");
+        assert!(std::path::Path::new(path).exists());
+
+        let inline_text = compacted
+            .pointer("/result/content/0/text")
+            .and_then(|v| v.as_str())
+            .unwrap_or("");
+        assert!(inline_text.contains("Large MCP response content was stored"));
+        assert!(inline_text.contains("Preview:"));
+
+        let stored = std::fs::read_to_string(path).expect("spill file");
+        let stored_json: serde_json::Value = serde_json::from_str(&stored).expect("spill json");
+        assert_eq!(stored_json["totalTextChars"], 20);
+        assert_eq!(stored_json["content"][0]["text"], "0123456789");
+        let _ = std::fs::remove_dir_all(&spill_dir);
     }
 
     #[test]
@@ -7644,7 +7830,7 @@ pub fn run_stdio_server() -> Result<()> {
                 "tools/call" => {
                     let mut resp = handle_call(req.id, &req.params);
                     crate::unified::rewrite_meta_suggestions(&mut resp);
-                    resp
+                    spill_large_content_response(resp)
                 }
                 _ => {
                     json!({"jsonrpc":"2.0","id":req.id,"error":{"code": -32601, "message":"Method not found"}})

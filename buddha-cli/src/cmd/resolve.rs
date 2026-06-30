@@ -130,7 +130,10 @@ pub(crate) fn resolve(
         for pref in ["DN", "MN", "SN", "AN", "KN"] {
             if q_upper.starts_with(pref) {
                 let rest = q_upper[pref.len()..].to_string();
-                let digits: String = rest.chars().filter(|c| c.is_ascii_digit()).collect();
+                // Take only the contiguous leading digits (mirror the CBETA path).
+                // `filter` grabbed digits anywhere in `rest`, so e.g. "Anguttara 5"
+                // (-> "ANGUTTARA5") was mis-resolved to a bogus direct ID.
+                let digits: String = rest.chars().take_while(|c| c.is_ascii_digit()).collect();
                 if !digits.is_empty() {
                     if let Ok(n) = digits.parse::<u32>() {
                         let id_norm = format!("{}{}", pref, n);
@@ -156,10 +159,7 @@ pub(crate) fn resolve(
     }
 
     // Tipitaka file stem hint
-    if sources.iter().any(|s| s == "tipitaka")
-        && q_nospace.contains(".mul")
-        && !q_nospace.contains(' ')
-    {
+    if sources.iter().any(|s| s == "tipitaka") && q_nospace.contains(".mul") {
         let stem = q_nospace.clone();
         let bias = if prefer_source == Some("tipitaka") {
             0.02

@@ -1,5 +1,5 @@
 use crate::cmd::sat::http_client;
-use buddha_core::path_resolver::cache_dir;
+use buddha_core::text_utils::truncate_chars;
 use regex::Regex;
 use scraper::{Html, Selector};
 use serde::Serialize;
@@ -42,46 +42,19 @@ struct JozenDetail {
 // ---- caching ----
 
 fn jozen_cache_path_for(key: &str) -> PathBuf {
-    use sha1::Digest;
-    let mut hasher = sha1::Sha1::new();
-    hasher.update(key.as_bytes());
-    let h = hasher.finalize();
-    let fname = format!("{:x}.html", h);
-    let dir = cache_dir().join("jozen");
-    let _ = std::fs::create_dir_all(&dir);
-    dir.join(fname)
+    crate::cmd::common::cache_path("jozen", key, "html")
 }
 
 // ---- HTTP helpers ----
 
 fn http_get_with_retry(url: &str, max_retries: u32) -> Option<String> {
-    let client = http_client();
-    let mut attempt = 0u32;
-    let mut backoff = 500u64;
-    loop {
-        match client.get(url).send() {
-            Ok(resp) => {
-                let status = resp.status();
-                if status.is_success() {
-                    if let Ok(t) = resp.text() {
-                        return Some(t);
-                    }
-                }
-                if status.as_u16() == 429 || status.is_server_error() {
-                    // retry
-                } else {
-                    return None;
-                }
-            }
-            Err(_) => {}
-        }
-        attempt += 1;
-        if attempt > max_retries {
-            return None;
-        }
-        std::thread::sleep(std::time::Duration::from_millis(backoff));
-        backoff = (backoff.saturating_mul(2)).min(8000);
-    }
+    crate::cmd::common::send_with_retry(
+        || http_client().get(url),
+        |resp| resp.text().ok(),
+        max_retries + 1,
+        500,
+        |status| status.as_u16() == 429 || status.is_server_error(),
+    )
 }
 
 fn http_post_form_with_retry(
@@ -89,33 +62,13 @@ fn http_post_form_with_retry(
     params: &[(&str, String)],
     max_retries: u32,
 ) -> Option<String> {
-    let client = http_client();
-    let mut attempt = 0u32;
-    let mut backoff = 500u64;
-    loop {
-        match client.post(url).form(&params).send() {
-            Ok(resp) => {
-                let status = resp.status();
-                if status.is_success() {
-                    if let Ok(t) = resp.text() {
-                        return Some(t);
-                    }
-                }
-                if status.as_u16() == 429 || status.is_server_error() {
-                    // retry
-                } else {
-                    return None;
-                }
-            }
-            Err(_) => {}
-        }
-        attempt += 1;
-        if attempt > max_retries {
-            return None;
-        }
-        std::thread::sleep(std::time::Duration::from_millis(backoff));
-        backoff = (backoff.saturating_mul(2)).min(8000);
-    }
+    crate::cmd::common::send_with_retry(
+        || http_client().post(url).form(&params),
+        |resp| resp.text().ok(),
+        max_retries + 1,
+        500,
+        |status| status.as_u16() == 429 || status.is_server_error(),
+    )
 }
 
 // ---- jozen internals ----
@@ -228,13 +181,6 @@ fn jozen_collect_text_compact(node: &scraper::ElementRef) -> String {
         .join(" ")
         .trim()
         .to_string()
-}
-
-fn truncate_chars(s: &str, max_chars: usize) -> String {
-    if max_chars == 0 {
-        return String::new();
-    }
-    s.chars().take(max_chars).collect()
 }
 
 fn jozen_parse_search_html(

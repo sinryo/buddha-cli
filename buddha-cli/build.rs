@@ -4,12 +4,14 @@ fn main() {
     // Ensure rebuild when package metadata changes (e.g., version bump).
     println!("cargo:rerun-if-changed=Cargo.toml");
 
-    // ビルド日時を設定
-    let output = Command::new("date")
+    // ビルド日時を設定（date コマンドが無い環境でもビルドを止めない）
+    let build_date = Command::new("date")
         .args(["+%Y-%m-%d %H:%M:%S"])
         .output()
-        .expect("Failed to execute date command");
-    let build_date = String::from_utf8_lossy(&output.stdout).trim().to_string();
+        .ok()
+        .filter(|o| o.status.success())
+        .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+        .unwrap_or_else(|| "unknown".to_string());
     println!("cargo:rustc-env=BUILD_DATE={}", build_date);
 
     // Mirror package version into a build-script driven env var so version bumps
@@ -29,6 +31,7 @@ fn main() {
         }
     }
 
-    // ビルドのたびに再実行
+    // build.rs 自体が変更されたときのみ再実行する（Cargo.toml は上で指定済み）。
+    // 注: BUILD_DATE はこのスクリプトが再実行されたときだけ更新される。
     println!("cargo:rerun-if-changed=build.rs");
 }

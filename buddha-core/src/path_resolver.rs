@@ -140,7 +140,7 @@ pub fn resolve_cbeta_path_direct(id: &str) -> Option<PathBuf> {
         );
 
         if let Ok(paths) = glob(&pattern) {
-            for entry in paths.filter_map(|e| e.ok()) {
+            if let Some(entry) = paths.filter_map(|e| e.ok()).next() {
                 return Some(entry);
             }
         }
@@ -155,7 +155,7 @@ pub fn resolve_cbeta_path_direct(id: &str) -> Option<PathBuf> {
             num
         );
         if let Ok(paths) = glob(&pattern_lower) {
-            for entry in paths.filter_map(|e| e.ok()) {
+            if let Some(entry) = paths.filter_map(|e| e.ok()).next() {
                 return Some(entry);
             }
         }

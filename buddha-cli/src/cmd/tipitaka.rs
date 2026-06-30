@@ -1,44 +1,15 @@
-use crate::regex_utils::ws_fuzzy_regex;
+use crate::regex_utils::{apply_highlight, compile_query, FuzzyMode};
 use crate::{
     decode_xml_bytes, load_or_build_tipitaka_index_cli, resolve_tipitaka_path, slice_text_cli,
     SliceArgs,
 };
 use buddha_core::path_resolver::tipitaka_root;
-use buddha_core::text_utils::highlight_text;
 use buddha_core::{extract_text, list_heads_generic, tipitaka_grep};
-use std::path::Path;
 
 pub fn tipitaka_title_search(query: &str, limit: usize, json: bool) -> anyhow::Result<()> {
     let idx = load_or_build_tipitaka_index_cli();
     let hits = super::super::best_match(&idx, query, limit);
-    if json {
-        let items: Vec<_> = hits
-            .iter()
-            .map(|h| {
-                serde_json::json!({
-                    "id": Path::new(&h.entry.path).file_stem().unwrap().to_string_lossy(),
-                    "title": h.entry.title,
-                    "path": h.entry.path,
-                    "score": h.score,
-                })
-            })
-            .collect();
-        println!(
-            "{}",
-            serde_json::to_string_pretty(
-                &serde_json::json!({"count": items.len(), "results": items})
-            )?
-        );
-    } else {
-        for (i, h) in hits.iter().enumerate() {
-            let id = Path::new(&h.entry.path)
-                .file_stem()
-                .unwrap()
-                .to_string_lossy();
-            println!("{}. {}  {}", i + 1, id, h.entry.title);
-        }
-    }
-    Ok(())
+    super::common::print_title_search(&hits, json, super::common::TitleIdSource::PathStem, false)
 }
 
 pub fn tipitaka_fetch(args: &crate::Commands) -> anyhow::Result<()> {
@@ -111,30 +82,17 @@ pub fn tipitaka_fetch(args: &crate::Commands) -> anyhow::Result<()> {
             max_chars: *max_chars,
         };
         let mut sliced = slice_text_cli(&text, &slice);
-        // highlight
-        let mut highlighted = 0usize;
-        let mut hl_positions: Vec<serde_json::Value> = Vec::new();
-        if let Some(hpat0) = highlight.as_deref() {
-            let looks_like_regex = hpat0.chars().any(|c| ".+*?[](){}|\\".contains(c));
-            let mut hl_is_regex = *highlight_regex;
-            let hpat =
-                if hpat0.chars().any(|c| c.is_whitespace()) && !looks_like_regex && !hl_is_regex {
-                    hl_is_regex = true;
-                    ws_fuzzy_regex(hpat0)
-                } else {
-                    hpat0.to_string()
-                };
-            let hpre = highlight_prefix.as_deref().unwrap_or(">>> ");
-            let hsuf = highlight_suffix.as_deref().unwrap_or(" <<<");
-            let (decorated, count, positions) =
-                highlight_text(&sliced, &hpat, hl_is_regex, hpre, hsuf);
-            sliced = decorated;
-            highlighted = count;
-            hl_positions = positions
-                .into_iter()
-                .map(|p| serde_json::json!({"startChar": p.start_char, "endChar": p.end_char}))
-                .collect();
-        }
+        // Snapshot the real returned length before highlight markers inflate `sliced`.
+        let returned_len = sliced.len();
+        let (decorated, highlighted, hl_positions) = apply_highlight(
+            &sliced,
+            highlight.as_deref(),
+            *highlight_regex,
+            highlight_prefix.as_deref(),
+            highlight_suffix.as_deref(),
+            FuzzyMode::Whitespace,
+        );
+        sliced = decorated;
         let heads = list_heads_generic(&xml);
         if *json {
             let idx = load_or_build_tipitaka_index_cli();
@@ -169,26 +127,41 @@ pub fn tipitaka_fetch(args: &crate::Commands) -> anyhow::Result<()> {
                     .map(|e| e.title.clone());
                 (stem, title, None)
             };
-            let meta = serde_json::json!({
-                "totalLength": text.len(),
-                "returnedStart": slice.start().unwrap_or(0),
-                "returnedEnd": slice.end_bound(text.len(), sliced.len()),
-                "truncated": (sliced.len() as u64) < (text.len() as u64),
-                "sourcePath": path.to_string_lossy(),
-                "extractionMethod": if head_query.is_some() { "head-query" } else if head_index.is_some() { "head-index" } else { "full" },
-                "headingsTotal": heads.len(),
-                "headingsPreview": heads.clone().into_iter().take(*headings_limit).collect::<Vec<_>>(),
-                "matchedId": matched_id,
-                "matchedTitle": matched_title,
-                "matchedScore": matched_score,
-                "highlighted": if highlighted > 0 { Some(highlighted) } else { None::<usize> },
-                "highlightPositions": if !hl_positions.is_empty() { Some(hl_positions) } else { None::<Vec<serde_json::Value>> },
+            let meta = super::common::build_fetch_meta(super::common::FetchMetaParams {
+                total_length: text.len(),
+                returned_start: slice.start().unwrap_or(0),
+                returned_end: slice.end_bound(text.len(), returned_len),
+                truncated: (returned_len as u64) < (text.len() as u64),
+                source_path: path.to_string_lossy(),
+                extraction_method: if head_query.is_some() {
+                    "head-query".into()
+                } else if head_index.is_some() {
+                    "head-index".into()
+                } else {
+                    "full".into()
+                },
+                part_matched: None,
+                heads,
+                headings_limit: *headings_limit,
+                matched_id,
+                matched_title,
+                matched_score,
+                highlighted: if highlighted > 0 {
+                    Some(highlighted)
+                } else {
+                    None::<usize>
+                },
+                highlight_positions: if !hl_positions.is_empty() {
+                    Some(hl_positions)
+                } else {
+                    None::<Vec<serde_json::Value>>
+                },
             });
             let envelope = serde_json::json!({
                 "jsonrpc":"2.0","id": serde_json::Value::Null,
                 "result": { "content": [{"type":"text","text": sliced}], "_meta": meta }
             });
-            println!("{}", serde_json::to_string_pretty(&envelope)?);
+            println!("{}", serde_json::to_string(&envelope)?);
         } else {
             println!("{}", sliced);
         }
@@ -202,57 +175,13 @@ pub fn tipitaka_search(
     max_matches_per_file: usize,
     json: bool,
 ) -> anyhow::Result<()> {
-    let looks_like_regex = query.chars().any(|c| ".+*?[](){}|\\".contains(c));
-    let q = if query.chars().any(|c| c.is_whitespace()) && !looks_like_regex {
-        ws_fuzzy_regex(query)
-    } else {
-        query.to_string()
-    };
+    let q = compile_query(query, FuzzyMode::Whitespace, false, true).0;
     let results = tipitaka_grep(&tipitaka_root(), &q, max_results, max_matches_per_file);
-    if json {
-        let meta = serde_json::json!({
-            "searchPattern": q,
-            "totalFiles": results.len(),
-            "results": results,
-            "hint": "Use tipitaka-fetch with the file_id to get full content"
-        });
-        let summary = format!("Found {} files with matches for '{}'", results.len(), q);
-        let envelope = serde_json::json!({
-            "jsonrpc":"2.0","id": serde_json::Value::Null,
-            "result": { "content": [{"type":"text","text": summary}], "_meta": meta }
-        });
-        println!("{}", serde_json::to_string_pretty(&envelope)?);
-    } else {
-        println!("Found {} files with matches for '{}':\n", results.len(), q);
-        for (i, result) in results.iter().enumerate() {
-            println!("{}. {} ({})", i + 1, result.title, result.file_id);
-            println!(
-                "   {} matches, {}",
-                result.total_matches,
-                result
-                    .fetch_hints
-                    .total_content_size
-                    .as_deref()
-                    .unwrap_or("unknown size")
-            );
-            for (j, m) in result.matches.iter().enumerate().take(2) {
-                println!(
-                    "   Match {}: ...{}...",
-                    j + 1,
-                    m.context.chars().take(100).collect::<String>()
-                );
-            }
-            if result.matches.len() > 2 {
-                println!("   ... and {} more matches", result.matches.len() - 2);
-            }
-            if !result.fetch_hints.structure_info.is_empty() {
-                println!(
-                    "   Structure: {}",
-                    result.fetch_hints.structure_info.join(", ")
-                );
-            }
-            println!();
-        }
-    }
-    Ok(())
+    super::common::corpus_grep_summary(
+        &q,
+        &results,
+        "Use tipitaka-fetch with the file_id to get full content",
+        json,
+        super::common::SearchExtra::Structure,
+    )
 }

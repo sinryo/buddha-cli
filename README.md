@@ -1,47 +1,65 @@
-# buddha-mcp
+# buddha
 
-An MCP (Model Context Protocol) server plus CLI for fast Buddhist text search and retrieval. Supports CBETA (Chinese), Pāli Tipitaka (romanized), GRETIL (Sanskrit TEI), SARIT (TEI P5), SAT (online), Jodo Shu Zensho (浄土宗全書, online), and Tibetan full-text search via online corpora (BUDA/BDRC, Adarshah). Implemented in Rust for speed and reliability.
+Fast Buddhist text search and retrieval for humans and AI agents. This repository provides one Rust CLI (`buddha`) and an MCP stdio server (`buddha mcp`) over local and online Buddhist text corpora.
 
-See also: [日本語 README](README.ja.md) | [繁體中文 README](README.zh-TW.md)
+Languages: English | [日本語](README.ja.md) | [繁體中文](README.zh-TW.md)
 
-## Highlights
+> Former project/binary names (`daizo`, `daizo-cli`, `daizo-mcp`) are kept as compatibility aliases, but current development uses the `buddha` name.
 
-- **Direct ID Access**: Instant retrieval when you know the text ID (fastest path!)
-- Fast regex/content search with line numbers (CBETA/Tipitaka/GRETIL/SARIT/MUKTABODHA)
-- CBETA search works with modern forms too (new/old CJK variants are normalized so Taisho texts still hit)
-- Title search across CBETA, Tipitaka, GRETIL, SARIT, and MUKTABODHA indices
-- Precise context fetching by line number or character range
-- Optional SAT online search with smart caching
-- Jodo Shu Zensho (浄土宗全書) online search/fetch with caching
-- Tibetan online full-text search (BUDA/BDRC + Adarshah), with EWTS/Wylie best-effort auto-conversion
-- One-shot bootstrap and index build
+## What It Covers
+
+| Corpus | Mode | Main access |
+|--------|------|-------------|
+| CBETA / Chinese canon | local after init | title search, regex search, direct `T0001` style fetch |
+| Tipitaka / romanized Pali | local after init | Nikaya IDs such as `DN1`, title search, regex search |
+| GRETIL / Sanskrit TEI | local after install/init | title search, regex search, TEI fetch |
+| SARIT / TEI P5 | local after install/init | title search, regex search, TEI fetch |
+| MUKTABODHA / Sanskrit library | local files under `$BUDDHA_DIR/MUKTABODHA` | title search, regex search, text/XML fetch |
+| SAT Daizokyo database | online, cached | search, detail fetch, pipeline |
+| Jodo Shu Zensho | online, cached | search, page fetch by `lineno` |
+| Tibetan corpora | online, cached | BUDA/BDRC and Adarshah full-text search |
+
+Core strengths:
+
+- Direct ID fetch is the fastest path when the text ID is known.
+- Search results include line anchors and `_meta.fetchSuggestions` for low-token follow-up fetches.
+- CBETA search normalizes common old/new CJK variants so modern forms still find Taisho text.
+- CLI JSON output uses MCP-style envelopes for easy parsing by agents.
+- MCP defaults to a compact unified tool surface while keeping legacy corpus-specific tools available.
+- Large MCP text responses can be spilled to `cache/mcp-spill/` instead of overloading clients.
 
 ## Install
 
-Prerequisite: Git must be installed.
-
-Quick bootstrap:
+Prerequisites: Git and Rust/Cargo. The quick installer checks these and suggests Rust installation when needed.
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/sinryo/buddha-cli/main/scripts/bootstrap.sh | bash -s -- --yes --write-path
 ```
 
-Manual:
+Manual build and install:
 
 ```bash
-cargo build --release
+cargo build --release -p buddha
 scripts/install.sh --prefix "$HOME/.buddha" --write-path
 ```
 
-## Use With MCP Clients
+The installer places binaries in `$BUDDHA_DIR/bin`, creates `buddha-mcp` plus legacy `daizo*` aliases, downloads or updates local corpora where supported, and rebuilds indexes.
 
-Claude Code CLI:
+## MCP Setup
+
+Run the server as:
+
+```bash
+buddha mcp
+```
+
+Claude Code:
 
 ```bash
 claude mcp add buddha "$HOME/.buddha/bin/buddha" mcp
 ```
 
-Codex CLI (`~/.codex/config.toml`):
+Codex (`~/.codex/config.toml`):
 
 ```toml
 [mcp_servers.buddha]
@@ -49,247 +67,216 @@ command = "/Users/you/.buddha/bin/buddha"
 args = ["mcp"]
 ```
 
-Compatibility: `$HOME/.buddha/bin/buddha-mcp` is available as an alias. Legacy aliases `daizo`, `daizo-mcp`, `daizo-cli` are also maintained for backward compatibility.
-
-## CLI Examples
-
-### Direct ID Access (Fastest!)
-
-When you know the text ID, skip search entirely:
-
-```bash
-# CBETA: Taisho number (T + 4-digit number)
-buddha cbeta-fetch --id T0001      # 長阿含經
-buddha cbeta-fetch --id T0262      # 妙法蓮華經 (Lotus Sutra)
-buddha cbeta-fetch --id T0235      # 金剛般若波羅蜜經 (Diamond Sutra)
-
-# Tipitaka: Nikāya codes (DN, MN, SN, AN, KN)
-buddha tipitaka-fetch --id DN1     # Brahmajāla Sutta
-buddha tipitaka-fetch --id MN1     # Mūlapariyāya Sutta
-buddha tipitaka-fetch --id SN1     # First Saṃyutta
-
-# GRETIL: Sanskrit text names
-buddha gretil-fetch --id saddharmapuNDarIka         # Lotus Sutra (Sanskrit)
-buddha gretil-fetch --id vajracchedikA              # Diamond Sutra (Sanskrit)
-buddha gretil-fetch --id prajJApAramitAhRdayasUtra  # Heart Sutra (Sanskrit)
-
-# SARIT: TEI P5 corpus (file stem)
-buddha sarit-fetch --id asvaghosa-buddhacarita
-
-# MUKTABODHA: Sanskrit library (file stem; local files under $BUDDHA_DIR/MUKTABODHA)
-buddha muktabodha-fetch --id "<file-stem>"
-```
-
-### Search
-
-```bash
-# Title search
-buddha cbeta-title-search --query "楞伽經" --json
-buddha tipitaka-title-search --query "dn 1" --json
-buddha sarit-title-search --query "buddhacarita" --json
-buddha muktabodha-title-search --query "yoga" --json
-
-# Content search (with line numbers)
-buddha cbeta-search --query "阿弥陀" --max-results 10
-buddha tipitaka-search --query "nibbana|vipassana" --max-results 15
-buddha gretil-search --query "yoga" --max-results 10
-buddha sarit-search --query "yoga" --max-results 10
-buddha muktabodha-search --query "yoga" --max-results 10
-```
-
-### Fetch with Context
-
-```bash
-# Fetch by ID with options
-buddha cbeta-fetch --id T0858 --part 1 --max-chars 4000 --json
-buddha tipitaka-fetch --id s0101m.mul --max-chars 2000 --json
-buddha gretil-fetch --id buddhacarita --max-chars 4000 --json
-buddha sarit-fetch --id asvaghosa-buddhacarita --max-chars 4000 --json
-buddha muktabodha-fetch --id "<file-stem>" --max-chars 4000 --json
-
-# Context around a line (after search)
-buddha cbeta-fetch --id T0858 --line-number 342 --context-before 10 --context-after 200
-buddha tipitaka-fetch --id s0305m.mul --line-number 158 --context-before 5 --context-after 100
-```
-
-### Admin
-
-```bash
-buddha init                      # first-time setup (downloads data, builds indexes)
-buddha doctor --verbose          # diagnose install and data
-buddha index-rebuild --source all
-buddha uninstall --purge         # remove binaries and data/cache
-buddha update --yes              # reinstall this CLI
-```
-
-## AI Agent Integration
-
-buddha CLI is designed for seamless use by AI agents (Claude Code, Codex, etc.):
-
-**Auto-JSON in non-TTY:** When stdout is piped or redirected, output is automatically JSON — no need to pass `--json` every time.
-
-```bash
-buddha cbeta-title-search --query "般若" | jq .    # auto-JSON (piped)
-BUDDHA_JSON=1 buddha cbeta-title-search --query "般若"  # force JSON via env
-buddha --json cbeta-title-search --query "般若"    # global --json flag
-```
-
-**Quiet mode (`--quiet` / `-q`):** Suppresses progress messages on stderr for cleaner output parsing.
-
-**Command discovery (`buddha schema`):** Lists all subcommands and their arguments in machine-readable JSON.
-
-```bash
-buddha schema                          # all commands
-buddha schema --command cbeta-fetch    # single command schema
-```
-
-**Structured errors:** In JSON mode, errors are output to stderr as `{"error":{"message":"...","code":"NOT_FOUND"}}`.
-
-| Exit Code | Meaning |
-|-----------|---------|
-| 0 | Success |
-| 1 | General error |
-| 2 | Usage error (invalid arguments) |
-| 10 | Not found (no results) |
-| 11 | Network error (timeout, connection) |
-| 12 | Data unavailable (needs clone/download) |
+Compatibility: `$HOME/.buddha/bin/buddha-mcp`, `daizo`, `daizo-cli`, and `daizo-mcp` all point at the same CLI for older client configs.
 
 ## MCP Tools
 
-Core:
-- `buddha_version` (server version/build info)
-- `buddha_usage` (usage guide for AI clients; low-token flow)
-- `buddha_system_prompt` (one-page system prompt template for AI clients; low-token defaults)
-- `buddha_profile` (in-process benchmark for a tool call)
+Unified MCP tools are enabled by default (`BUDDHA_UNIFIED_TOOLS=0` disables them):
 
-Resolve:
-- `buddha_resolve` (resolve title/alias/ID into candidate corpus IDs and recommended next fetch calls; sources: cbeta/tipitaka/gretil/sarit/muktabodha)
+| Tool | Purpose |
+|------|---------|
+| `fetch` | Retrieve text by ID, `useid`, `lineno`, query, line number, section, or character range |
+| `search` | Full-text search in `cbeta`, `tipitaka`, `gretil`, `sarit`, `muktabodha`, `sat`, or `jozen` |
+| `title_search` | Title search in local indexed corpora |
+| `pipeline` | Search plus optional auto-fetch for `cbeta`, `gretil`, `sarit`, `muktabodha`, or `sat` |
+| `resolve` | Crosswalk a human title/alias/ID to candidate corpus IDs and next fetch calls |
+| `info` | Version, usage guide, system prompt, or all three |
+| `profile` | Warm-cache timing for a tool call |
+| `tibetan_search` | Tibetan online full-text search; kept standalone |
 
-Search:
-- `cbeta_title_search`, `cbeta_search`
-- `tipitaka_title_search`, `tipitaka_search`
-- `gretil_title_search`, `gretil_search`
-- `sarit_title_search`, `sarit_search`
-- `muktabodha_title_search`, `muktabodha_search`
-- `sat_search` (SAT Taisho Shinshu Daizokyo search; returns `_meta.results` + `_meta.fetchSuggestions` for `sat_detail`; use `fq` to filter by Taisho id ranges)
-- `jozen_search`
-- `tibetan_search` (online Tibetan full-text search; `sources:["buda","adarshah"]`, `exact` for phrase search on BUDA, `wildcard` for Adarshah, `maxSnippetChars` for snippet size)
+Legacy corpus-specific tools are still available when unified mode is disabled or when an older client has cached tool names, for example `cbeta_fetch`, `cbeta_search`, `gretil_pipeline`, `sat_detail`, `jozen_fetch`, and `buddha_version`.
 
-Fetch:
-- `cbeta_fetch` (supports `lb`, `lineNumber`, `contextBefore`, `contextAfter`, `headQuery`, `headIndex`, `format:"plain"`, `focusHighlight`; `plain` strips XML, resolves gaiji, excludes `teiHeader`, preserves line breaks; `focusHighlight` jumps near the first highlight match)
-- `tipitaka_fetch` (supports `lineNumber`, `contextBefore`, `contextAfter`)
-- `gretil_fetch` (supports `lineNumber`, `contextBefore`, `contextAfter`, `headQuery`, `headIndex`)
-- `sarit_fetch` (supports `lineNumber`, `contextBefore`, `contextAfter`)
-- `muktabodha_fetch` (supports `lineNumber`, `contextBefore`, `contextAfter`)
-- `sat_fetch`, `sat_detail`, `sat_pipeline` (SAT detail fetch; `sat_pipeline` auto-picks best hit and fetches; supports `exact`; default is phrase search)
-- `jozen_fetch` (fetches a page by `lineno`; returns lines as `[J..] ...`)
+## CLI Quick Start
 
-Pipelines:
-- `cbeta_pipeline`, `gretil_pipeline`, `sarit_pipeline`, `muktabodha_pipeline`, `sat_pipeline` (set `autoFetch=false` for summary-first)
-
-## Low-Token Guide (AI clients)
-
-### Fastest: Direct ID Access
-
-When the text ID is known, **skip search entirely**:
-
-| Corpus | ID Format | Example |
-|--------|-----------|---------|
-| CBETA | `T` + 4-digit number | `cbeta_fetch({id: "T0262"})` |
-| Tipitaka | `DN`, `MN`, `SN`, `AN`, `KN` + number | `tipitaka_fetch({id: "DN1"})` |
-| GRETIL | Sanskrit text name | `gretil_fetch({id: "saddharmapuNDarIka"})` |
-| SARIT | TEI file stem | `sarit_fetch({id: "asvaghosa-buddhacarita"})` |
-| MUKTABODHA | file stem | `muktabodha_fetch({id: "FILE_STEM"})` |
-
-### Common IDs Reference
-
-**CBETA (Chinese Canon)**:
-- T0001 = 長阿含經 (Dīrghāgama)
-- T0099 = 雜阿含經 (Saṃyuktāgama)
-- T0262 = 妙法蓮華經 (Lotus Sutra)
-- T0235 = 金剛般若波羅蜜經 (Diamond Sutra)
-- T0251 = 般若波羅蜜多心經 (Heart Sutra)
-
-**Tipitaka (Pāli Canon)**:
-- DN1-DN34 = Dīghanikāya (長部)
-- MN1-MN152 = Majjhimanikāya (中部)
-- SN = Saṃyuttanikāya (相応部)
-- AN = Aṅguttaranikāya (増支部)
-
-**GRETIL (Sanskrit)**:
-- saddharmapuNDarIka = Lotus Sutra
-- vajracchedikA = Diamond Sutra
-- prajJApAramitAhRdayasUtra = Heart Sutra
-- buddhacarita = Buddhacarita (Aśvaghoṣa)
-
-### Standard Flow (when ID unknown)
-
-1. Use `buddha_resolve` to pick corpus+id candidates
-2. Call `*_fetch` with `{ id }` (and optionally `part`/`headQuery`, etc.)
-3. If you need phrase search: `*_search` → read `_meta.fetchSuggestions` → `*_fetch` (`lineNumber`)
-4. Use `*_pipeline` only when you need a multi-file summary; set `autoFetch=false` by default
-
-### What "Crosswalk" Means Here
-
-In buddha, **crosswalk** means: start from a human query (title/alias/short name) and quickly map it to concrete corpus IDs and next calls.
-
-- Call `buddha_resolve({query})`
-- Use the returned candidates and `_meta.fetchSuggestions` to jump directly to the best `*_fetch`
-
-Tool descriptions mention these hints; `initialize` also exposes a `prompts.low-token-guide` entry for clients.
-
-Tip: Control number of suggestions via `BUDDHA_HINT_TOP` (default 1).
-
-## Data Sources
-
-- CBETA: https://github.com/cbeta-org/xml-p5
-- Tipitaka (romanized): https://github.com/VipassanaTech/tipitaka-xml
-- GRETIL (Sanskrit TEI): https://gretil.sub.uni-goettingen.de/
-- SARIT (TEI P5): https://github.com/sarit/SARIT-corpus
-- MUKTABODHA (Sanskrit; local files): place texts under `$BUDDHA_DIR/MUKTABODHA/`
-- SAT (online): wrap7/detail endpoints
-- Jodo Shu Zensho (浄土宗全書, online): jodoshuzensho.jp
-- BUDA/BDRC (online Tibetan): library.bdrc.io / autocomplete.bdrc.io
-- Adarshah (online Tibetan): online.adarshah.org / api.adarshah.org
-
-## Directories and Env
-
-- `BUDDHA_DIR` (default: `~/.buddha`; legacy fallback: `DAIZO_DIR` / `~/.daizo`)
-  - data: `xml-p5/`, `tipitaka-xml/romn/`, `GRETIL/`, `SARIT-corpus/`, `MUKTABODHA/`
-  - cache: `cache/`
-  - binaries: `bin/`
-- `BUDDHA_JSON=1` forces JSON output for all CLI commands (same as `--json`)
-- `BUDDHA_DEBUG=1` enables minimal MCP debug log (legacy: `DAIZO_DEBUG`)
-- Highlight envs: `BUDDHA_HL_PREFIX`, `BUDDHA_HL_SUFFIX`, `BUDDHA_SNIPPET_PREFIX`, `BUDDHA_SNIPPET_SUFFIX`
-- Repo policy envs (for robots/rate-limits):
-  - `BUDDHA_REPO_MIN_DELAY_MS`, `BUDDHA_REPO_USER_AGENT`, `BUDDHA_REPO_RESPECT_ROBOTS`
-
-## Scripts
-
-| Script | Purpose |
-|--------|---------|
-| `scripts/bootstrap.sh` | One-liner installer: checks deps → clones repo → runs install.sh → auto-registers MCP (`buddha mcp`) |
-| `scripts/install.sh` | Main installer: builds `buddha` → installs binaries (`buddha-mcp` alias + compat aliases) → downloads GRETIL → rebuilds indexes |
-| `scripts/link-binaries.sh` | Dev helper: creates symlinks to release binaries in repo root |
-| `scripts/release.sh` | Release helper: version bump → tag → GitHub release |
-
-### Release Helper Examples
+Direct fetch when you already know the ID:
 
 ```bash
-# Auto (bump → commit → tag → push → GitHub release with auto-notes)
-scripts/release.sh 0.6.13 --all
-
-# CHANGELOG notes instead of auto-notes
-scripts/release.sh 0.6.13 --push --release
-
-# Dry run
-scripts/release.sh 0.6.13 --all --dry-run
+buddha cbeta-fetch --id T0262 --max-chars 4000 --json
+buddha tipitaka-fetch --id DN1 --max-chars 2000 --json
+buddha gretil-fetch --id saddharmapuNDarIka --max-chars 4000 --json
+buddha sarit-fetch --id asvaghosa-buddhacarita --max-chars 4000 --json
+buddha muktabodha-fetch --id "<file-stem>" --max-chars 4000 --json
 ```
+
+Find an ID when you only know a title or alias:
+
+```bash
+buddha resolve --query "法華経" --json
+buddha cbeta-title-search --query "楞伽經" --json
+buddha tipitaka-title-search --query "dn 1" --json
+buddha gretil-title-search --query "vajracchedika" --json
+```
+
+Search content and fetch context:
+
+```bash
+buddha cbeta-search --query "阿弥陀" --max-results 10 --json
+buddha cbeta-fetch --id T0858 --line-number 342 --context-before 2 --context-after 6 --highlight "阿弥陀" --json
+buddha tipitaka-search --query "nibbana|vipassana" --max-results 15 --json
+buddha gretil-search --query "dharma" --max-results 10 --json
+```
+
+Online sources:
+
+```bash
+buddha sat-search --query "般若" --json
+buddha sat-fetch --useid "<startid-from-search>" --max-chars 3000 --json
+buddha jozen-search --query "念仏" --json
+buddha jozen-fetch --lineno "J01_0200B19" --json
+buddha tibetan-search --query "bde ba" --json
+```
+
+Admin and discovery:
+
+```bash
+buddha init
+buddha doctor --verbose
+buddha index-rebuild --source all
+buddha schema
+buddha schema --command cbeta-fetch
+buddha version
+```
+
+## Agent Usage Pattern
+
+For low-token AI use:
+
+1. If an ID is known, call `fetch` directly.
+2. If the corpus or ID is unclear, call `resolve`.
+3. Otherwise call `search`, read `_meta.fetchSuggestions`, then call `fetch` with the suggested `id` plus `lineNumber` or `lb`.
+4. Include `highlight` with the original search term when fetching context.
+5. Use `pipeline` only when you want a multi-file summary or automated search-to-fetch flow.
+
+Common direct IDs:
+
+| Corpus | ID examples |
+|--------|-------------|
+| CBETA | `T0001`, `T0099`, `T0235`, `T0251`, `T0262` |
+| Tipitaka | `DN1`, `MN1`, `SN1`, `AN1`, `s0101m.mul` |
+| GRETIL | `saddharmapuNDarIka`, `vajracchedikA`, `prajJApAramitAhRdayasUtra` |
+| SARIT | `asvaghosa-buddhacarita` |
+| Jodo Shu Zensho | `J01_0200B19` style `lineno` |
+
+## Output And Errors
+
+`--json` returns compact machine-readable JSON. In non-TTY contexts, output is automatically JSON unless overridden.
+
+```bash
+buddha cbeta-title-search --query "般若" | jq .
+BUDDHA_JSON=1 buddha cbeta-title-search --query "般若"
+buddha --json cbeta-title-search --query "般若"
+```
+
+JSON errors are written to stderr as:
+
+```json
+{"error":{"message":"...","code":"NOT_FOUND"}}
+```
+
+Exit codes:
+
+| Code | Meaning |
+|------|---------|
+| 0 | Success |
+| 1 | General error |
+| 2 | Usage error |
+| 10 | Not found |
+| 11 | Network error |
+| 12 | Data unavailable |
+
+## Directories And Environment
+
+`BUDDHA_DIR` defaults to `~/.buddha`. Legacy `DAIZO_DIR` and `~/.daizo` are still recognized as fallbacks.
+
+Typical layout:
+
+```text
+$BUDDHA_DIR/
+  bin/
+  cache/
+  xml-p5/
+  tipitaka-xml/romn/
+  GRETIL/
+  SARIT-corpus/
+  MUKTABODHA/
+```
+
+Useful environment variables:
+
+| Variable | Meaning |
+|----------|---------|
+| `BUDDHA_JSON=1` | Force CLI JSON output |
+| `BUDDHA_DEBUG=1` | Minimal MCP debug logging |
+| `BUDDHA_UNIFIED_TOOLS=0` | Expose legacy MCP tools instead of unified tools |
+| `BUDDHA_HINT_TOP` | Number of fetch suggestions to emit |
+| `BUDDHA_MCP_MAX_CHARS` | Default MCP fetch cap for large text |
+| `BUDDHA_MCP_SNIPPET_LEN` | Default MCP snippet length |
+| `BUDDHA_MCP_AUTO_FILES` | Default number of auto-fetched files |
+| `BUDDHA_MCP_AUTO_MATCHES` | Default matches per auto-fetched file |
+| `BUDDHA_MCP_INLINE_MAX_CHARS` | Inline MCP text limit before spilling to `cache/mcp-spill/`; `0` disables |
+| `BUDDHA_HL_PREFIX`, `BUDDHA_HL_SUFFIX` | Highlight markers |
+| `BUDDHA_SNIPPET_PREFIX`, `BUDDHA_SNIPPET_SUFFIX` | Pipeline snippet markers |
+| `BUDDHA_REPO_MIN_DELAY_MS`, `BUDDHA_REPO_USER_AGENT`, `BUDDHA_REPO_RESPECT_ROBOTS` | Data download politeness controls |
+
+Most variables also accept legacy `DAIZO_*` names.
+
+## Repository Layout
+
+| Path | Role |
+|------|------|
+| `buddha-core/` | Shared indexing, search, TEI extraction, path resolution, data download policy |
+| `buddha-cli/` | `buddha` command-line interface and CLI-facing command handlers |
+| `buddha-mcp/` | MCP stdio server, unified tool dispatch, legacy tool handlers |
+| `docs/` | MCP notes, system prompt, architecture notes |
+| `scripts/` | Bootstrap, install, binary-linking, release helpers |
+| `tasks/golden/` | Frozen CLI output harness for regression checks |
+
+## Development
+
+```bash
+cargo fmt
+cargo test -p buddha-core
+cargo test -p buddha-mcp
+cargo test -p buddha
+cargo build --release -p buddha
+```
+
+Golden regression check:
+
+```bash
+bash tasks/golden/verify.sh local
+```
+
+Golden output includes the CLI version, so a release bump can intentionally change `tasks/golden/*/version.text.out`.
+
+## Release
+
+Current release version: `0.6.14`.
+
+Version numbers live in:
+
+- `buddha-core/Cargo.toml`
+- `buddha-cli/Cargo.toml`
+- `buddha-mcp/Cargo.toml`
+- `Cargo.lock`
+- `CHANGELOG.md`
+- `docs/buddha_system_prompt.txt`
+
+Release helper:
+
+```bash
+# Inspect the next patch release without modifying files
+scripts/release.sh --patch --dry-run --no-fmt --no-test
+
+# Create commit, push branch, create v0.6.14 tag, push tag, create GitHub Release with generated notes
+scripts/release.sh 0.6.14 --push --tag --release --auto-notes
+
+# Use CHANGELOG notes instead of GitHub generated notes
+scripts/release.sh 0.6.14 --push --tag --release
+```
+
+Important: `scripts/release.sh` runs `git add -A` and commits. Review the working tree before using it, especially when unrelated changes are present.
 
 ## License
 
-MIT OR Apache-2.0 © 2025 Shinryo Taniguchi
-
-## Contributing
-
-Issues and PRs welcome. Please include `buddha doctor --verbose` output with bug reports.
+MIT OR Apache-2.0 © 2026 Shinryo Taniguchi

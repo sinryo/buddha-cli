@@ -1,4 +1,5 @@
 use crate::cmd::sat::http_client;
+use buddha_core::text_utils::truncate_chars;
 use ewts::EwtsConverter;
 use serde_json::json;
 use std::sync::OnceLock;
@@ -41,13 +42,6 @@ fn ewts_to_unicode_best_effort(s: &str) -> Option<String> {
 
 fn strip_html_mark(s: &str) -> String {
     s.replace("<mark>", "").replace("</mark>", "")
-}
-
-fn truncate_chars(s: &str, max_chars: usize) -> String {
-    if max_chars == 0 {
-        return String::new();
-    }
-    s.chars().take(max_chars).collect()
 }
 
 // ---- Adarsha ----
@@ -372,8 +366,19 @@ pub(crate) fn tibetan_search(
     let unicode_query = ewts_to_unicode_best_effort(query);
     let effective_query = unicode_query.as_deref().unwrap_or(query);
 
-    let do_adarsha = sources.is_empty() || sources.iter().any(|s| s == "adarsha");
+    let do_adarsha =
+        sources.is_empty() || sources.iter().any(|s| s == "adarsha" || s == "adarshah");
     let do_buda = sources.is_empty() || sources.iter().any(|s| s == "buda");
+    // Warn about unrecognized source tokens so a typo isn't silently treated as
+    // "no results" (a dropped source otherwise looks identical to an empty hit set).
+    for s in sources {
+        if s != "adarsha" && s != "adarshah" && s != "buda" {
+            eprintln!(
+                "warning: unknown --sources value '{}' (known: buda, adarsha)",
+                s
+            );
+        }
+    }
 
     let mut all_results: Vec<serde_json::Value> = Vec::new();
 

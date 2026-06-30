@@ -1,39 +1,15 @@
-use crate::regex_utils::ws_fuzzy_regex;
+use crate::regex_utils::{apply_highlight, compile_query, FuzzyMode};
 use crate::{
     decode_xml_bytes, load_or_build_gretil_index_cli, resolve_gretil_path_cli, slice_text_cli,
     SliceArgs,
 };
 use buddha_core::path_resolver::gretil_root;
-use buddha_core::text_utils::highlight_text;
 use buddha_core::{extract_text_opts, gretil_grep, list_heads_generic};
 
 pub fn gretil_title_search(query: &str, limit: usize, json: bool) -> anyhow::Result<()> {
     let idx = load_or_build_gretil_index_cli();
     let hits = super::super::best_match_gretil(&idx, query, limit);
-    if json {
-        let items: Vec<_> = hits
-            .iter()
-            .map(|h| {
-                serde_json::json!({
-                    "id": h.entry.id,
-                    "title": h.entry.title,
-                    "path": h.entry.path,
-                    "score": h.score,
-                })
-            })
-            .collect();
-        println!(
-            "{}",
-            serde_json::to_string_pretty(
-                &serde_json::json!({"count": items.len(), "results": items})
-            )?
-        );
-    } else {
-        for (i, h) in hits.iter().enumerate() {
-            println!("{}. {}  {}", i + 1, h.entry.id, h.entry.title);
-        }
-    }
-    Ok(())
+    super::common::print_title_search(&hits, json, super::common::TitleIdSource::EntryId, false)
 }
 
 pub fn gretil_fetch(args: &crate::Commands) -> anyhow::Result<()> {
@@ -90,33 +66,21 @@ pub fn gretil_fetch(args: &crate::Commands) -> anyhow::Result<()> {
         } else {
             slice_text_cli(&text, &slice)
         };
-        let mut highlighted = 0usize;
-        let mut hl_positions: Vec<serde_json::Value> = Vec::new();
-        if let Some(hpat0) = highlight.as_deref() {
-            let looks_like_regex = hpat0.chars().any(|c| ".+*?[](){}|\\".contains(c));
-            let mut hl_is_regex = *highlight_regex;
-            let hpat =
-                if hpat0.chars().any(|c| c.is_whitespace()) && !looks_like_regex && !hl_is_regex {
-                    hl_is_regex = true;
-                    ws_fuzzy_regex(hpat0)
-                } else {
-                    hpat0.to_string()
-                };
-            let hpre = highlight_prefix.as_deref().unwrap_or(">>> ");
-            let hsuf = highlight_suffix.as_deref().unwrap_or(" <<<");
-            let (decorated, count, positions) =
-                highlight_text(&sliced, &hpat, hl_is_regex, hpre, hsuf);
-            sliced = decorated;
-            highlighted = count;
-            hl_positions = positions
-                .into_iter()
-                .map(|p| serde_json::json!({"startChar": p.start_char, "endChar": p.end_char}))
-                .collect();
-        }
+        let (decorated, highlighted, hl_positions) = apply_highlight(
+            &sliced,
+            highlight.as_deref(),
+            *highlight_regex,
+            highlight_prefix.as_deref(),
+            highlight_suffix.as_deref(),
+            FuzzyMode::Whitespace,
+        );
+        sliced = decorated;
         let heads = list_heads_generic(&xml);
         if *json {
-            let idx = load_or_build_gretil_index_cli();
+            // Only build the (potentially expensive) index when there is a query to
+            // match against; a plain id-based fetch needs no index.
             let (matched_id, matched_title, matched_score) = if let Some(q) = query.as_deref() {
+                let idx = load_or_build_gretil_index_cli();
                 if let Some(hit) = super::super::best_match_gretil(&idx, q, 1)
                     .into_iter()
                     .next()
@@ -132,26 +96,35 @@ pub fn gretil_fetch(args: &crate::Commands) -> anyhow::Result<()> {
             } else {
                 (id.clone(), None, None)
             };
-            let meta = serde_json::json!({
-                "totalLength": text.len(),
-                "returnedStart": slice.start().unwrap_or(0),
-                "returnedEnd": slice.end_bound(text.len(), sliced.len()),
-                "truncated": (sliced.len() as u64) < (text.len() as u64),
-                "sourcePath": path.to_string_lossy(),
-                "extractionMethod": extraction_method,
-                "headingsTotal": heads.len(),
-                "headingsPreview": heads.into_iter().take(*headings_limit).collect::<Vec<_>>(),
-                "matchedId": matched_id,
-                "matchedTitle": matched_title,
-                "matchedScore": matched_score,
-                "highlighted": if highlighted > 0 { Some(highlighted) } else { None::<usize> },
-                "highlightPositions": if !hl_positions.is_empty() { Some(hl_positions) } else { None::<Vec<serde_json::Value>> },
+            let meta = super::common::build_fetch_meta(super::common::FetchMetaParams {
+                total_length: text.len(),
+                returned_start: slice.start().unwrap_or(0),
+                returned_end: slice.end_bound(text.len(), sliced.len()),
+                truncated: (sliced.len() as u64) < (text.len() as u64),
+                source_path: path.to_string_lossy(),
+                extraction_method: extraction_method.into(),
+                part_matched: None,
+                heads,
+                headings_limit: *headings_limit,
+                matched_id,
+                matched_title,
+                matched_score,
+                highlighted: if highlighted > 0 {
+                    Some(highlighted)
+                } else {
+                    None::<usize>
+                },
+                highlight_positions: if !hl_positions.is_empty() {
+                    Some(hl_positions)
+                } else {
+                    None::<Vec<serde_json::Value>>
+                },
             });
             let envelope = serde_json::json!({
                 "jsonrpc":"2.0","id": serde_json::Value::Null,
                 "result": { "content": [{"type":"text","text": sliced}], "_meta": meta }
             });
-            println!("{}", serde_json::to_string_pretty(&envelope)?);
+            println!("{}", serde_json::to_string(&envelope)?);
         } else {
             println!("{}", sliced);
         }
@@ -183,12 +156,7 @@ pub fn gretil_pipeline(args: &crate::Commands) -> anyhow::Result<()> {
         json,
     } = args
     {
-        let looks_like_regex = query.chars().any(|c| ".+*?[](){}|\\".contains(c));
-        let q = if query.chars().any(|c| c.is_whitespace()) && !looks_like_regex {
-            ws_fuzzy_regex(query)
-        } else {
-            query.to_string()
-        };
+        let q = compile_query(query, FuzzyMode::Whitespace, false, true).0;
         let root = gretil_root();
         let results = gretil_grep(&root, &q, *max_results, *max_matches_per_file);
         let mut content_items: Vec<serde_json::Value> = Vec::new();
@@ -203,6 +171,45 @@ pub fn gretil_pipeline(args: &crate::Commands) -> anyhow::Result<()> {
         if *autofetch {
             let mut fetched: Vec<serde_json::Value> = Vec::new();
             let tf = auto_fetch_files.unwrap_or(1).min(results.len());
+            // Highlight/snippet decorations and the highlight pattern are constant
+            // for the whole pipeline call — derive them once here instead of
+            // per-file/per-match (the regex was being recompiled for every match).
+            let hl_pre = highlight_prefix
+                .as_deref()
+                .map(|s| s.to_string())
+                .or_else(|| std::env::var("BUDDHA_HL_PREFIX").ok())
+                .or_else(|| std::env::var("DAIZO_HL_PREFIX").ok())
+                .unwrap_or_else(|| ">>> ".to_string());
+            let hl_suf = highlight_suffix
+                .as_deref()
+                .map(|s| s.to_string())
+                .or_else(|| std::env::var("BUDDHA_HL_SUFFIX").ok())
+                .or_else(|| std::env::var("DAIZO_HL_SUFFIX").ok())
+                .unwrap_or_else(|| " <<<".to_string());
+            let sn_pre = snippet_prefix
+                .as_deref()
+                .map(|s| s.to_string())
+                .or_else(|| std::env::var("BUDDHA_SNIPPET_PREFIX").ok())
+                .or_else(|| std::env::var("DAIZO_SNIPPET_PREFIX").ok())
+                .unwrap_or_else(|| ">>> ".to_string());
+            let sn_suf = snippet_suffix
+                .as_deref()
+                .map(|s| s.to_string())
+                .or_else(|| std::env::var("BUDDHA_SNIPPET_SUFFIX").ok())
+                .or_else(|| std::env::var("DAIZO_SNIPPET_SUFFIX").ok())
+                .unwrap_or_else(|| "".to_string());
+            // (is_regex, pattern, compiled_regex_if_regex) — compiled at most once.
+            let hl_spec: Option<(bool, String, Option<regex::Regex>)> =
+                highlight.as_deref().map(|pat0| {
+                    let (pat, hlr) =
+                        compile_query(pat0, FuzzyMode::Whitespace, *highlight_regex, true);
+                    let re = if hlr {
+                        regex::Regex::new(&pat).ok()
+                    } else {
+                        None
+                    };
+                    (hlr, pat, re)
+                });
             for r in results.iter().take(tf) {
                 let per_file_limit = auto_fetch_matches.unwrap_or(*max_matches_per_file);
                 let xml = std::fs::read_to_string(&r.file_path).unwrap_or_default();
@@ -212,30 +219,6 @@ pub fn gretil_pipeline(args: &crate::Commands) -> anyhow::Result<()> {
                     fetched.push(serde_json::json!({"id": r.file_id, "full": true}));
                 } else {
                     let mut combined = String::new();
-                    let hl_pre = highlight_prefix
-                        .as_deref()
-                        .map(|s| s.to_string())
-                        .or_else(|| std::env::var("BUDDHA_HL_PREFIX").ok())
-                        .or_else(|| std::env::var("DAIZO_HL_PREFIX").ok())
-                        .unwrap_or_else(|| ">>> ".to_string());
-                    let hl_suf = highlight_suffix
-                        .as_deref()
-                        .map(|s| s.to_string())
-                        .or_else(|| std::env::var("BUDDHA_HL_SUFFIX").ok())
-                        .or_else(|| std::env::var("DAIZO_HL_SUFFIX").ok())
-                        .unwrap_or_else(|| " <<<".to_string());
-                    let sn_pre = snippet_prefix
-                        .as_deref()
-                        .map(|s| s.to_string())
-                        .or_else(|| std::env::var("BUDDHA_SNIPPET_PREFIX").ok())
-                        .or_else(|| std::env::var("DAIZO_SNIPPET_PREFIX").ok())
-                        .unwrap_or_else(|| ">>> ".to_string());
-                    let sn_suf = snippet_suffix
-                        .as_deref()
-                        .map(|s| s.to_string())
-                        .or_else(|| std::env::var("BUDDHA_SNIPPET_SUFFIX").ok())
-                        .or_else(|| std::env::var("DAIZO_SNIPPET_SUFFIX").ok())
-                        .unwrap_or_else(|| "".to_string());
                     let mut file_highlights: Vec<Vec<serde_json::Value>> = Vec::new();
                     let mut highlight_counts: Vec<usize> = Vec::new();
                     let mut count = 0usize;
@@ -248,20 +231,9 @@ pub fn gretil_pipeline(args: &crate::Commands) -> anyhow::Result<()> {
                                 *context_after,
                             );
                             let mut chigh: Vec<serde_json::Value> = Vec::new();
-                            if let Some(pat0) = highlight.as_deref() {
-                                let looks_like = pat0.chars().any(|c| ".+*?[](){}|\\".contains(c));
-                                let mut hlr = *highlight_regex;
-                                let pat = if pat0.chars().any(|c| c.is_whitespace())
-                                    && !looks_like
-                                    && !hlr
-                                {
-                                    hlr = true;
-                                    ws_fuzzy_regex(pat0)
-                                } else {
-                                    pat0.to_string()
-                                };
-                                if hlr {
-                                    if let Ok(re) = regex::Regex::new(&pat) {
+                            if let Some((hlr, pat, re_opt)) = &hl_spec {
+                                if *hlr {
+                                    if let Some(re) = re_opt {
                                         for mm in re.find_iter(&ctx) {
                                             let sb = mm.start();
                                             let eb = mm.end();
@@ -282,7 +254,7 @@ pub fn gretil_pipeline(args: &crate::Commands) -> anyhow::Result<()> {
                                 } else if !pat.is_empty() {
                                     // record positions and decorate
                                     let mut i = 0usize;
-                                    while let Some(pos) = ctx[i..].find(&pat) {
+                                    while let Some(pos) = ctx[i..].find(pat.as_str()) {
                                         let abs = i + pos;
                                         let sc = ctx[..abs].chars().count();
                                         let ec = sc + pat.chars().count();
@@ -294,11 +266,11 @@ pub fn gretil_pipeline(args: &crate::Commands) -> anyhow::Result<()> {
                                     let mut out = String::with_capacity(ctx.len());
                                     let mut j = 0usize;
                                     let mut ct = 0usize;
-                                    while let Some(pos) = ctx[j..].find(&pat) {
+                                    while let Some(pos) = ctx[j..].find(pat.as_str()) {
                                         let abs = j + pos;
                                         out.push_str(&ctx[j..abs]);
                                         out.push_str(&hl_pre);
-                                        out.push_str(&pat);
+                                        out.push_str(pat.as_str());
                                         out.push_str(&hl_suf);
                                         j = abs + pat.len();
                                         ct += 1;
@@ -349,7 +321,7 @@ pub fn gretil_pipeline(args: &crate::Commands) -> anyhow::Result<()> {
                 "jsonrpc":"2.0","id": serde_json::Value::Null,
                 "result": { "content": content_items, "_meta": meta }
             });
-            println!("{}", serde_json::to_string_pretty(&envelope)?);
+            println!("{}", serde_json::to_string(&envelope)?);
         } else {
             for c in content_items {
                 if let Some(t) = c.get("text").and_then(|v| v.as_str()) {
@@ -367,51 +339,13 @@ pub fn gretil_search(
     max_matches_per_file: usize,
     json: bool,
 ) -> anyhow::Result<()> {
-    let looks_like_regex = query.chars().any(|c| ".+*?[](){}|\\".contains(c));
-    let q = if query.chars().any(|c| c.is_whitespace()) && !looks_like_regex {
-        ws_fuzzy_regex(query)
-    } else {
-        query.to_string()
-    };
+    let q = compile_query(query, FuzzyMode::Whitespace, false, true).0;
     let results = gretil_grep(&gretil_root(), &q, max_results, max_matches_per_file);
-    if json {
-        let meta = serde_json::json!({
-            "searchPattern": q,
-            "totalFiles": results.len(),
-            "results": results,
-            "hint": "Use gretil-fetch with the file_id to get full content"
-        });
-        let summary = format!("Found {} files with matches for '{}'", results.len(), q);
-        let envelope = serde_json::json!({
-            "jsonrpc":"2.0","id": serde_json::Value::Null,
-            "result": { "content": [{"type":"text","text": summary}], "_meta": meta }
-        });
-        println!("{}", serde_json::to_string_pretty(&envelope)?);
-    } else {
-        println!("Found {} files with matches for '{}':\n", results.len(), q);
-        for (i, result) in results.iter().enumerate() {
-            println!("{}. {} ({})", i + 1, result.title, result.file_id);
-            println!(
-                "   {} matches, {}",
-                result.total_matches,
-                result
-                    .fetch_hints
-                    .total_content_size
-                    .as_deref()
-                    .unwrap_or("unknown size")
-            );
-            for (j, m) in result.matches.iter().enumerate().take(2) {
-                println!(
-                    "   Match {}: ...{}...",
-                    j + 1,
-                    m.context.chars().take(100).collect::<String>()
-                );
-            }
-            if result.matches.len() > 2 {
-                println!("   ... and {} more matches", result.matches.len() - 2);
-            }
-            println!();
-        }
-    }
-    Ok(())
+    super::common::corpus_grep_summary(
+        &q,
+        &results,
+        "Use gretil-fetch with the file_id to get full content",
+        json,
+        super::common::SearchExtra::None,
+    )
 }

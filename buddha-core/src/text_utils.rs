@@ -75,6 +75,15 @@ fn cjk_variant_group(ch: char) -> Option<&'static str> {
     }
 }
 
+/// Take at most `max_chars` characters (by Unicode scalar, not bytes); `0` yields
+/// an empty string. Shared by the online fetch commands for snippet truncation.
+pub fn truncate_chars(s: &str, max_chars: usize) -> String {
+    if max_chars == 0 {
+        return String::new();
+    }
+    s.chars().take(max_chars).collect()
+}
+
 /// Collapse consecutive whitespace into `\\s*` and expand known CJK variants into
 /// regex character classes. Intended for building safe regex patterns from a
 /// literal user query (non-regex input).

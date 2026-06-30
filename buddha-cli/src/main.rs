@@ -220,10 +220,10 @@ enum Commands {
         #[arg(long)]
         auto_fetch_matches: Option<usize>,
         /// Include matched line in context
-        #[arg(long, default_value_t = true)]
+        #[arg(long, action = clap::ArgAction::Set, num_args = 0..=1, default_missing_value = "true", default_value_t = true)]
         include_match_line: bool,
         /// Include short highlight snippet
-        #[arg(long, default_value_t = true)]
+        #[arg(long, action = clap::ArgAction::Set, num_args = 0..=1, default_missing_value = "true", default_value_t = true)]
         include_highlight_snippet: bool,
         /// Minimum snippet length to include
         #[arg(long, default_value_t = 0)]
@@ -253,7 +253,7 @@ enum Commands {
         #[arg(long, default_value_t = false)]
         include_notes: bool,
         /// Output JSON envelope
-        #[arg(long, default_value_t = true)]
+        #[arg(long, action = clap::ArgAction::Set, num_args = 0..=1, default_missing_value = "true", default_value_t = true)]
         json: bool,
     },
     /// Search GRETIL titles by fuzzy matching (index-based, offline).
@@ -620,7 +620,7 @@ enum Commands {
     ///
     /// Related: resolve (cross-corpus ID resolution)
     #[command(
-        after_help = "EXAMPLES:\n  daizo tibetan-search --query \"བདེ་བ\" --json\n  daizo tibetan-search --query \"bde ba\" --json           # EWTS auto-converted\n  daizo tibetan-search --query \"karma\" --sources buda --limit 20\n  daizo tibetan-search --query \"སྙིང\" --sources adarsha --wildcard\n\nOUTPUT FORMAT:\n  Plain: numbered results with [source] title, snippet, url\n  JSON (--json): {jsonrpc, result: {content, _meta, hits: [{source, score, title, snippet, url, ...}]}}"
+        after_help = "EXAMPLES:\n  buddha tibetan-search --query \"བདེ་བ\" --json\n  buddha tibetan-search --query \"bde ba\" --json           # EWTS auto-converted\n  buddha tibetan-search --query \"karma\" --sources buda --limit 20\n  buddha tibetan-search --query \"སྙིང\" --sources adarsha --wildcard\n\nOUTPUT FORMAT:\n  Plain: numbered results with [source] title, snippet, url\n  JSON (--json): {jsonrpc, result: {content, _meta, hits: [{source, score, title, snippet, url, ...}]}}"
     )]
     TibetanSearch {
         /// Search query (Tibetan Unicode or EWTS)
@@ -633,7 +633,7 @@ enum Commands {
         #[arg(long, default_value_t = 20)]
         limit: usize,
         /// Exact match mode (BUDA only)
-        #[arg(long, default_value_t = true)]
+        #[arg(long, action = clap::ArgAction::Set, num_args = 0..=1, default_missing_value = "true", default_value_t = true)]
         exact: bool,
         /// Maximum snippet characters (0 = unlimited)
         #[arg(long, default_value_t = 400)]
@@ -739,10 +739,10 @@ enum Commands {
         #[arg(long)]
         auto_fetch_matches: Option<usize>,
         /// Include matched line in context
-        #[arg(long, default_value_t = true)]
+        #[arg(long, action = clap::ArgAction::Set, num_args = 0..=1, default_missing_value = "true", default_value_t = true)]
         include_match_line: bool,
         /// Include short highlight snippet
-        #[arg(long, default_value_t = true)]
+        #[arg(long, action = clap::ArgAction::Set, num_args = 0..=1, default_missing_value = "true", default_value_t = true)]
         include_highlight_snippet: bool,
         /// Minimum snippet length to include
         #[arg(long, default_value_t = 0)]
@@ -772,7 +772,7 @@ enum Commands {
         #[arg(long, default_value_t = false)]
         include_notes: bool,
         /// Output JSON envelope
-        #[arg(long, default_value_t = true)]
+        #[arg(long, action = clap::ArgAction::Set, num_args = 0..=1, default_missing_value = "true", default_value_t = true)]
         json: bool,
     },
     /// Search CBETA titles by fuzzy matching (index-based, offline).
@@ -885,7 +885,7 @@ enum Commands {
         #[arg(long, default_value_t = 0)]
         offs: usize,
         /// Exact mode
-        #[arg(long, default_value_t = true)]
+        #[arg(long, action = clap::ArgAction::Set, num_args = 0..=1, default_missing_value = "true", default_value_t = true)]
         exact: bool,
         /// Titles only filter (client-side)
         #[arg(long, default_value_t = false)]
@@ -970,7 +970,7 @@ enum Commands {
         #[arg(long)]
         max_chars: Option<usize>,
         /// Output JSON (MCP envelope)
-        #[arg(long, default_value_t = true)]
+        #[arg(long, action = clap::ArgAction::Set, num_args = 0..=1, default_missing_value = "true", default_value_t = true)]
         json: bool,
     },
     /// Search Tipitaka (Pali Canon, romanized) titles (index-based, offline).
@@ -1738,6 +1738,9 @@ fn run_cli() -> i32 {
                 json,
             } => {
                 let json = should_output_json(global_json, json);
+                if url.is_none() && useid.is_none() {
+                    anyhow::bail!("sat-fetch requires --useid or --url");
+                }
                 cmd::sat::sat_fetch(url.as_ref(), useid.as_ref(), start_char, max_chars, json)?;
                 return Ok(());
             }
@@ -2165,7 +2168,7 @@ fn run_cli() -> i32 {
                 }
             }
             Commands::Version {} => {
-                println!("buddha {}", env!("CARGO_PKG_VERSION"));
+                println!("buddha {}", env!("BUDDHA_VERSION"));
             }
             Commands::Doctor { verbose } => {
                 let base = default_buddha();
@@ -2352,7 +2355,7 @@ fn cmd_schema(filter: Option<&str>) {
         "version": version,
         "commands": commands,
     });
-    println!("{}", serde_json::to_string_pretty(&output).unwrap());
+    println!("{}", serde_json::to_string(&output).unwrap());
 }
 
 // ===== helpers (shared in buddha-core::text_utils) =====
@@ -2705,7 +2708,8 @@ pub(crate) fn best_match_gretil<'a>(
             (s, e)
         })
         .collect();
-    scored.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap());
+    // NaN-safe, deterministic (ties broken by id) — see scored_cmp.
+    scored.sort_by(scored_cmp);
     scored
         .into_iter()
         .take(limit)
@@ -2718,7 +2722,7 @@ pub(crate) fn extract_section_by_head(
     head_index: Option<usize>,
     head_query: Option<&str>,
 ) -> Option<String> {
-    let re = regex::Regex::new(r"(?is)<head\\b[^>]*>(.*?)</head>").ok()?;
+    let re = regex::Regex::new(r"(?is)<head\b[^>]*>(.*?)</head>").ok()?;
     let mut heads: Vec<(usize, usize, String)> = Vec::new();
     for cap in re.captures_iter(xml) {
         let m = cap.get(0).unwrap();
@@ -2918,5 +2922,38 @@ mod tests {
     fn clap_parses_mcp_subcommand() {
         let cli = Cli::try_parse_from(["buddha", "mcp"]).expect("must parse mcp subcommand");
         assert!(matches!(cli.command, Commands::Mcp {}));
+    }
+
+    #[test]
+    fn extract_section_by_head_matches_and_splits() {
+        // Regression for the `\b` raw-string bug that made the regex never match.
+        let xml = "<head>TitleOne</head>FIRSTBODY<head>TitleTwo</head>SECONDBODY";
+        let by_query = extract_section_by_head(xml, None, Some("titleone"))
+            .expect("query should match the first <head>");
+        assert!(by_query.contains("FIRSTBODY"));
+        assert!(!by_query.contains("SECONDBODY"));
+        let by_index =
+            extract_section_by_head(xml, Some(1), None).expect("index 1 should select 2nd head");
+        assert!(by_index.contains("SECONDBODY"));
+        assert!(extract_section_by_head("no heads here", Some(0), None).is_none());
+    }
+
+    #[test]
+    fn default_true_bool_flags_are_negatable() {
+        // Regression for B#1: default_value_t=true bool flags must accept `--flag=false`.
+        let cli =
+            Cli::try_parse_from(["buddha", "tibetan-search", "--query", "x", "--exact=false"])
+                .expect("must parse --exact=false");
+        match cli.command {
+            Commands::TibetanSearch { exact, .. } => assert!(!exact, "--exact=false must disable"),
+            other => panic!("expected tibetan-search, got {:?}", other),
+        }
+        // Omitting it keeps the default (true).
+        let cli2 = Cli::try_parse_from(["buddha", "tibetan-search", "--query", "x"])
+            .expect("must parse without --exact");
+        match cli2.command {
+            Commands::TibetanSearch { exact, .. } => assert!(exact, "default must remain true"),
+            other => panic!("expected tibetan-search, got {:?}", other),
+        }
     }
 }
