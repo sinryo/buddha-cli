@@ -124,7 +124,12 @@ buddha sat-fetch --useid "<startid-from-search>" --max-chars 3000 --json
 buddha jozen-search --query "念仏" --json
 buddha jozen-fetch --lineno "J01_0200B19" --json
 buddha tibetan-search --query "bde ba" --json
+buddha tibetan-fetch --source adarsha --kdb degetengyur --sutra D3134 --page 74-299b --json
 ```
+
+SAT 的 `startid` 是 detail 擷取用的 `useid`，不是搜尋命中的逐行 anchor。`sat-fetch --start-char` 是 fetch 後抽出的 detail 文字切片位置，不是 `sat-search` 的 `body` 內 offset。
+
+Tibetan fetch 依後端而定。Adarsha 可用 `kdb + sutra/voltext + page` 取得頁面文字；BUDA/BDRC 會優先嘗試 BDRC e-text chunks，受限時退回 BDRC snippet，再退回 RDF/OpenPecha metadata。
 
 管理與探索：
 
@@ -251,7 +256,7 @@ golden 輸出包含 CLI version，因此 release bump 時 `tasks/golden/*/versio
 
 ## 釋出
 
-目前釋出版本：`0.6.14`
+目前釋出版本：`0.6.15`
 
 版本號反映位置：
 
@@ -268,11 +273,11 @@ golden 輸出包含 CLI version，因此 release bump 時 `tasks/golden/*/versio
 # 不修改檔案，檢查下一個 patch release
 scripts/release.sh --patch --dry-run --no-fmt --no-test
 
-# 建立 commit、push branch、建立 v0.6.14 tag、push tag、建立 GitHub Release
-scripts/release.sh 0.6.14 --push --tag --release --auto-notes
+# 建立 commit、push branch、建立 v0.6.15 tag、push tag、建立 GitHub Release
+scripts/release.sh 0.6.15 --push --tag --release --auto-notes
 
 # 使用 CHANGELOG 而非 GitHub generated notes
-scripts/release.sh 0.6.14 --push --tag --release
+scripts/release.sh 0.6.15 --push --tag --release
 ```
 
 注意：`scripts/release.sh` 會執行 `git add -A` 並 commit。若工作區有無關變更，會被一起納入；執行前請務必檢查 worktree。

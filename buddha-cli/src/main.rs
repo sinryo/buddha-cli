@@ -645,6 +645,60 @@ enum Commands {
         #[arg(long, default_value_t = false)]
         json: bool,
     },
+    /// Fetch Tibetan source text or fetchability metadata from Adarsha / BUDA.
+    ///
+    /// Adarsha can fetch page text with kdb+sutra+page. BUDA/BDRC is resolved
+    /// through RDF metadata to Etext/OpenPecha when available; scan-only records
+    /// return metadata and next URLs instead of pretending a text was fetched.
+    ///
+    /// Related: tibetan-search
+    #[command(
+        after_help = "EXAMPLES:\n  buddha tibetan-fetch --source adarsha --kdb degetengyur --sutra D3134 --page 74-299b --json\n  buddha tibetan-fetch --url 'https://online.adarshah.org/index.html?kdb=degetengyur&sutra=D3134&page=74-299b' --json\n  buddha tibetan-fetch --source buda --id MW1KG2733 --json\n  buddha tibetan-fetch --source buda --id I16B68B30 --volume I1KG1325 --json"
+    )]
+    TibetanFetch {
+        /// Source backend: auto, adarsha/adarshah, buda/bdrc, or openpecha
+        #[arg(long)]
+        source: Option<String>,
+        /// BDRC/BUDA/OpenPecha identifier (MW..., W..., IE..., I...)
+        #[arg(long)]
+        id: Option<String>,
+        /// Source URL; Adarsha reader URLs and BUDA bdr: URLs are parsed
+        #[arg(long)]
+        url: Option<String>,
+        /// Adarsha collection key (for example degetengyur)
+        #[arg(long)]
+        kdb: Option<String>,
+        /// Adarsha sutra/voltext id (for example D3134)
+        #[arg(long)]
+        sutra: Option<String>,
+        /// Adarsha page id (for example 74-299b)
+        #[arg(long)]
+        page: Option<String>,
+        /// Adarsha sutra type: sutra or voltext
+        #[arg(long)]
+        sutra_type: Option<String>,
+        /// OpenPecha base volume/file filter (for example I1KG1325)
+        #[arg(long)]
+        volume: Option<String>,
+        /// Maximum OpenPecha base text files to fetch (0 = no limit)
+        #[arg(long, default_value_t = 3)]
+        max_volumes: usize,
+        /// BDRC etext chunk start (`cstart`); defaults to the snippet start when available
+        #[arg(long)]
+        chunk_start: Option<usize>,
+        /// BDRC etext chunk end (`cend`); defaults to chunk_start + max_chars or 2000
+        #[arg(long)]
+        chunk_end: Option<usize>,
+        /// Slice offset in fetched Tibetan text; not a tibetan-search match offset.
+        #[arg(long)]
+        start_char: Option<usize>,
+        /// Maximum characters to return from the fetched Tibetan text.
+        #[arg(long)]
+        max_chars: Option<usize>,
+        /// Output JSON (MCP envelope)
+        #[arg(long, default_value_t = false)]
+        json: bool,
+    },
     /// Resolve a text identifier or title across all corpora.
     ///
     /// Given a query (ID like "T0262", or title like "法華経"), finds matching
@@ -890,7 +944,7 @@ enum Commands {
         /// Titles only filter (client-side)
         #[arg(long, default_value_t = false)]
         titles_only: bool,
-        /// Fields to return (wrap7 `fl`), comma-separated. Default excludes body.
+        /// Fields to return (wrap7 `fl`), comma-separated. `startid` is the SAT detail useid for the containing text/fascicle; not a match-level line anchor. Default excludes body.
         #[arg(long, default_value = "id,fascnm,fascnum,startid,endid")]
         fields: String,
         /// Filter queries (wrap7 `fq`). Repeatable.
@@ -899,7 +953,7 @@ enum Commands {
         /// Auto run pipeline (pick best title and fetch detail)
         #[arg(long, default_value_t = false)]
         autofetch: bool,
-        /// Slice start for autofetch
+        /// Slice offset in extracted SAT detail text for autofetch; not an offset into sat-search body and not a match offset.
         #[arg(long)]
         start_char: Option<usize>,
         /// Slice max chars for autofetch
@@ -916,9 +970,10 @@ enum Commands {
     SatFetch {
         #[arg(long)]
         url: Option<String>,
-        /// Prefer useid (startid from search). If provided, URL is ignored.
+        /// Prefer useid (startid from search). This opens the containing SAT detail text/fascicle, not a match-level line anchor. If provided, URL is ignored.
         #[arg(long)]
         useid: Option<String>,
+        /// Slice offset in extracted SAT detail text; not an offset into sat-search body and not a match offset.
         #[arg(long)]
         start_char: Option<usize>,
         #[arg(long)]
@@ -935,6 +990,7 @@ enum Commands {
         useid: String,
         #[arg(long, default_value = "")]
         key: String,
+        /// Slice offset in extracted SAT detail text; not an offset into sat-search body and not a match offset.
         #[arg(long)]
         start_char: Option<usize>,
         #[arg(long)]
@@ -957,13 +1013,13 @@ enum Commands {
         /// Offset
         #[arg(long, default_value_t = 0)]
         offs: usize,
-        /// Fields (wrap7 `fl`), must include `fascnm,startid`
+        /// Fields (wrap7 `fl`), must include `fascnm,startid`; `startid` is a SAT detail useid, not a match-level line anchor.
         #[arg(long, default_value = "id,fascnm,startid,endid,body")]
         fields: String,
         /// Filter queries (wrap7 `fq`), repeatable
         #[arg(long)]
         fq: Vec<String>,
-        /// Slice start char for fetched detail
+        /// Slice offset in extracted SAT detail text; not an offset into sat-search body and not a match offset.
         #[arg(long)]
         start_char: Option<usize>,
         /// Slice max chars for fetched detail
@@ -2112,6 +2168,40 @@ fn run_cli() -> i32 {
                     json,
                 )?;
             }
+            Commands::TibetanFetch {
+                source,
+                id,
+                url,
+                kdb,
+                sutra,
+                page,
+                sutra_type,
+                volume,
+                max_volumes,
+                chunk_start,
+                chunk_end,
+                start_char,
+                max_chars,
+                json,
+            } => {
+                let json = should_output_json(global_json, json);
+                cmd::tibetan::tibetan_fetch(
+                    source.as_ref(),
+                    id.as_ref(),
+                    url.as_ref(),
+                    kdb.as_ref(),
+                    sutra.as_ref(),
+                    page.as_ref(),
+                    sutra_type.as_ref(),
+                    volume.as_ref(),
+                    max_volumes,
+                    chunk_start,
+                    chunk_end,
+                    start_char,
+                    max_chars,
+                    json,
+                )?;
+            }
             Commands::Resolve {
                 query,
                 sources,
@@ -2307,6 +2397,13 @@ fn run_cli() -> i32 {
 }
 
 fn cmd_schema(filter: Option<&str>) {
+    println!(
+        "{}",
+        serde_json::to_string(&build_command_schema(filter)).unwrap()
+    );
+}
+
+fn build_command_schema(filter: Option<&str>) -> serde_json::Value {
     let app = Cli::command();
     let version = env!("CARGO_PKG_VERSION");
 
@@ -2355,7 +2452,7 @@ fn cmd_schema(filter: Option<&str>) {
         "version": version,
         "commands": commands,
     });
-    println!("{}", serde_json::to_string(&output).unwrap());
+    output
 }
 
 // ===== helpers (shared in buddha-core::text_utils) =====
@@ -2907,6 +3004,15 @@ use cmd::{
 mod tests {
     use super::*;
 
+    fn with_large_stack(f: impl FnOnce() + Send + 'static) {
+        std::thread::Builder::new()
+            .stack_size(16 * 1024 * 1024)
+            .spawn(f)
+            .expect("test thread must spawn")
+            .join()
+            .expect("test thread must finish");
+    }
+
     #[test]
     fn compat_name_detects_buddha_mcp_binary_names() {
         assert!(is_mcp_compat_executable_name("buddha-mcp"));
@@ -2920,8 +3026,10 @@ mod tests {
 
     #[test]
     fn clap_parses_mcp_subcommand() {
-        let cli = Cli::try_parse_from(["buddha", "mcp"]).expect("must parse mcp subcommand");
-        assert!(matches!(cli.command, Commands::Mcp {}));
+        with_large_stack(|| {
+            let cli = Cli::try_parse_from(["buddha", "mcp"]).expect("must parse mcp subcommand");
+            assert!(matches!(cli.command, Commands::Mcp {}));
+        });
     }
 
     #[test]
@@ -2940,20 +3048,88 @@ mod tests {
 
     #[test]
     fn default_true_bool_flags_are_negatable() {
-        // Regression for B#1: default_value_t=true bool flags must accept `--flag=false`.
-        let cli =
-            Cli::try_parse_from(["buddha", "tibetan-search", "--query", "x", "--exact=false"])
-                .expect("must parse --exact=false");
-        match cli.command {
-            Commands::TibetanSearch { exact, .. } => assert!(!exact, "--exact=false must disable"),
-            other => panic!("expected tibetan-search, got {:?}", other),
-        }
-        // Omitting it keeps the default (true).
-        let cli2 = Cli::try_parse_from(["buddha", "tibetan-search", "--query", "x"])
-            .expect("must parse without --exact");
-        match cli2.command {
-            Commands::TibetanSearch { exact, .. } => assert!(exact, "default must remain true"),
-            other => panic!("expected tibetan-search, got {:?}", other),
-        }
+        with_large_stack(|| {
+            // Regression for B#1: default_value_t=true bool flags must accept `--flag=false`.
+            let cli =
+                Cli::try_parse_from(["buddha", "tibetan-search", "--query", "x", "--exact=false"])
+                    .expect("must parse --exact=false");
+            match cli.command {
+                Commands::TibetanSearch { exact, .. } => {
+                    assert!(!exact, "--exact=false must disable")
+                }
+                other => panic!("expected tibetan-search, got {:?}", other),
+            }
+            // Omitting it keeps the default (true).
+            let cli2 = Cli::try_parse_from(["buddha", "tibetan-search", "--query", "x"])
+                .expect("must parse without --exact");
+            match cli2.command {
+                Commands::TibetanSearch { exact, .. } => {
+                    assert!(exact, "default must remain true")
+                }
+                other => panic!("expected tibetan-search, got {:?}", other),
+            }
+        });
+    }
+
+    #[test]
+    fn sat_search_schema_documents_startid_semantics() {
+        with_large_stack(|| {
+            let schema = build_command_schema(Some("sat-search"));
+            let fields_help = schema["commands"][0]["args"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|arg| arg["name"] == "fields")
+                .and_then(|arg| arg["help"].as_str())
+                .unwrap();
+            assert!(fields_help.contains("SAT detail useid"));
+            assert!(fields_help.contains("not a match-level line anchor"));
+        });
+    }
+
+    #[test]
+    fn sat_fetch_schema_documents_start_char_semantics() {
+        with_large_stack(|| {
+            let schema = build_command_schema(Some("sat-fetch"));
+            let start_char_help = schema["commands"][0]["args"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|arg| arg["name"] == "start_char")
+                .and_then(|arg| arg["help"].as_str())
+                .unwrap();
+            assert!(start_char_help.contains("extracted SAT detail text"));
+            assert!(start_char_help.contains("not an offset into sat-search body"));
+            assert!(start_char_help.contains("not a match offset"));
+        });
+    }
+
+    #[test]
+    fn tibetan_fetch_schema_documents_start_char_semantics() {
+        with_large_stack(|| {
+            let schema = build_command_schema(Some("tibetan-fetch"));
+            let start_char_help = schema["commands"][0]["args"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|arg| arg["name"] == "start_char")
+                .and_then(|arg| arg["help"].as_str())
+                .unwrap();
+            assert!(start_char_help.contains("fetched Tibetan text"));
+            assert!(start_char_help.contains("not a tibetan-search match offset"));
+        });
+    }
+
+    #[test]
+    fn sat_meta_semantics_are_stable() {
+        assert_eq!(
+            cmd::sat::SAT_STARTID_SEMANTICS,
+            "detail_useid_not_match_anchor"
+        );
+        assert!(cmd::sat::SAT_FETCH_WARNING.contains("containing detail text"));
+        assert_eq!(
+            cmd::sat::SAT_SLICE_SEMANTICS,
+            "start_char/end_char are offsets in extracted SAT detail text"
+        );
     }
 }

@@ -4,6 +4,22 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [0.6.15] - 2026-07-01
+
+### Added
+- CLI command `tibetan-fetch` can retrieve Tibetan source text or fetchability metadata from Adarsha and BUDA/BDRC.
+- Adarsha Tibetan hits now expose `kdb`, `sutra`, `pb`, reader URLs, and a `tibetan-fetch` suggestion when fetchable.
+- BUDA/BDRC Tibetan fetch now tries BDRC e-text chunks first, then BDRC snippets, then RDF/OpenPecha metadata for restricted or scan-only records.
+
+### Changed
+- SAT CLI schema, JSON metadata, README, and research-skill guidance now clarify that `sat-search` `startid` is a SAT detail `useid`, not a match-level line anchor.
+- SAT and Tibetan fetch schemas now clarify that `start_char` slices already-fetched text and is not a search-hit offset.
+- Buddhism research references now direct Tibetan source work to confirm `_meta.fetch.method` and treat snippet fallback as provisional context.
+
+### Fixed
+- Adarsha Tibetan search parsing now accepts array-valued fields, restoring usable reader URLs and fetch parameters.
+- Version bumped: `buddha-core` 0.6.15, `buddha` 0.6.15, `buddha-mcp` 0.6.15.
+
 ## [0.6.14] - 2026-06-30
 
 ### Added

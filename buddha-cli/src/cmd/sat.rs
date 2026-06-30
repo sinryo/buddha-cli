@@ -5,6 +5,12 @@ use buddha_core::text_utils::{
 };
 use std::path::PathBuf;
 
+pub(crate) const SAT_STARTID_SEMANTICS: &str = "detail_useid_not_match_anchor";
+pub(crate) const SAT_FETCH_WARNING: &str =
+    "sat-fetch by startid opens the containing detail text; use start_char only after inspecting fetched text";
+pub(crate) const SAT_SLICE_SEMANTICS: &str =
+    "start_char/end_char are offsets in extracted SAT detail text";
+
 #[derive(serde::Serialize, serde::Deserialize, Debug, Clone)]
 pub(crate) struct SatHit {
     pub title: String,
@@ -279,6 +285,9 @@ pub fn sat_search(
                         "truncated": (sliced.len() as u64) < (t.len() as u64),
                         "sourceUrl": url,
                         "extractionMethod": "sat-detail-extract",
+                        "startidSemantics": SAT_STARTID_SEMANTICS,
+                        "fetchWarning": SAT_FETCH_WARNING,
+                        "sliceSemantics": SAT_SLICE_SEMANTICS,
                         "search": {"q": qt, "qSent": q_sent, "exact": exact, "rows": rows, "offs": offs, "fl": fields, "fq": fq, "count": count},
                         "chosen": doc_without_body(chosen),
                         "titleScore": best_sc,
@@ -306,7 +315,11 @@ pub fn sat_search(
                 "{}",
                 serde_json::to_string(&serde_json::json!({
             "jsonrpc":"2.0","id":null,
-            "result": {"content":[{"type":"text","text": text}],"_meta": {"count":0}} }))?
+            "result": {"content":[{"type":"text","text": text}],"_meta": {
+                "count":0,
+                "startidSemantics": SAT_STARTID_SEMANTICS,
+                "fetchWarning": SAT_FETCH_WARNING
+            }} }))?
             );
         } else {
             println!("{}", text);
@@ -353,7 +366,11 @@ pub fn sat_search(
                 "{}",
                 serde_json::to_string(&serde_json::json!({
             "jsonrpc":"2.0","id":null,
-            "result": {"content":[{"type":"text","text": text}],"_meta": {"count":0}} }))?
+            "result": {"content":[{"type":"text","text": text}],"_meta": {
+                "count":0,
+                "startidSemantics": SAT_STARTID_SEMANTICS,
+                "fetchWarning": SAT_FETCH_WARNING
+            }} }))?
             );
         } else {
             println!("{}", text);
@@ -400,7 +417,9 @@ pub fn sat_search(
             "titlesOnly": titles_only,
             "fl": fields,
             "fq": fq,
-            "autoFetch": autofetch
+            "autoFetch": autofetch,
+            "startidSemantics": SAT_STARTID_SEMANTICS,
+            "fetchWarning": SAT_FETCH_WARNING
         });
         let envelope = serde_json::json!({
             "jsonrpc":"2.0","id": serde_json::Value::Null,
@@ -453,7 +472,8 @@ pub fn sat_fetch(
             "returnedEnd": args.end_bound(t.len(), sliced.len()),
             "truncated": (sliced.len() as u64) < (t.len() as u64),
             "sourceUrl": url_final,
-            "extractionMethod": "sat-detail-extract"
+            "extractionMethod": "sat-detail-extract",
+            "sliceSemantics": SAT_SLICE_SEMANTICS
         });
         let envelope = serde_json::json!({
             "jsonrpc":"2.0","id": serde_json::Value::Null,
@@ -489,7 +509,8 @@ pub fn sat_detail(
         "returnedEnd": args.end_bound(t.len(), sliced.len()),
         "truncated": (sliced.len() as u64) < (t.len() as u64),
         "sourceUrl": url,
-        "extractionMethod": "sat-detail-extract"
+        "extractionMethod": "sat-detail-extract",
+        "sliceSemantics": SAT_SLICE_SEMANTICS
     });
     let envelope = serde_json::json!({
         "jsonrpc":"2.0","id": serde_json::Value::Null,
@@ -600,6 +621,9 @@ pub fn sat_pipeline(
                     "truncated": (sliced.len() as u64) < (t.len() as u64),
                     "sourceUrl": url,
                     "extractionMethod": "sat-detail-extract",
+                    "startidSemantics": SAT_STARTID_SEMANTICS,
+                    "fetchWarning": SAT_FETCH_WARNING,
+                    "sliceSemantics": SAT_SLICE_SEMANTICS,
                     "search": {"rows": rows, "offs": offs, "flRequested": fields, "flUsed": fields_used, "fq": fq, "count": count},
                     "chosen": doc_without_body(chosen),
                     "chosenBy": chosen_by,

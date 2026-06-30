@@ -124,7 +124,12 @@ buddha sat-fetch --useid "<startid-from-search>" --max-chars 3000 --json
 buddha jozen-search --query "念仏" --json
 buddha jozen-fetch --lineno "J01_0200B19" --json
 buddha tibetan-search --query "bde ba" --json
+buddha tibetan-fetch --source adarsha --kdb degetengyur --sutra D3134 --page 74-299b --json
 ```
+
+SAT `startid` values are detail `useid`s for fetching the containing text/fascicle, not match-level line anchors. `sat-fetch --start-char` slices the extracted detail text after fetching; it is not an offset into `sat-search` `body`.
+
+Tibetan fetching is backend-dependent: Adarsha can return page text from `kdb + sutra/voltext + page`; BUDA/BDRC tries BDRC e-text chunks first, falls back to BDRC snippets, then RDF/OpenPecha metadata for restricted or scan-only records.
 
 Admin and discovery:
 
@@ -251,7 +256,7 @@ Golden output includes the CLI version, so a release bump can intentionally chan
 
 ## Release
 
-Current release version: `0.6.14`.
+Current release version: `0.6.15`.
 
 Version numbers live in:
 
@@ -268,11 +273,11 @@ Release helper:
 # Inspect the next patch release without modifying files
 scripts/release.sh --patch --dry-run --no-fmt --no-test
 
-# Create commit, push branch, create v0.6.14 tag, push tag, create GitHub Release with generated notes
-scripts/release.sh 0.6.14 --push --tag --release --auto-notes
+# Create commit, push branch, create v0.6.15 tag, push tag, create GitHub Release with generated notes
+scripts/release.sh 0.6.15 --push --tag --release --auto-notes
 
 # Use CHANGELOG notes instead of GitHub generated notes
-scripts/release.sh 0.6.14 --push --tag --release
+scripts/release.sh 0.6.15 --push --tag --release
 ```
 
 Important: `scripts/release.sh` runs `git add -A` and commits. Review the working tree before using it, especially when unrelated changes are present.

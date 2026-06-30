@@ -124,7 +124,12 @@ buddha sat-fetch --useid "<startid-from-search>" --max-chars 3000 --json
 buddha jozen-search --query "念仏" --json
 buddha jozen-fetch --lineno "J01_0200B19" --json
 buddha tibetan-search --query "bde ba" --json
+buddha tibetan-fetch --source adarsha --kdb degetengyur --sutra D3134 --page 74-299b --json
 ```
+
+SAT の `startid` は detail 取得用の `useid` であり、検索ヒット行アンカーではありません。`sat-fetch --start-char` は fetch 後に抽出された detail テキストの切り出し位置で、`sat-search` の `body` 内オフセットではありません。
+
+Tibetan fetch はバックエンド依存です。Adarsha は `kdb + sutra/voltext + page` からページ本文を返せます。BUDA/BDRC は BDRC e-text chunk を優先し、制限時は BDRC snippet、さらに RDF/OpenPecha メタデータへ fallback します。
 
 管理と発見:
 
@@ -251,7 +256,7 @@ golden 出力には CLI version も含まれるため、release bump では `tas
 
 ## リリース
 
-現在のリリースバージョン: `0.6.14`
+現在のリリースバージョン: `0.6.15`
 
 バージョン番号の反映先:
 
@@ -268,11 +273,11 @@ golden 出力には CLI version も含まれるため、release bump では `tas
 # 次の patch release を変更なしで確認
 scripts/release.sh --patch --dry-run --no-fmt --no-test
 
-# commit、branch push、v0.6.14 tag、tag push、GitHub Release を作成
-scripts/release.sh 0.6.14 --push --tag --release --auto-notes
+# commit、branch push、v0.6.15 tag、tag push、GitHub Release を作成
+scripts/release.sh 0.6.15 --push --tag --release --auto-notes
 
 # GitHub generated notes ではなく CHANGELOG を release notes に使う
-scripts/release.sh 0.6.14 --push --tag --release
+scripts/release.sh 0.6.15 --push --tag --release
 ```
 
 注意: `scripts/release.sh` は `git add -A` して commit します。無関係な変更があると巻き込むため、実行前に worktree を必ず確認してください。
