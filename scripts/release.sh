@@ -279,7 +279,8 @@ if [[ "$release_flag" -eq 1 ]]; then
     notes_file="$(mktemp -t buddha-release-notes.XXXXXX)"
     trap 'rm -f "$notes_file"' EXIT
     BUDDHA_REL_VER="$ver_no_v" perl -ne '
-      our ($v,$on)=($ENV{BUDDHA_REL_VER},0);
+      our ($v,$on);
+      BEGIN { $v=$ENV{BUDDHA_REL_VER}; $on=0; }
       if (/^## \[$v\] - /) { $on=1; next }
       if ($on && /^## \[/) { exit }
       print if $on;

@@ -1,0 +1,36 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  ci:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # Respects rust-toolchain.toml (channel = "stable")
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Format check
+        run: cargo fmt --all --check
+
+      # Note: `-D warnings` is intentionally omitted; the codebase currently
+      # has outstanding clippy lints (mainly in buddha-core). Tighten to
+      # `-- -D warnings` once they are cleaned up.
+      - name: Clippy
+        run: cargo clippy --workspace --all-targets
+
+      # Tests are deterministic and pass in an empty corpus directory;
+      # point BUDDHA_DIR at a temp dir so nothing touches $HOME/.buddha.
+      - name: Test
+        run: BUDDHA_DIR="$(mktemp -d)" cargo test --workspace

@@ -4,6 +4,10 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### Fixed
+- Release notes extraction now preserves state across CHANGELOG lines, preventing empty GitHub Release bodies.
+- The existing Rust CI workflow is now tracked so pushes to `main` actually run format, Clippy, and test checks.
+
 ## [0.6.16] - 2026-08-30
 
 ### Added
