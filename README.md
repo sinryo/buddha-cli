@@ -15,6 +15,8 @@ Languages: English | [日本語](README.ja.md) | [繁體中文](README.zh-TW.md)
 | GRETIL / Sanskrit TEI | local after install/init | title search, regex search, TEI fetch |
 | SARIT / TEI P5 | local after install/init | title search, regex search, TEI fetch |
 | MUKTABODHA / Sanskrit library | local files under `$BUDDHA_DIR/MUKTABODHA` | title search, regex search, text/XML fetch |
+| SHINZEN / 真言宗全書 TEI | local files under `$BUDDHA_DIR/SHINZEN/kunten_tei_xml` | page title search, line-aware regex search, TEI/plain fetch |
+| SHOKU_SHINZEN / 続真言宗全書 TEI | local files under `$BUDDHA_DIR/SHOKU_SHINZEN/kunten_tei_xml` | work catalog, page search, corrected plain-text fetch |
 | SAT Daizokyo database | online, cached | search, detail fetch, pipeline |
 | Jodo Shu Zensho | online, cached | search, page fetch by `lineno` |
 | Tibetan corpora | online, cached | BUDA/BDRC and Adarshah full-text search |
@@ -76,17 +78,20 @@ Unified MCP tools are enabled by default (`BUDDHA_UNIFIED_TOOLS=0` disables them
 | Tool | Purpose |
 |------|---------|
 | `fetch` | Retrieve text by ID, `useid`, `lineno`, query, line number, section, or character range |
-| `search` | Full-text search in `cbeta`, `tipitaka`, `gretil`, `sarit`, `muktabodha`, `sat`, or `jozen` |
+| `search` | Full-text search in `cbeta`, `tipitaka`, `gretil`, `sarit`, `muktabodha`, `shinzen`, `shoku_shinzen`, `sat`, or `jozen` |
+| `work_catalog` | Find works by title/author in `shinzen` or `shoku_shinzen`; returns `SZW`/`SKZW` entries and executable next actions |
 | `title_search` | Title search in local indexed corpora |
-| `pipeline` | Search plus optional auto-fetch for `cbeta`, `gretil`, `sarit`, `muktabodha`, or `sat` |
+| `pipeline` | Search plus optional auto-fetch for supported corpora; prefer explicit `search` → returned `nextAction` for normal retrieval |
 | `resolve` | Crosswalk a human title/alias/ID to candidate corpus IDs and next fetch calls |
-| `info` | Version, usage guide, system prompt, or all three |
-| `profile` | Warm-cache timing for a tool call |
 | `tibetan_search` | Tibetan online full-text search; kept standalone |
+
+`info` and `profile` remain callable diagnostics but are hidden from the default model tool list to save schema tokens and avoid accidental benchmarking. Set `BUDDHA_MCP_DIAGNOSTIC_TOOLS=1` to list them. Tool definitions use bounded JSON Schemas and read-only annotations; results keep text in `content` and expose status, cursors, citations, errors, and executable `nextActions` in compact `structuredContent`.
 
 Legacy corpus-specific tools are still available when unified mode is disabled or when an older client has cached tool names, for example `cbeta_fetch`, `cbeta_search`, `gretil_pipeline`, `sat_detail`, `jozen_fetch`, and `buddha_version`.
 
 ## CLI Quick Start
+
+Use `buddha doctor --json` for a machine-readable inventory of installed binaries and all local corpus paths; each item has an explicit `available` boolean.
 
 Direct fetch when you already know the ID:
 
@@ -114,6 +119,28 @@ buddha cbeta-search --query "阿弥陀" --max-results 10 --json
 buddha cbeta-fetch --id T0858 --line-number 342 --context-before 2 --context-after 6 --highlight "阿弥陀" --json
 buddha tipitaka-search --query "nibbana|vipassana" --max-results 15 --json
 buddha gretil-search --query "dharma" --max-results 10 --json
+buddha shinzen-search --query "法身偈" --max-results 10 --json
+buddha shinzen-fetch --id SZ09p0243 --line-number 19 --context-before 2 --context-after 4 --json
+buddha shinzen-work-catalog --query "即身成佛" --json
+buddha shinzen-fetch --id SZW0001 --json
+buddha shoku-shinzen-work-catalog --query "<work-or-author>" --json
+buddha shoku-shinzen-fetch --id SKZW0001 --max-chars 2000 --json
+```
+
+Fetching a `SZW` work ID (from `shinzen-work-catalog`) resolves to the work's first page automatically (`_meta.resolvedFromWork`). SHINZEN JSON responses include best-effort `biblio` metadata for search hits and fetch results. It derives work title/author from public catalog records such as CiNii and NTU Buddhist Digital Library, plus local global TOC images, opening titles, running titles, and colophons, not from the TEI header. Fetch results also include `work` metadata from the precomputed `shinzen-work-catalog.json` and a ready-to-quote `_meta.preferredCitation` (for example 頼瑜『即身成佛義顯得鈔』、真言宗全書 第13巻 047頁). Use `confidence` to decide whether the generated `citation` is citable; catalog entries carry `medium`, `range-only`, or `metadata-only`, where `metadata-only` means the work is citable (title/author verified) but its page range is unresolved, so search within SHINZEN instead of fetching by work ID. Unresolved hits keep page-level citation and a warning.
+
+The SHINZEN work catalog prefers the bundled public-catalog TSV. If you need auxiliary OCR for the SHINZEN global table-of-contents images, use the local `ndlkotenocr-rs` pipeline rather than Tesseract:
+
+```bash
+scripts/ocr-shinzen-somokuji.sh
+buddha shinzen-work-catalog-index
+```
+
+To refresh the precomputed work summaries after improving ranges or metadata:
+
+```bash
+scripts/build-shinzen-work-summaries.py
+buddha shinzen-work-catalog-index
 ```
 
 Online sources:
@@ -158,9 +185,13 @@ Common direct IDs:
 |--------|-------------|
 | CBETA | `T0001`, `T0099`, `T0235`, `T0251`, `T0262` |
 | Tipitaka | `DN1`, `MN1`, `SN1`, `AN1`, `s0101m.mul` |
-| GRETIL | `saddharmapuNDarIka`, `vajracchedikA`, `prajJApAramitAhRdayasUtra` |
+| GRETIL | `sa_saddharmapuNDarIka`, `sa_vajracchedikA`, `sa_prajJApAramitAhRdayasUtra` |
 | SARIT | `asvaghosa-buddhacarita` |
+| SHINZEN | `SZ09p0243` (page), `SZW0001` (work; opens the first page) |
+| SHOKU_SHINZEN | `SKZ02p0128` (page), `SKZW0001` (work) |
 | Jodo Shu Zensho | `J01_0200B19` style `lineno` |
+
+> Note: only GRETIL ids carrying the `sa_` prefix auto-detect reliably. Bare file stems for GRETIL/SARIT/MUKTABODHA (e.g. `saddharmapuNDarIka`, `asvaghosa-buddhacarita`) are auto-probed against the local corpora when `source` is omitted; specify `source` explicitly for reliability.
 
 ## Output And Errors
 
@@ -177,6 +208,8 @@ JSON errors are written to stderr as:
 ```json
 {"error":{"message":"...","code":"NOT_FOUND"}}
 ```
+
+MCP tool failures instead return `result.isError: true` with machine-readable `structuredContent.error` / `_meta.error` (`category`, `code`, `field`, `retryable`) and, when safe, executable `nextActions`. Do not retry unchanged arguments when `retryable` is false. When it is true, retry at most once after a short delay; if that fails, stop and report.
 
 Exit codes:
 
@@ -204,6 +237,7 @@ $BUDDHA_DIR/
   GRETIL/
   SARIT-corpus/
   MUKTABODHA/
+  SHINZEN/kunten_tei_xml/
 ```
 
 Useful environment variables:
@@ -256,7 +290,7 @@ Golden output includes the CLI version, so a release bump can intentionally chan
 
 ## Release
 
-Current release version: `0.6.15`.
+Current release version: `0.6.16`.
 
 Version numbers live in:
 
@@ -274,10 +308,10 @@ Release helper:
 scripts/release.sh --patch --dry-run --no-fmt --no-test
 
 # Create commit, push branch, create v0.6.15 tag, push tag, create GitHub Release with generated notes
-scripts/release.sh 0.6.15 --push --tag --release --auto-notes
+scripts/release.sh 0.6.16 --push --tag --release --auto-notes
 
 # Use CHANGELOG notes instead of GitHub generated notes
-scripts/release.sh 0.6.15 --push --tag --release
+scripts/release.sh 0.6.16 --push --tag --release
 ```
 
 Important: `scripts/release.sh` runs `git add -A` and commits. Review the working tree before using it, especially when unrelated changes are present.

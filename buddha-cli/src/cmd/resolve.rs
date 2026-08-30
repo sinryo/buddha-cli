@@ -1,10 +1,146 @@
 use crate::{
     best_match, best_match_gretil, load_or_build_cbeta_index_cli, load_or_build_gretil_index_cli,
     load_or_build_muktabodha_index_cli, load_or_build_sarit_index_cli,
+    load_or_build_shinzen_index_cli, load_or_build_shoku_shinzen_index_cli,
     load_or_build_tipitaka_index_cli, ScoredHit,
+};
+use buddha_core::{
+    find_shinzen_work_by_id, search_shinzen_work_catalog, shinzen_work_start_fetch_id,
 };
 use serde_json::json;
 use std::path::Path;
+
+/// スコアリング用の軽量正規化。buddha-mcp 側 `server.rs` の同名関数のミラー
+/// （buddha_core の private `normalize_shinzen_search_text` と揃う）。空白除去＋
+/// 新字体→旧字体の主要置換だけを行い、完全一致/包含/著者一致の分類にのみ使う。
+/// `search_shinzen_work_catalog` はこの系統の正規化で部分一致フィルタ済み。
+fn normalize_shinzen_query(raw: &str) -> String {
+    raw.chars()
+        .filter(|c| !c.is_whitespace())
+        .collect::<String>()
+        .replace('顕', "顯")
+        .replace('仏', "佛")
+        .replace('経', "經")
+        .replace('宝', "寶")
+        .replace('実', "實")
+        .replace('覚', "覺")
+        .replace('教', "敎")
+        .replace('権', "權")
+        .replace('蔵', "藏")
+        .replace('帰', "歸")
+        .replace('声', "聲")
+        .replace('霊', "靈")
+        .replace('録', "錄")
+        .replace("決択", "決擇")
+        .replace('决', "決")
+}
+
+/// 真言宗全書「作品カタログ」(SZW…) から候補を出す。buddha-mcp 側 `server.rs` の
+/// `resolve_work_candidates_shinzen` のミラー。ページ単位の title-index が作品名クエリに
+/// ほぼ無力なため、作品名/別名/著者の正規化部分文字列マッチで候補を作る。
+/// metadata-only（頁範囲未確定）の作品は fetch を付けず、note＋shinzen_search への next を付す。
+/// CLI 用カタログローダ（所有型を返す）を使う点だけ server.rs と異なる。
+fn resolve_work_candidates(
+    q: &str,
+    limit_per_source: usize,
+    min_score: f32,
+    prefer_source: Option<&str>,
+    source: &str,
+    fetch_tool: &str,
+    search_tool: &str,
+    catalog: &buddha_core::ShinzenWorkCatalog,
+) -> Vec<(f32, serde_json::Value)> {
+    let mut out: Vec<(f32, serde_json::Value)> = Vec::new();
+    let qn = normalize_shinzen_query(q);
+    if qn.is_empty() {
+        return out;
+    }
+    for entry in search_shinzen_work_catalog(catalog, Some(q), None, limit_per_source) {
+        let title_n = normalize_shinzen_query(&entry.title);
+        let title_hit = title_n.contains(&qn) || qn.contains(&title_n);
+        let alias_hit = entry
+            .aliases
+            .iter()
+            .any(|a| normalize_shinzen_query(a).contains(&qn));
+        let author_hit = entry
+            .author
+            .as_ref()
+            .map(|a| normalize_shinzen_query(a).contains(&qn))
+            .unwrap_or(false);
+        let base: f32 = if title_n == qn {
+            1.0
+        } else if title_hit || alias_hit {
+            0.75
+        } else if author_hit {
+            0.55
+        } else {
+            // 正規化差でどのフィールドにも当たらない場合の床値。
+            0.55
+        };
+        if base < min_score {
+            continue;
+        }
+        let bias = if prefer_source == Some(source) {
+            0.02
+        } else {
+            0.0
+        };
+        let mut v = json!({
+            "source": source,
+            "id": &entry.id,
+            "title": &entry.title,
+            "author": &entry.author,
+            "score": base,
+            "rangeCitation": &entry.range.citation,
+            "confidence": &entry.confidence,
+            "resolvedBy": "work-catalog"
+        });
+        if shinzen_work_start_fetch_id(&entry).is_some() {
+            v["fetch"] = json!({"tool": fetch_tool, "args": {"id": &entry.id, "maxChars": 2000}});
+        } else {
+            v["note"] = json!("page range unresolved; work is citable but has no fetchable pages");
+            v["next"] = json!({"tool": search_tool, "args": {"query": &entry.title}});
+        }
+        out.push((base + bias, v));
+    }
+    out
+}
+
+fn resolve_work_candidates_shinzen(
+    q: &str,
+    limit_per_source: usize,
+    min_score: f32,
+    prefer_source: Option<&str>,
+) -> Vec<(f32, serde_json::Value)> {
+    resolve_work_candidates(
+        q,
+        limit_per_source,
+        min_score,
+        prefer_source,
+        "shinzen",
+        "shinzen_fetch",
+        "shinzen_search",
+        &crate::cmd::shinzen::load_or_build_shinzen_work_catalog_cli(),
+    )
+}
+
+fn resolve_work_candidates_shoku_shinzen(
+    q: &str,
+    limit_per_source: usize,
+    min_score: f32,
+    prefer_source: Option<&str>,
+) -> Vec<(f32, serde_json::Value)> {
+    resolve_work_candidates(
+        q,
+        limit_per_source,
+        min_score,
+        prefer_source,
+        "shoku_shinzen",
+        "shoku_shinzen_fetch",
+        "shoku_shinzen_search",
+        &crate::cmd::shoku_shinzen::load_or_build_shoku_work_catalog_cli(),
+    )
+}
 
 fn resolve_title_candidates(
     source: &str,
@@ -82,6 +218,8 @@ pub(crate) fn resolve(
         "gretil".into(),
         "sarit".into(),
         "muktabodha".into(),
+        "shinzen".into(),
+        "shoku_shinzen".into(),
     ];
     let sources = if sources.is_empty() {
         &default_sources
@@ -117,6 +255,133 @@ pub(crate) fn resolve(
                     "title": null,
                     "score": 1.0,
                     "fetch": {"tool": "cbeta_fetch", "args": {"id": format!("T{:04}", n)}},
+                    "resolvedBy": "direct-id"
+                });
+                cands_scored.push((1.20 + bias, cand));
+                direct_id_mode = true;
+            }
+        }
+    }
+
+    // SHINZEN work-catalog direct ID (SZW + digits). Must be checked before the
+    // page-ID (SZ…P…) branch since "SZW…" also starts with "SZ".
+    // Mirror of buddha-mcp server.rs SZW direct-id branch.
+    if sources.iter().any(|s| s == "shinzen") && q_upper.starts_with("SZW") {
+        let catalog = crate::cmd::shinzen::load_or_build_shinzen_work_catalog_cli();
+        if let Some(entry) = find_shinzen_work_by_id(&catalog, &q_upper) {
+            let bias = if prefer_source == Some("shinzen") {
+                0.02
+            } else {
+                0.0
+            };
+            let mut cand = json!({
+                "source": "shinzen",
+                "id": &entry.id,
+                "title": &entry.title,
+                "author": &entry.author,
+                "score": 1.0,
+                "rangeCitation": &entry.range.citation,
+                "confidence": &entry.confidence,
+                "resolvedBy": "direct-id"
+            });
+            if shinzen_work_start_fetch_id(entry).is_some() {
+                cand["fetch"] = json!({"tool": "shinzen_fetch", "args": {"id": &entry.id}});
+            } else {
+                cand["note"] =
+                    json!("page range unresolved; work is citable but has no fetchable pages");
+                cand["next"] = json!({"tool": "shinzen_search", "args": {"query": &entry.title}});
+            }
+            cands_scored.push((1.20 + bias, cand));
+            direct_id_mode = true;
+        }
+    }
+
+    // SHOKU_SHINZEN work-catalog direct ID (SKZW + digits).
+    if sources.iter().any(|s| s == "shoku_shinzen") && q_upper.starts_with("SKZW") {
+        let catalog = crate::cmd::shoku_shinzen::load_or_build_shoku_work_catalog_cli();
+        if let Some(entry) = find_shinzen_work_by_id(&catalog, &q_upper) {
+            let bias = if prefer_source == Some("shoku_shinzen") {
+                0.02
+            } else {
+                0.0
+            };
+            let mut cand = json!({
+                "source": "shoku_shinzen",
+                "id": &entry.id,
+                "title": &entry.title,
+                "author": &entry.author,
+                "score": 1.0,
+                "rangeCitation": &entry.range.citation,
+                "confidence": &entry.confidence,
+                "resolvedBy": "direct-id"
+            });
+            if shinzen_work_start_fetch_id(entry).is_some() {
+                cand["fetch"] = json!({"tool": "shoku_shinzen_fetch", "args": {"id": &entry.id}});
+            } else {
+                cand["note"] =
+                    json!("page range unresolved; work is citable but has no fetchable pages");
+                cand["next"] =
+                    json!({"tool": "shoku_shinzen_search", "args": {"query": &entry.title}});
+            }
+            cands_scored.push((1.20 + bias, cand));
+            direct_id_mode = true;
+        }
+    }
+
+    if sources.iter().any(|s| s == "shinzen")
+        && q_upper.starts_with("SZ")
+        && !q_upper.starts_with("SZW")
+    {
+        let rest = &q_upper[2..];
+        if let Some((volume, page)) = rest.split_once('P') {
+            if !volume.is_empty()
+                && !page.is_empty()
+                && volume.chars().all(|c| c.is_ascii_digit())
+                && page.chars().all(|c| c.is_ascii_digit())
+            {
+                let id_norm = format!("SZ{}p{:0>4}", volume, page.parse::<usize>().unwrap_or(0));
+                let bias = if prefer_source == Some("shinzen") {
+                    0.02
+                } else {
+                    0.0
+                };
+                let cand = json!({
+                    "source": "shinzen",
+                    "id": id_norm,
+                    "title": null,
+                    "score": 1.0,
+                    "fetch": {"tool": "shinzen_fetch", "args": {"id": id_norm}},
+                    "resolvedBy": "direct-id"
+                });
+                cands_scored.push((1.20 + bias, cand));
+                direct_id_mode = true;
+            }
+        }
+    }
+
+    if sources.iter().any(|s| s == "shoku_shinzen")
+        && q_upper.starts_with("SKZ")
+        && !q_upper.starts_with("SKZW")
+    {
+        let rest = &q_upper[3..];
+        if let Some((volume, page)) = rest.split_once('P') {
+            if !volume.is_empty()
+                && !page.is_empty()
+                && volume.chars().all(|c| c.is_ascii_digit())
+                && page.chars().all(|c| c.is_ascii_digit())
+            {
+                let id_norm = format!("SKZ{}p{:0>4}", volume, page.parse::<usize>().unwrap_or(0));
+                let bias = if prefer_source == Some("shoku_shinzen") {
+                    0.02
+                } else {
+                    0.0
+                };
+                let cand = json!({
+                    "source": "shoku_shinzen",
+                    "id": id_norm,
+                    "title": null,
+                    "score": 1.0,
+                    "fetch": {"tool": "shoku_shinzen_fetch", "args": {"id": id_norm}},
                     "resolvedBy": "direct-id"
                 });
                 cands_scored.push((1.20 + bias, cand));
@@ -185,6 +450,8 @@ pub(crate) fn resolve(
         let do_gretil = sources.iter().any(|s| s == "gretil");
         let do_sarit = sources.iter().any(|s| s == "sarit");
         let do_muktabodha = sources.iter().any(|s| s == "muktabodha");
+        let do_shinzen = sources.iter().any(|s| s == "shinzen");
+        let do_shoku_shinzen = sources.iter().any(|s| s == "shoku_shinzen");
 
         std::thread::scope(|scope| {
             let h_cbeta = if do_cbeta {
@@ -267,8 +534,68 @@ pub(crate) fn resolve(
             } else {
                 None
             };
+            let h_shinzen = if do_shinzen {
+                Some(scope.spawn(|| {
+                    let idx = load_or_build_shinzen_index_cli();
+                    let mut c = resolve_title_candidates(
+                        "shinzen",
+                        &idx,
+                        q,
+                        limit_per_source,
+                        min_score,
+                        prefer_source,
+                        false,
+                    );
+                    // 作品カタログ候補はページ index 候補より上に出す（+0.05）。
+                    // Mirror of buddha-mcp server.rs.
+                    for (s, v) in resolve_work_candidates_shinzen(
+                        q,
+                        limit_per_source,
+                        min_score,
+                        prefer_source,
+                    ) {
+                        c.push((s + 0.05, v));
+                    }
+                    c
+                }))
+            } else {
+                None
+            };
+            let h_shoku_shinzen = if do_shoku_shinzen {
+                Some(scope.spawn(|| {
+                    let idx = load_or_build_shoku_shinzen_index_cli();
+                    let mut c = resolve_title_candidates(
+                        "shoku_shinzen",
+                        &idx,
+                        q,
+                        limit_per_source,
+                        min_score,
+                        prefer_source,
+                        false,
+                    );
+                    for (score, value) in resolve_work_candidates_shoku_shinzen(
+                        q,
+                        limit_per_source,
+                        min_score,
+                        prefer_source,
+                    ) {
+                        c.push((score + 0.05, value));
+                    }
+                    c
+                }))
+            } else {
+                None
+            };
 
-            for h in [h_cbeta, h_tipitaka, h_gretil, h_sarit, h_muktabodha] {
+            for h in [
+                h_cbeta,
+                h_tipitaka,
+                h_gretil,
+                h_sarit,
+                h_muktabodha,
+                h_shinzen,
+                h_shoku_shinzen,
+            ] {
                 if let Some(handle) = h {
                     cands_scored.extend(handle.join().unwrap_or_default());
                 }

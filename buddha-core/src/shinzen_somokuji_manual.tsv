@@ -1,0 +1,165 @@
+# SHINZEN work list normalized from public catalog records, with local image
+# checks only for glyph variants and Siddham-bearing titles.
+#
+# Primary online sources:
+# - CiNii BA69827911: modern 42-volume contents list.
+# - CiNii BN10599738: older-bibliography contents with author statements.
+# - NTU Buddhist Digital Library seq=265163: compact author/content notes.
+#
+# Local image check source:
+# - Private 真言宗全書 総目次 scans, page_001.png..page_009.png
+#
+# Columns:
+# volume<TAB>title<TAB>author<TAB>source_page<TAB>confidence<TAB>note<TAB>aliases
+#
+# If the printed title contains Siddham letters, put the exact Siddham Unicode
+# string in title (U+11580..U+115FF) and put the common kanji/OCR title in aliases.
+volume	title	author	source_page	confidence	note	aliases
+01	祕密儀軌隨聞記	性寂口;勝慧記	CiNii-BN10599738	high	public-catalog; 第1-20巻	秘密儀軌随聞記
+02	祕密儀軌隨聞記	性寂口;勝慧記	CiNii/NTU	high	public-catalog; 第21-30巻	秘密儀軌随聞記
+02	祕密儀軌傳授口決	眞常	CiNii/NTU	high	public-catalog	秘密儀軌伝授口決|祕密儀軌傳授口决
+03	大日經疏義述	宥祥	CiNii/NTU	high	public-catalog; 第1-18巻; CiNii old note 清浄金剛不二記	大日経疏義述|大日經疏義述清淨金剛不二記
+04	大日經疏義述	宥祥	CiNii/NTU	high	public-catalog; 第19-30巻	大日経疏義述
+04	供養法疏上下聞書	覺和	NTU	medium	public-catalog author supplement	供養法疏上下聞書
+05	瑜祇經祕決	實運	CiNii/NTU	high	public-catalog	瑜祇經秘決|瑜祇経秘決|瑜紙経秘決
+05	瑜祇經口決		CiNii/NTU	medium	public-catalog	瑜祇経口決|瑜紙経口決
+05	瑜祇祕要決	性心	CiNii/NTU	high	public-catalog	瑜祇秘要決|瑜祇經秘要決|瑜紙経秘要決
+06	理趣經訓讀抄	頼寶	page_001	high	image-read
+06	理趣經私記	頼譽	page_001	high	image-read
+06	理趣經直談鈔	純瑜	page_001	high	image-read
+06	理趣經假名抄	頼慶	page_001	high	image-read
+06	理趣經講要	淨嚴	page_001	high	image-read
+06	般若理趣經簡要	等空	page_001	high	image-read
+07	釋論十二鈔私記	長覺	page_001	high	image-read
+07	釋論名目	印融	CiNii-BN10599738	high	public-catalog
+07	釋摩訶衍論自鈔	妙瑞	CiNii-BN10599738	high	public-catalog	釋摩可衍論自鈔
+08	金剛頂瑜伽中發阿耨多羅三藐三菩提心論	龍猛	page_002	high	image-read
+08	菩提心記決	作者不詳	page_002	high	image-read
+08	菩提心論密談鈔	本圓	page_002	high	image-read
+08	菩提心論聞書	果寶	page_002	medium	image-read; OCR/body has 果實/呆寶 variants	菩提心論聞書
+08	菩提心論鈔	宥快	page_002	high	image-read
+08	菩提心論三摩地段抄		page_002	needs-review	author/volume require re-read
+08	菩提心論講要	淨嚴	page_002	high	image-read
+09	祕藏記	弘法大師	page_002	high	image-read
+09	祕藏抄	作者不詳	page_002	high	image-read
+09	祕藏記拾要記	隆瑜	page_002	high	image-read
+10	十住心論衆毛鈔	頼瑜	page_002	high	image-read
+11	祕藏寶鑰	遍照金剛	page_002	high	image-read	祕藏寶鑰(祕藏寶鑰勘註會入)
+11	祕藏寶鑰鈔	藤原敦光	page_002	high	image-read
+11	祕藏寶鑰勘註	頼瑜	page_002	high	image-read
+11	祕藏寶鑰私記	政祝	page_002	high	image-read
+12	二敎論指光鈔	頼瑜	page_003	high	image-read
+12	二敎論鈔	宥快	page_003	high	image-read
+12	二敎論興國鈔	宥快	page_003	high	image-read
+13	即身成佛義	弘法大師	page_003	high	image-read
+13	即身成佛義顯得鈔	頼瑜	page_003	high	image-read
+13	即身義鈔	性心	page_003	high	image-read
+13	即身成佛義鈔	宥快	page_003	high	image-read
+13	即身成佛義私記	曇寂	page_003	high	image-read
+14	聲字實相義	弘法大師	page_003	high	image-read
+14	聲字實相義抄	道範	page_003	high	image-read
+14	聲字義問答	作者不詳	page_003	high	image-read
+14	聲字實相義開祕鈔	頼瑜	page_003	high	image-read
+14	聲字實相義口筆	賢寶	page_003	high	image-read
+14	聲字實相義鈔	宥快	page_003	high	image-read
+14	聲字實相義私記	曇寂	page_003	high	image-read
+14	聲字實相義紀要	周海	page_003	high	image-read
+15	吽字義	遍照金剛	page_003	high	CiNii-BN10599738; image-read	吽字義|畔字義|叫字義
+15	吽字義釋勘註抄	隆源	page_003	medium	image-read; OCR confuses first glyph	吽字義釋勘註抄|畔字義釋勘註抄|叫字義釋勘註抄
+15	吽字義探宗記	頼瑜	page_004	high	image-read	吽字義探宗記|畔字義探宗記|叫字義探宗記
+15	吽字義聞書	定俊	page_004	high	image-read	吽字義聞書|畔字義聞書|叫字義聞書
+15	吽字義鈔	宥快	page_004	high	image-read	吽字義鈔|畔字義鈔|叫字義鈔
+15	吽字義私記	曇寂	page_004	medium	image-read; OCR weak	吽字義私記|畔字義私記|叫字義私記
+15	吽字義纂要	周海	page_004	high	image-read	吽字義纂要|畔字義纂要|叫字義纂要
+16	祕鍵開藏鈔	頼瑜	page_004	high	image-read
+16	般若心經祕鍵聞書	杲寶口;賢寶記	page_004	high	CiNii-BN10599738; image-read
+16	般若心經祕鍵鈔	宥快	page_004	high	image-read
+16	般若心經祕鍵信力鈔	宥快	page_004	high	image-read
+17	密宗要决鈔(一～二十)	海惠	page_004	high	image-read	密宗要决鈔
+18	密宗要决鈔(二十一～三十)	海惠	page_004	high	image-read	密宗要决鈔
+18	古筆拾集鈔	印融	page_004	high	image-read
+19	宗義決擇集	宥快等	NTU	high	public-catalog	宗義決択集|宗義决擇集
+20	杲寶私抄	杲寶	page_004	high	CiNii-BN10599738; image/OCR variants 果寶/果實/呆寶	果寶私抄|果實私抄|呆寶私抄|杲宝私抄
+20	杣保隱遁鈔	印融	page_004	high	image-read
+21	阿耆尼鈔	杲寶口;觀寶記	CiNii-BN10599738	high	public-catalog	阿耆鈔
+21	他師破決集	了賢	CiNii-BN10599738	high	public-catalog	他師破决集
+21	我慢抄	杲寶	page_005	high	CiNii-BN10599738; image/OCR variants 果寶/果實	果寶我慢抄
+21	摧勝述記	義寶	page_005	high	CiNii-BN10599738; image-read	權勝述記|権勝述記
+21	貞安問答	頼慶	page_005	high	image-read
+21	警覺心續生義	實詮	page_005	high	image-read
+21	紅鑪一唾篇	實證	page_005	high	image-read
+22	顯密差別問答鈔	教尋	page_005	high	CiNii-BN10599738; image-read	顯密差別問答
+22	祕宗文義要	靜遍	page_005	high	image-read
+22	初心頓覺鈔	道範	page_005	high	image-read
+22	宗骨鈔	憲深	page_005	high	image-read	宗骨抄
+22	傍論	我寶	page_005	high	image-read
+22	阿宥鈔	宥範	page_005	high	CiNii-BN10599738; image-read; title contains Siddham in print	義宥鈔
+22	祕藏要文集	杲寶	page_005	high	CiNii-BN10599738; image/OCR variants 果寶/呆寶	果寶祕藏要文集
+23	十八道加行聞書	宥快	page_005	high	image-read
+23	十八道次第	宥快	page_005	medium	image-read; 安祥寺流 note in image	十八道次第安祥寺流
+23	十八道傳授記	一圓	page_005	medium	image-read; image note 勸
+23	十八道聞書	賢寶	page_005	medium	image-read; image note 勸
+23	十八道加行作法三寶院	實賢	page_005	high	image-read
+23	十八道加行私聞書	作者不詳	page_005	high	image-read
+23	十八道口傳	作者不詳	page_006	high	image-read
+23	十八道勘文三寶院	作者不詳	page_006	high	image-read
+23	十八道傳授聞書	性善	page_006	medium	image-read; author printed 性善口
+23	別行次第抄中流	眞濟	page_006	high	image-read
+23	行法肝葉鈔	道範	page_006	high	image-read
+23	駄都祕决鈔	我寶	page_006	high	image-read
+23	行法肝要記	印融	page_006	high	image-read
+23	諸流行要	榮嚴	page_006	high	image-read
+24	金剛界大儀軌肝心祕訣抄	濟暹	page_006	high	image-read
+24	金剛界鈔	興然	page_006	high	image-read
+24	金剛界次第私記	曇寂	page_006	high	image-read
+24	金剛界次第印契私記	作者不詳	page_006	high	image-read
+24	金剛界次第法石山	淳祐	page_006	high	image-read
+25	胎藏界念誦次第要集記	杲寶	page_006	high	CiNii-BN10599738; image/OCR variants 果實/呆寶
+26	四種護摩抄記	淳祐	page_006	high	image-read
+26	四種護摩要鈔	增蓮	page_006	high	image-read	四種護摩要要
+26	四種護摩最要抄	心覺	page_006	high	image-read
+26	五種護摩軍茶記	千心	page_006	high	image-read
+26	六種護摩抄	實範	page_007	high	image-read
+26	護摩祕要抄	承賢	page_007	medium	image-read; image also shows 呆寶 variant
+27	三昧耶戒作法般若寺	觀賢	page_007	high	image-read
+27	水尾灌頂式	玄靜	page_007	high	image-read
+27	徒師灌頂決義抄	成尊	page_007	high	image-read
+27	庭儀灌頂日記	寛信	page_007	high	image-read
+27	傳法灌頂文義肝要抄	心覺	page_007	high	image-read
+27	灌頂印明口訣	成賢	page_007	high	image-read
+27	幸心院灌頂極祕口决抄	憲深	page_007	high	image-read	幸心院灌頂灌頂極祕口决抄
+27	灌頂私記雜尋祕决	澄禪	page_007	high	image-read
+27	傳法灌頂應永記	宥快	page_007	high	image-read
+27	傳法灌頂授與記	宥快	page_007	high	image-read
+27	庭儀灌頂行事手鏡	傳雄	page_007	high	image-read
+27	傳法灌頂决疑抄	孝源	page_007	high	image-read
+27	傳法灌頂珍規抄	最辨	page_007	high	image-read
+27	諸流灌頂祕藏鈔	政祝	page_007	high	image-read
+28	祕鈔口决	教舜	page_007	high	image-read
+29	興然五十卷鈔目録	眞源	page_007	high	image-read
+29	五十卷鈔(一～二十二)	興然	page_008	high	image-read	五十卷鈔
+30	五十卷鈔(二十三～四十二)	興然	page_008	high	image-read	五十卷鈔
+31	五十卷鈔(四十三～五十)	興然	page_008	high	image-read	五十卷鈔
+31	四卷鈔	俊然	page_008	high	image-read
+32	西院流能禪方傳授録	龍曉	page_008	high	image-read
+33	三寶院流洞泉相承口訣(一～十六)	動潮等	page_008	high	NTU public-catalog; image-read	三宝院流洞泉相承口訣
+34	三寶院流洞泉相承口訣(十七～二十七)	動潮等	page_008	high	NTU public-catalog; image-read	三宝院流洞泉相承口訣
+34	安流傳授紀要(一～十一)	瑞寶	page_008	high	image-read	安流傳授紀要
+35	安流傳授紀要(十二～三十七)	瑞寶	page_008	high	image-read	安流傳授紀要
+36	小野類祕鈔	寛信	page_008	high	image-read
+36	鵝珠鈔	心覺	page_008	high	image-read
+36	覺源抄	蓮道	page_008	high	image-read
+37	眞俗雜記問答鈔	頼瑜	page_008	high	image-read
+38	弘法大師年譜	得仁	page_008	high	image-read
+38	續弘法大師年譜	得仁	page_008	high	image-read
+39	血脈類集記	元瑜	page_008	high	CiNii/NTU catalog; image/OCR variant 類聚	血脈類聚記
+39	野澤血脈集	作者不詳	page_008	high	image-read
+40	三教指歸	弘法大師	page_008	high	image-read	三教指歸(三教指歸簡註會入)
+40	三教勘注抄	藤原敦光	page_009	high	image-read
+40	三教指歸注	作者不詳	page_009	high	image-read
+40	三教指歸注抄	作者不詳	page_009	high	image-read
+40	三教指歸註刪補	運敞	page_009	medium	image-read; OCR weak	三教指歸註刪補運敞
+40	三教指歸簡註	通玄	page_009	high	image-read
+41	文鏡祕府論箋	維寶	page_009	high	NTU public-catalog; image-read	文鏡祕府論|文鏡祕府論(文鏡祕府論箋會入)|文鏡秘府論箋
+41	性靈集私記	作者不詳	page_009	high	image-read
+42	遍照發揮性靈集便蒙	運敞	page_009	high	NTU public-catalog; image-read	遍照發揮性靈集|遍照發揮性靈集(遍照發揮性靈集便蒙會入)|遍照発揮性霊集便蒙

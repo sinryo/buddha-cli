@@ -5,10 +5,16 @@ use buddha_core::text_utils::{
 };
 use buddha_core::{
     build_cbeta_index, build_gretil_index, build_muktabodha_index, build_sarit_index,
-    build_tipitaka_index, cbeta_gaiji_map_fast, cbeta_grep, extract_cbeta_juan,
-    extract_cbeta_juan_plain, extract_cbeta_plain_from_snippet, extract_text,
-    extract_text_around_line_asymmetric, extract_text_opts, gretil_grep, list_heads_cbeta,
-    list_heads_generic, muktabodha_grep, sarit_grep, tipitaka_grep, IndexEntry,
+    build_shinzen_index, build_shinzen_work_catalog, build_shoku_shinzen_index,
+    build_shoku_shinzen_work_catalog, build_tipitaka_index, cbeta_gaiji_map_fast, cbeta_grep,
+    extract_cbeta_juan, extract_cbeta_juan_plain, extract_cbeta_plain_from_snippet,
+    extract_shinzen_context, extract_shinzen_graphic_url, extract_shinzen_text, extract_text,
+    extract_text_around_line_asymmetric, extract_text_opts, find_shinzen_work_by_id,
+    find_shinzen_work_for_bibliography, find_shinzen_work_for_page, gretil_grep, list_heads_cbeta,
+    list_heads_generic, muktabodha_grep, resolve_shinzen_bibliography_for_path, sarit_grep,
+    search_shinzen_work_catalog, shinzen_grep, shinzen_preferred_citation, shinzen_work_agent_view,
+    shinzen_work_start_fetch_id, shoku_shinzen_grep, shoku_shinzen_preferred_citation,
+    tipitaka_grep, IndexEntry, ShinzenWorkCatalog, SHINZEN_WORK_CATALOG_INDEX_VERSION,
 };
 use encoding_rs::Encoding;
 use ewts::EwtsConverter;
@@ -28,10 +34,33 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 const VERSION: &str = env!("CARGO_PKG_VERSION");
 use buddha_core::path_resolver::{
     buddha_home, cache_dir, cbeta_root, find_exact_file_by_name, find_tipitaka_content_for_base,
-    gretil_root, muktabodha_root, resolve_cbeta_path_by_id, resolve_muktabodha_by_id,
-    resolve_muktabodha_path_direct, resolve_sarit_by_id, resolve_sarit_path_direct,
-    resolve_tipitaka_by_id, sarit_root, tipitaka_root,
+    gretil_root, muktabodha_root, resolve_cbeta_path_by_id, resolve_gretil_path_direct,
+    resolve_muktabodha_by_id, resolve_muktabodha_path_direct, resolve_sarit_by_id,
+    resolve_sarit_path_direct, resolve_shinzen_by_id, resolve_shinzen_path_direct,
+    resolve_shoku_shinzen_by_id, resolve_shoku_shinzen_path_direct, resolve_tipitaka_by_id,
+    sarit_root, shinzen_kunten_tei_root, shinzen_library_available, shoku_shinzen_kunten_tei_root,
+    shoku_shinzen_library_available, tipitaka_root,
 };
+
+/// `BUDDHA_HINT_TOP`（legacy: `DAIZO_HINT_TOP`）から fetchSuggestions の件数を読む。
+/// env 未設定・parse 失敗時は `default_n` を返す。env 読みは薄いラッパで、
+/// 純粋ロジックは `hint_top_from` に分離してテスト可能にしている。
+fn hint_top(default_n: usize) -> usize {
+    let value = std::env::var("BUDDHA_HINT_TOP")
+        .or_else(|_| std::env::var("DAIZO_HINT_TOP"))
+        .ok();
+    hint_top_from(value.as_deref(), default_n)
+}
+
+/// `hint_top` の純粋ロジック本体。`value` が `Some` かつ usize として parse できれば
+/// その値を、そうでなければ `default_n` を返す。
+/// 注意: 既存実装と同じく `"0"` は 0 として採用する（max(1) のクランプはしない）。
+/// これにより `BUDDHA_HINT_TOP=0` で fetchSuggestions を完全に抑止できる後方互換を維持する。
+fn hint_top_from(value: Option<&str>, default_n: usize) -> usize {
+    value
+        .and_then(|s| s.parse::<usize>().ok())
+        .unwrap_or(default_n)
+}
 
 fn to_whitespace_fuzzy_literal(s: &str) -> String {
     // 連続した空白（改行含む）を \\s* に畳み込み、それ以外はリテラルとしてエスケープ
@@ -448,27 +477,31 @@ fn save_index(path: &Path, entries: &Vec<IndexEntry>) -> Result<()> {
 
 // ============ Tool handlers ============
 
-fn handle_initialize(id: serde_json::Value) -> serde_json::Value {
+const LATEST_MCP_PROTOCOL: &str = "2025-11-25";
+const SUPPORTED_MCP_PROTOCOLS: &[&str] = &[
+    LATEST_MCP_PROTOCOL,
+    "2025-06-18",
+    "2025-03-26",
+    "2024-11-05",
+];
+
+fn handle_initialize(id: serde_json::Value, params: &serde_json::Value) -> serde_json::Value {
+    let requested = params
+        .get("protocolVersion")
+        .and_then(|value| value.as_str());
+    let protocol_version = requested
+        .filter(|version| SUPPORTED_MCP_PROTOCOLS.contains(version))
+        .unwrap_or(LATEST_MCP_PROTOCOL);
     json!({
         "jsonrpc": "2.0",
         "id": id,
         "result": {
-            "protocolVersion": "2024-11-05",
+            "protocolVersion": protocol_version,
             "capabilities": {
-                "tools": {},
-                "resources": {},
-                "prompts": {
-                    "low-token-guide": {
-                        "name": "low-token-guide",
-                        "description": "Guidance for AI to use search→fetch (lineNumber) instead of pipeline by default to minimize tokens.",
-                        "messages": [
-                            {"role": "system", "content": "Prefer low-token flow: 0) If corpus/ID is unknown, call resolve({query}) and follow its recommended fetch tool+args. 1) If ID is known, call fetch directly (source auto-detected from ID). 2) Otherwise use search({source, query}), read _meta.fetchSuggestions, then call fetch with {id, lineNumber, contextBefore:1, contextAfter:3, highlight:<query>, format:\"plain\"}. 3) Use pipeline only for cross-file summary; set autoFetch=false by default."}
-                        ]
-                    }
-                },
-                "logging": {}
+                "tools": {}
             },
-            "serverInfo": { "name": "buddha-mcp", "version": VERSION }
+            "serverInfo": { "name": "buddha-mcp", "title": "Buddha Text Research", "version": VERSION },
+            "instructions": "Use fetch directly for recognized IDs (T/DN/SZ/SZW/SKZ/SKZW). If corpus or ID is unknown, call resolve. Otherwise call search with an explicit source, then execute only the most relevant returned nextAction with lineNumber+highlight. Prefer format=plain and bounded maxChars; continue from structuredContent.page.nextStartChar. Treat result.isError=true as failure, follow nextActions once, and never retry unchanged validation arguments. When retryable=true, retry at most once after a short delay, then stop and report. Use work_catalog first for a work title or author in shinzen/shoku_shinzen."
         }
     })
 }
@@ -494,10 +527,10 @@ fn legacy_tools_list() -> Vec<serde_json::Value> {
         },"required":["tool","arguments"]})),
         tool("buddha_resolve", "Resolve a user query (title/alias/ID) to candidate corpus IDs and recommended next tool calls. Use this when you don't know which corpus/ID to use.", json!({"type":"object","properties":{
             "query":{"type":"string","description":"User query (title/alias/ID). Examples: '法華経', 'T0262', 'DN1', 'vajracchedikA'."},
-            "sources":{"type":"array","items":{"type":"string","enum":["cbeta","tipitaka","gretil","sarit","muktabodha"]},"description":"Search scope. Default: ['cbeta','tipitaka','gretil','sarit','muktabodha']."},
+            "sources":{"type":"array","items":{"type":"string","enum":["cbeta","tipitaka","gretil","sarit","muktabodha","shinzen","shoku_shinzen"]},"description":"Search scope. Default: all local corpora."},
             "limitPerSource":{"type":"number","description":"Max candidates per source (default: 5)"},
             "limit":{"type":"number","description":"Max total candidates (default: 10)"},
-            "preferSource":{"type":"string","description":"Optional bias: cbeta|tipitaka|gretil|sarit|muktabodha"},
+            "preferSource":{"type":"string","description":"Optional local-corpus ranking bias, including shinzen or shoku_shinzen"},
             "minScore":{"type":"number","description":"Filter out candidates below this score (default: 0.1)"}
         },"required":["query"]})),
         tool("cbeta_fetch", "Retrieve CBETA text by ID/part. FAST: If Taisho number is known (e.g. T0001, T0262 for Lotus Sutra), use id directly without search. Supports low-cost slices via id+lb (preferred) or id+lineNumber (XML line). TIP: Always pass 'highlight' with search term when fetching context!", json!({"type":"object","properties":{
@@ -720,6 +753,75 @@ fn legacy_tools_list() -> Vec<serde_json::Value> {
             "highlightSuffix":{"type":"string","description":"Suffix marker for highlights (default from env or ' <<<')"},
             "full":{"type":"boolean"},
             "includeNotes":{"type":"boolean"}
+        },"required":["query"]})),
+        // SHINZEN (真言宗全書)
+        tool("shinzen_title_search", "Title/page search in local SHINZEN 真言宗全書 corpus. If page ID is known, use shinzen_fetch directly.", json!({"type":"object","properties":{"query":{"type":"string"},"limit":{"type":"number"}},"required":["query"]})),
+        tool("shinzen_search", "Fast regex search over extracted SHINZEN line text; returns _meta.fetchSuggestions (use shinzen_fetch with id+lineNumber+highlight).", json!({"type":"object","properties":{
+            "query":{"type":"string","description":"Regular expression pattern to search for"},
+            "maxResults":{"type":"number","description":"Maximum number of pages to return (default: 20)"},
+            "maxMatchesPerFile":{"type":"number","description":"Maximum matches per page (default: 5)"}
+        },"required":["query"]})),
+        tool("shinzen_work_catalog", "Search the precomputed SHINZEN work catalog: work title, author, page range, summary, and evidence.", json!({"type":"object","properties":{
+            "query":{"type":"string","description":"Optional title/author query"},
+            "volume":{"type":"string","description":"Optional SHINZEN volume number"},
+            "limit":{"type":"number","description":"Maximum entries to return (default: 20)"}
+        }})),
+        tool("shinzen_fetch", "Retrieve SHINZEN page text by ID (e.g. SZ09p0243). Supports lineNumber context and format=plain|tei.", json!({"type":"object","properties":{
+            "id":{"type":"string"},
+            "query":{"type":"string"},
+            "format":{"type":"string"},
+            "full":{"type":"boolean"},
+            "highlight":{"type":"string"},
+            "highlightRegex":{"type":"boolean"},
+            "highlightPrefix":{"type":"string"},
+            "highlightSuffix":{"type":"string"},
+            "startChar":{"type":"number"},"endChar":{"type":"number"},"maxChars":{"type":"number"},
+            "page":{"type":"number"},"pageSize":{"type":"number"},
+            "lineNumber":{"type":"number"},
+            "contextBefore":{"type":"number"},
+            "contextAfter":{"type":"number"},
+            "contextLines":{"type":"number"}
+        }})),
+        tool("shinzen_pipeline", "SHINZEN summarize/context pipeline; set autoFetch=false for summary-only.", json!({"type":"object","properties":{
+            "query":{"type":"string"},
+            "maxResults":{"type":"number"},
+            "maxMatchesPerFile":{"type":"number"},
+            "autoFetch":{"type":"boolean"}
+        },"required":["query"]})),
+        // SHOKU_SHINZEN (続真言宗全書)
+        tool("shoku_shinzen_title_search", "Title/page search in local SHOKU_SHINZEN 続真言宗全書 corpus. If page ID is known (SKZ..p..), use shoku_shinzen_fetch directly.", json!({"type":"object","properties":{"query":{"type":"string"},"limit":{"type":"number"}},"required":["query"]})),
+        tool("shoku_shinzen_search", "Fast regex search over extracted SHOKU_SHINZEN line text; use shoku_shinzen_fetch with id+lineNumber+highlight.", json!({"type":"object","properties":{
+            "query":{"type":"string","description":"Regular expression pattern to search for"},
+            "maxResults":{"type":"number","description":"Maximum number of files to return (default: 20)"},
+            "maxMatchesPerFile":{"type":"number","description":"Maximum matches per file (default: 5)"}
+        },"required":["query"]})),
+        tool("shoku_shinzen_work_catalog", "Search the 続真言宗全書 work catalog by title, author, or volume. Resolved SKZW works include fetch nextActions; metadata-only works include search nextActions.", json!({"type":"object","properties":{
+            "query":{"type":"string","description":"Optional title/author query"},
+            "volume":{"type":"string","description":"Optional volume number"},
+            "limit":{"type":"number","description":"Maximum entries to return (default: 20)"}
+        }})),
+        tool("shoku_shinzen_fetch", "Retrieve SHOKU_SHINZEN page text by ID (e.g. SKZ09p0243). Supports lineNumber context and format=plain|tei.", json!({"type":"object","properties":{
+            "id":{"type":"string"},
+            "query":{"type":"string"},
+            "format":{"type":"string","enum":["plain","tei"]},
+            "full":{"type":"boolean"},
+            "highlight":{"type":"string"},
+            "highlightRegex":{"type":"boolean"},
+            "highlightPrefix":{"type":"string"},
+            "highlightSuffix":{"type":"string"},
+            "startChar":{"type":"number"},
+            "endChar":{"type":"number"},
+            "maxChars":{"type":"number"},
+            "page":{"type":"number"},
+            "pageSize":{"type":"number"},
+            "lineNumber":{"type":"number"},
+            "contextBefore":{"type":"number"},
+            "contextAfter":{"type":"number"}
+        },"required":[]})),
+        tool("shoku_shinzen_pipeline", "SHOKU_SHINZEN summarize/context pipeline.", json!({"type":"object","properties":{
+            "query":{"type":"string"},
+            "maxResults":{"type":"number"},
+            "maxMatchesPerFile":{"type":"number"}
         },"required":["query"]})),
         // MUKTABODHA
         tool("muktabodha_title_search", "Title-based search in MUKTABODHA Sanskrit library (IAST). If file stem is known, use muktabodha_fetch with id.", json!({"type":"object","properties":{"query":{"type":"string"},"limit":{"type":"number"}},"required":["query"]})),
@@ -953,6 +1055,198 @@ fn load_or_build_sarit_index() -> &'static Vec<IndexEntry> {
         let _ = save_index(&out, &entries);
         entries
     })
+}
+
+static SHINZEN_INDEX_CACHE: OnceLock<Vec<IndexEntry>> = OnceLock::new();
+static SHINZEN_WORK_CATALOG_CACHE: OnceLock<ShinzenWorkCatalog> = OnceLock::new();
+
+fn load_or_build_shinzen_index() -> &'static Vec<IndexEntry> {
+    SHINZEN_INDEX_CACHE.get_or_init(|| {
+        if !shinzen_library_available() {
+            return Vec::new();
+        }
+        let out = cache_dir().join("shinzen-index.json");
+        if let Some(v) = load_index(&out) {
+            let missing = v
+                .iter()
+                .take(10)
+                .filter(|e| !Path::new(&e.path).exists())
+                .count();
+            let lacks_ver = v.iter().take(10).any(|e| {
+                e.meta
+                    .as_ref()
+                    .and_then(|m| m.get("indexVersion"))
+                    .map(|s| s.as_str() != "shinzen_index_v1")
+                    .unwrap_or(true)
+            });
+            if !v.is_empty() && missing == 0 && !lacks_ver {
+                return v;
+            }
+        }
+        let entries = build_shinzen_index(&shinzen_kunten_tei_root());
+        let _ = save_index(&out, &entries);
+        entries
+    })
+}
+
+fn load_or_build_shinzen_work_catalog() -> &'static ShinzenWorkCatalog {
+    SHINZEN_WORK_CATALOG_CACHE.get_or_init(|| {
+        if !shinzen_library_available() {
+            return ShinzenWorkCatalog {
+                index_version: SHINZEN_WORK_CATALOG_INDEX_VERSION.to_string(),
+                source: "SHINZEN unavailable".to_string(),
+                entries: Vec::new(),
+                warnings: vec!["SHINZEN library is not available".to_string()],
+            };
+        }
+        let out = cache_dir().join("shinzen-work-catalog.json");
+        if let Ok(text) = fs::read_to_string(&out) {
+            if let Ok(catalog) = serde_json::from_str::<ShinzenWorkCatalog>(&text) {
+                if catalog.index_version == SHINZEN_WORK_CATALOG_INDEX_VERSION {
+                    return catalog;
+                }
+            }
+        }
+        let catalog = build_shinzen_work_catalog(&shinzen_kunten_tei_root());
+        if let Some(parent) = out.parent() {
+            let _ = fs::create_dir_all(parent);
+        }
+        if let Ok(json) = serde_json::to_string_pretty(&catalog) {
+            let _ = fs::write(&out, json);
+        }
+        catalog
+    })
+}
+
+const SHINZEN_MISSING_MESSAGE: &str = "SHINZENライブラリがありません";
+const SHOKU_SHINZEN_MISSING_MESSAGE: &str = "SHOKU_SHINZENライブラリがありません";
+
+static SHOKU_SHINZEN_INDEX_CACHE: OnceLock<Vec<IndexEntry>> = OnceLock::new();
+static SHOKU_SHINZEN_WORK_CATALOG_CACHE: OnceLock<ShinzenWorkCatalog> = OnceLock::new();
+
+fn load_or_build_shoku_shinzen_index() -> &'static Vec<IndexEntry> {
+    SHOKU_SHINZEN_INDEX_CACHE.get_or_init(|| {
+        if !shoku_shinzen_library_available() {
+            return Vec::new();
+        }
+        let out = cache_dir().join("shoku-shinzen-index.json");
+        if let Some(v) = load_index(&out) {
+            let missing = v
+                .iter()
+                .take(10)
+                .filter(|e| !Path::new(&e.path).exists())
+                .count();
+            let lacks_ver = v.iter().take(10).any(|e| {
+                e.meta
+                    .as_ref()
+                    .and_then(|m| m.get("indexVersion"))
+                    .map(|s| s.as_str() != "shoku_shinzen_index_v1")
+                    .unwrap_or(true)
+            });
+            if !v.is_empty() && missing == 0 && !lacks_ver {
+                return v;
+            }
+        }
+        let entries = build_shoku_shinzen_index(&shoku_shinzen_kunten_tei_root());
+        let _ = save_index(&out, &entries);
+        entries
+    })
+}
+
+fn load_or_build_shoku_shinzen_work_catalog() -> &'static ShinzenWorkCatalog {
+    SHOKU_SHINZEN_WORK_CATALOG_CACHE.get_or_init(|| {
+        if !shoku_shinzen_library_available() {
+            return ShinzenWorkCatalog {
+                index_version: SHINZEN_WORK_CATALOG_INDEX_VERSION.to_string(),
+                source: "SHOKU_SHINZEN unavailable".to_string(),
+                entries: Vec::new(),
+                warnings: vec!["SHOKU_SHINZEN library is not available".to_string()],
+            };
+        }
+        let out = cache_dir().join("shoku-shinzen-work-catalog.json");
+        if let Ok(text) = fs::read_to_string(&out) {
+            if let Ok(catalog) = serde_json::from_str::<ShinzenWorkCatalog>(&text) {
+                if catalog.index_version == SHINZEN_WORK_CATALOG_INDEX_VERSION {
+                    return catalog;
+                }
+            }
+        }
+        let catalog = build_shoku_shinzen_work_catalog(&shoku_shinzen_kunten_tei_root());
+        if let Some(parent) = out.parent() {
+            let _ = fs::create_dir_all(parent);
+        }
+        if let Ok(json) = serde_json::to_string_pretty(&catalog) {
+            let _ = fs::write(&out, json);
+        }
+        catalog
+    })
+}
+
+fn shoku_shinzen_missing_response(id: serde_json::Value) -> serde_json::Value {
+    json!({"jsonrpc":"2.0","id": id, "result": {
+        "content": [{"type":"text","text": SHOKU_SHINZEN_MISSING_MESSAGE}],
+        "isError": true,
+        "_meta": {
+            "available": false,
+            "error": {"category":"data_unavailable","code":"corpus_not_installed","field":"source","retryable":false}
+        }
+    }})
+}
+
+fn resolve_shoku_shinzen_path_mcp(args: &serde_json::Value) -> (PathBuf, Option<String>) {
+    let id_str = args.get("id").and_then(|v| v.as_str());
+    let query = args.get("query").and_then(|v| v.as_str());
+    if let Some(id_str) = id_str {
+        if let Some(path) = resolve_shoku_shinzen_path_direct(id_str) {
+            return (path, Some(id_str.to_string()));
+        }
+        let idx = load_or_build_shoku_shinzen_index();
+        if let Some(path) = resolve_shoku_shinzen_by_id(idx, id_str) {
+            return (path, Some(id_str.to_string()));
+        }
+    }
+    if let Some(q) = query {
+        let idx = load_or_build_shoku_shinzen_index();
+        let hits = best_match_sarit(idx, q, 1);
+        if let Some(h) = hits.first() {
+            return (PathBuf::from(&h.entry.path), Some(h.entry.id.clone()));
+        }
+    }
+    (PathBuf::new(), None)
+}
+
+fn shinzen_missing_response(id: serde_json::Value) -> serde_json::Value {
+    json!({
+        "jsonrpc": "2.0",
+        "id": id,
+        "result": {
+            "content": [{"type": "text", "text": SHINZEN_MISSING_MESSAGE}],
+            "isError": true,
+            "_meta": {
+                "available": false,
+                "error": {"category":"data_unavailable","code":"corpus_not_installed","field":"source","retryable":false}
+            }
+        }
+    })
+}
+
+fn resolve_shinzen_path_mcp(args: &serde_json::Value) -> (PathBuf, Option<String>) {
+    if let Some(id_str) = args.get("id").and_then(|v| v.as_str()) {
+        if let Some(path) = resolve_shinzen_path_direct(id_str) {
+            return (path, Some(id_str.to_string()));
+        }
+        let idx = load_or_build_shinzen_index();
+        if let Some(path) = resolve_shinzen_by_id(idx, id_str) {
+            return (path, Some(id_str.to_string()));
+        }
+    }
+    if let Some(q) = args.get("query").and_then(|v| v.as_str()) {
+        let idx = load_or_build_shinzen_index();
+        if let Some(hit) = best_match_sarit(idx, q, 1).into_iter().next() {
+            return (PathBuf::from(&hit.entry.path), Some(hit.entry.id.clone()));
+        }
+    }
+    (PathBuf::new(), None)
 }
 
 // メモリキャッシュ: MUKTABODHAインデックス
@@ -2028,6 +2322,203 @@ fn resolve_title_candidates_muktabodha(
     out
 }
 
+fn resolve_title_candidates_shinzen(
+    q: &str,
+    limit_per_source: usize,
+    min_score: f32,
+    prefer_source: Option<&str>,
+) -> Vec<(f32, serde_json::Value)> {
+    let idx = load_or_build_shinzen_index();
+    let mut out: Vec<(f32, serde_json::Value)> = Vec::new();
+    for h in best_match_sarit(idx, q, limit_per_source) {
+        if h.score < min_score {
+            continue;
+        }
+        let bias = if prefer_source == Some("shinzen") {
+            0.02
+        } else {
+            0.0
+        };
+        let v = json!({
+            "source": "shinzen",
+            "id": &h.entry.id,
+            "title": &h.entry.title,
+            "score": h.score,
+            "path": &h.entry.path,
+            "meta": &h.entry.meta,
+            "fetch": {"tool": "shinzen_fetch", "args": {"id": &h.entry.id}},
+            "resolvedBy": "title-index"
+        });
+        out.push((h.score + bias, v));
+    }
+    out
+}
+
+fn resolve_title_candidates_shoku_shinzen(
+    q: &str,
+    limit_per_source: usize,
+    min_score: f32,
+    prefer_source: Option<&str>,
+) -> Vec<(f32, serde_json::Value)> {
+    let idx = load_or_build_shoku_shinzen_index();
+    let mut out = Vec::new();
+    let bias = if prefer_source == Some("shoku_shinzen") {
+        0.02
+    } else {
+        0.0
+    };
+    for hit in best_match_sarit(idx, q, limit_per_source) {
+        if hit.score < min_score {
+            continue;
+        }
+        out.push((
+            hit.score + bias,
+            json!({
+                "source":"shoku_shinzen",
+                "id":hit.entry.id,
+                "title":hit.entry.title,
+                "score":hit.score,
+                "path":hit.entry.path,
+                "meta":hit.entry.meta,
+                "fetch":{"tool":"shoku_shinzen_fetch","args":{"id":hit.entry.id}},
+                "resolvedBy":"title-index"
+            }),
+        ));
+    }
+    out
+}
+
+/// スコアリング用の軽量正規化。buddha_core の `normalize_shinzen_search_text`
+/// （private）と揃うよう、空白除去＋新字体→旧字体の主要置換だけを行う。
+/// `search_shinzen_work_catalog` はこの系統の正規化で部分一致フィルタ済みなので、
+/// ここでは完全一致/包含/著者一致の分類（スコア付け）にのみ使う。
+fn normalize_shinzen_query(raw: &str) -> String {
+    raw.chars()
+        .filter(|c| !c.is_whitespace())
+        .collect::<String>()
+        .replace('顕', "顯")
+        .replace('仏', "佛")
+        .replace('経', "經")
+        .replace('宝', "寶")
+        .replace('実', "實")
+        .replace('覚', "覺")
+        .replace('教', "敎")
+        .replace('権', "權")
+        .replace('蔵', "藏")
+        .replace('帰', "歸")
+        .replace('声', "聲")
+        .replace('霊', "靈")
+        .replace('録', "錄")
+        .replace("決択", "決擇")
+        .replace('决', "決")
+}
+
+/// 真言宗全書「作品カタログ」(SZW…) から候補を出す。ページ単位の title-index
+/// (`resolve_title_candidates_shinzen`) が作品名クエリにほぼ無力なため、作品名/別名/
+/// 著者の正規化部分文字列マッチで候補を作る。metadata-only（頁範囲未確定）の作品は
+/// fetch を付けず、書誌として引用可能である旨の note と shinzen_search への next を付す。
+fn resolve_work_candidates(
+    q: &str,
+    limit_per_source: usize,
+    min_score: f32,
+    prefer_source: Option<&str>,
+    source: &str,
+    fetch_tool: &str,
+    search_tool: &str,
+    catalog: &ShinzenWorkCatalog,
+) -> Vec<(f32, serde_json::Value)> {
+    let mut out: Vec<(f32, serde_json::Value)> = Vec::new();
+    let qn = normalize_shinzen_query(q);
+    if qn.is_empty() {
+        return out;
+    }
+    for entry in search_shinzen_work_catalog(catalog, Some(q), None, limit_per_source) {
+        let title_n = normalize_shinzen_query(&entry.title);
+        let title_hit = title_n.contains(&qn) || qn.contains(&title_n);
+        let alias_hit = entry
+            .aliases
+            .iter()
+            .any(|a| normalize_shinzen_query(a).contains(&qn));
+        let author_hit = entry
+            .author
+            .as_ref()
+            .map(|a| normalize_shinzen_query(a).contains(&qn))
+            .unwrap_or(false);
+        let base: f32 = if title_n == qn {
+            1.0
+        } else if title_hit || alias_hit {
+            0.75
+        } else if author_hit {
+            0.55
+        } else {
+            // 正規化差でどのフィールドにも当たらない場合の床値。
+            0.55
+        };
+        if base < min_score {
+            continue;
+        }
+        let bias = if prefer_source == Some(source) {
+            0.02
+        } else {
+            0.0
+        };
+        let mut v = json!({
+            "source": source,
+            "id": &entry.id,
+            "title": &entry.title,
+            "author": &entry.author,
+            "score": base,
+            "rangeCitation": &entry.range.citation,
+            "confidence": &entry.confidence,
+            "resolvedBy": "work-catalog"
+        });
+        if shinzen_work_start_fetch_id(&entry).is_some() {
+            v["fetch"] = json!({"tool": fetch_tool, "args": {"id": &entry.id, "maxChars": 2000}});
+        } else {
+            v["note"] = json!("page range unresolved; work is citable but has no fetchable pages");
+            v["next"] = json!({"tool": search_tool, "args": {"query": &entry.title}});
+        }
+        out.push((base + bias, v));
+    }
+    out
+}
+
+fn resolve_work_candidates_shinzen(
+    q: &str,
+    limit_per_source: usize,
+    min_score: f32,
+    prefer_source: Option<&str>,
+) -> Vec<(f32, serde_json::Value)> {
+    resolve_work_candidates(
+        q,
+        limit_per_source,
+        min_score,
+        prefer_source,
+        "shinzen",
+        "shinzen_fetch",
+        "shinzen_search",
+        load_or_build_shinzen_work_catalog(),
+    )
+}
+
+fn resolve_work_candidates_shoku_shinzen(
+    q: &str,
+    limit_per_source: usize,
+    min_score: f32,
+    prefer_source: Option<&str>,
+) -> Vec<(f32, serde_json::Value)> {
+    resolve_work_candidates(
+        q,
+        limit_per_source,
+        min_score,
+        prefer_source,
+        "shoku_shinzen",
+        "shoku_shinzen_fetch",
+        "shoku_shinzen_search",
+        load_or_build_shoku_shinzen_work_catalog(),
+    )
+}
+
 // jaccard and is_subsequence moved to buddha_core::text_utils
 
 // resolve_cbeta_path moved to buddha_core::path_resolver
@@ -2123,6 +2614,136 @@ fn slice_text_bounds(
     (slice, total_chars, effective_start, effective_end)
 }
 
+/// CBETA の matched_id（`T0235` / `T10n0299` / `T08n0235` 等の揺れ）を
+/// DILA オンラインリーダの作品 id（`T0235` 形式＝canon＋Taisho番号）へ正規化する。
+/// canon＝先頭アルファベット。番号＝末尾の `n`/`N` 以降、無ければ canon 直後の数字。
+fn cbeta_dila_id(matched_id: &str) -> Option<String> {
+    let canon: String = matched_id
+        .chars()
+        .take_while(|c| c.is_ascii_alphabetic())
+        .collect();
+    if canon.is_empty() {
+        return None;
+    }
+    let tail = match matched_id.rfind(['n', 'N']) {
+        Some(pos) => &matched_id[pos + 1..],
+        None => &matched_id[canon.len()..],
+    };
+    let num: String = tail.chars().filter(|c| c.is_ascii_digit()).collect();
+    if num.is_empty() {
+        return None;
+    }
+    Some(format!("{}{}", canon, num))
+}
+
+/// ローカル5コーパス（cbeta/tipitaka/gretil/sarit/muktabodha）の出典情報
+/// `(citation, sourceUrl)` を組む。shinzen は対象外（biblio/preferredCitation が担う）。
+/// 不確かな URL（既定ブランチ未特定など）は None を返し、誤った出典を出さない。
+fn local_source_link(
+    source: &str,
+    matched_id: Option<&str>,
+    path: &Path,
+) -> (Option<String>, Option<String>) {
+    let stem = path.file_stem().map(|s| s.to_string_lossy().into_owned());
+    let file_name = path.file_name().map(|s| s.to_string_lossy().into_owned());
+    match source {
+        "cbeta" => match matched_id {
+            Some(mid) if !mid.is_empty() => {
+                let url =
+                    cbeta_dila_id(mid).map(|d| format!("https://cbetaonline.dila.edu.tw/zh/{}", d));
+                (Some(format!("CBETA {}", mid)), url)
+            }
+            _ => (None, None),
+        },
+        "sarit" => {
+            // SARIT-corpus は TEI ファイルがリポジトリ直下・default branch=master（repo.rs で確認済）。
+            let citation = stem.as_ref().map(|s| format!("SARIT: {}", s));
+            let url = file_name
+                .as_ref()
+                .map(|f| format!("https://github.com/sarit/SARIT-corpus/blob/master/{}", f));
+            (citation, url)
+        }
+        "tipitaka" => {
+            // repo.rs の clone はブランチ未指定＝既定ブランチを特定できないため URL は出さない。
+            (
+                stem.as_ref().map(|s| format!("Tipitaka (romn): {}", s)),
+                None,
+            )
+        }
+        "gretil" => {
+            // 個別ファイルは zip 配布で安定 URL が無い。コーパストップのみ提示。
+            (
+                stem.as_ref().map(|s| format!("GRETIL: {}", s)),
+                Some("https://gretil.sub.uni-goettingen.de/".to_string()),
+            )
+        }
+        "muktabodha" => (stem.as_ref().map(|s| format!("Muktabodha: {}", s)), None),
+        _ => (None, None),
+    }
+}
+
+/// Compute model-facing pagination metadata using Unicode character offsets. This deliberately does
+/// not inspect the decorated output because highlight markers change its byte and character length.
+fn fetch_page_bounds(
+    text: &str,
+    args: &serde_json::Value,
+    full: bool,
+    cap: usize,
+) -> (usize, usize, usize, bool) {
+    let total = text.chars().count();
+    let start = args
+        .get("page")
+        .and_then(|v| v.as_u64())
+        .and_then(|p| {
+            args.get("pageSize")
+                .and_then(|s| s.as_u64())
+                .map(|ps| (p as usize) * (ps as usize))
+        })
+        .or_else(|| {
+            args.get("startChar")
+                .and_then(|v| v.as_u64())
+                .map(|x| x as usize)
+        })
+        .unwrap_or(0)
+        .min(total);
+    let window_end = if full {
+        total
+    } else {
+        let end = if let (Some(p), Some(ps)) = (
+            args.get("page").and_then(|v| v.as_u64()),
+            args.get("pageSize").and_then(|v| v.as_u64()),
+        ) {
+            (p as usize) * (ps as usize) + (ps as usize)
+        } else if let Some(ec) = args.get("endChar").and_then(|v| v.as_u64()) {
+            ec as usize
+        } else if let Some(mc) = args.get("maxChars").and_then(|v| v.as_u64()) {
+            start + mc as usize
+        } else {
+            start + 8000
+        };
+        end.max(start).min(total)
+    };
+    let ret_end = window_end.min(start.saturating_add(cap));
+    (total, start, ret_end, start > 0 || ret_end < total)
+}
+
+/// 返却スライスの終端文字位置を `slice_text` と同じ規則で算出し、続きがあれば `Some(next_start)`。
+/// highlight 装飾で膨らむ `sliced.len()` に依存しないため `startChar=next_start` で継続取得できる。
+/// `cap`＝ハンドラが出力へ課す文字数上限（無ければ `usize::MAX`）。`full`＝full 指定。
+fn fetch_next_start_char(
+    text: &str,
+    args: &serde_json::Value,
+    full: bool,
+    cap: usize,
+) -> Option<u64> {
+    let (total, start, ret_end, _) = fetch_page_bounds(text, args, full, cap);
+    if ret_end > start && ret_end < total {
+        Some(ret_end as u64)
+    } else {
+        None
+    }
+}
+
 /// Combined info handler for info({section:"all"}): version + usage + system_prompt
 fn handle_info_all(id: serde_json::Value) -> serde_json::Value {
     let version_resp = handle_call(
@@ -2166,38 +2787,205 @@ fn handle_info_all(id: serde_json::Value) -> serde_json::Value {
     })
 }
 
+/// 近傍ヒット（best_match_* の結果）から not-found 応答用の候補 JSON を組み立てる。
+/// 各候補は {source, id, title, score, fetch:{tool, args}} 形式。
+/// `use_stem` が true の場合、fetch 可能な id にファイル stem を用いる（tipitaka 等）。
+/// それ以外は index の entry.id（buddha_resolve の fetch と同じ慣習）を用いる。
+fn fetch_candidates_from_hits(
+    source: &str,
+    hits: &[ScoredHit],
+    use_stem: bool,
+) -> Vec<serde_json::Value> {
+    hits.iter()
+        .map(|h| {
+            let cid = if use_stem {
+                Path::new(&h.entry.path)
+                    .file_stem()
+                    .and_then(|s| s.to_str())
+                    .unwrap_or(&h.entry.id)
+                    .to_string()
+            } else {
+                h.entry.id.clone()
+            };
+            json!({
+                "source": source,
+                "id": &cid,
+                "title": &h.entry.title,
+                "score": h.score,
+                "fetch": {"tool": format!("{}_fetch", source), "args": {"id": &cid}}
+            })
+        })
+        .collect()
+}
+
+/// fetch 系ハンドラの「見つからない」応答を、エージェントが自己修復できる形で組み立てる。
+/// 戻り値は tools/call の `result` 部分（jsonrpc エンベロープは呼び出し側で付与する）。
+/// unified モードでは呼び出し口の `rewrite_meta_suggestions` が
+/// `_meta.candidates[].fetch` と `_meta.suggestions[]` を unified ツール名へ書き換える。
+fn fetch_not_found_response(
+    source: &str,
+    query: &str,
+    candidates: Vec<serde_json::Value>,
+) -> serde_json::Value {
+    let mut lines = vec![format!("not found: '{}' in {}.", query, source)];
+    if !candidates.is_empty() {
+        lines.push("Nearest candidates:".to_string());
+        for c in candidates.iter() {
+            let cid = c.get("id").and_then(|v| v.as_str()).unwrap_or("");
+            let ctitle = c.get("title").and_then(|v| v.as_str()).unwrap_or("");
+            lines.push(format!("- {}  {}", cid, ctitle));
+        }
+    }
+    lines.push(format!(
+        "Run one of _meta.candidates[].fetch, or retry with resolve({{query:\"{}\"}}) / title_search({{source:\"{}\", query:\"{}\"}}).",
+        query, source, query
+    ));
+    json!({
+        "content": [{"type": "text", "text": lines.join("\n")}],
+        "isError": true,
+        "_meta": {
+            "error": "not_found",
+            "source": source,
+            "query": query,
+            "candidates": candidates,
+            "suggestions": [
+                {"tool": "buddha_resolve", "args": {"query": query}}
+            ]
+        }
+    })
+}
+
 fn handle_call(id: serde_json::Value, params: &serde_json::Value) -> serde_json::Value {
     let name_raw = params.get("name").and_then(|v| v.as_str()).unwrap_or("");
     let args_raw = params.get("arguments").cloned().unwrap_or(json!({}));
 
+    if crate::unified::is_unified_mode()
+        && (crate::unified::is_unified_tool(name_raw) || name_raw == "tibetan_search")
+    {
+        if let Some(response) = crate::unified::validate_unified_call(&id, name_raw, &args_raw) {
+            return response;
+        }
+    }
+
     // Unified dispatch: translate unified tool names to legacy names
-    let (name, args) =
-        if crate::unified::is_unified_mode() && crate::unified::is_unified_tool(name_raw) {
-            let (legacy_name, legacy_args) = crate::unified::dispatch_unified(name_raw, &args_raw);
-            // Handle _error from dispatch
-            if legacy_name == "_error" {
-                let msg = legacy_args
-                    .get("message")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("dispatch error");
-                return json!({
-                    "jsonrpc": "2.0",
-                    "id": id,
-                    "result": { "content": [{"type":"text","text": msg}], "isError": true }
-                });
+    let (name, args) = if crate::unified::is_unified_mode()
+        && crate::unified::is_unified_tool(name_raw)
+    {
+        let (legacy_name, legacy_args) = crate::unified::dispatch_unified(name_raw, &args_raw);
+        // Handle _error from dispatch
+        if legacy_name == "_error" {
+            let msg = legacy_args
+                .get("message")
+                .and_then(|v| v.as_str())
+                .unwrap_or("dispatch error");
+            return json!({
+                "jsonrpc": "2.0",
+                "id": id,
+                "result": { "content": [{"type":"text","text": msg}], "isError": true }
+            });
+        }
+        // Handle _fetch_detect_failed: source could not be inferred from the id.
+        // Probe the local GRETIL/SARIT/MUKTABODHA corpora by file existence only
+        // (no network, no index build, no corpus clone) to recover bare file stems.
+        if legacy_name == "_fetch_detect_failed" {
+            let probe_id = legacy_args
+                .get("id")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string();
+            let mut hits: Vec<&'static str> = Vec::new();
+            if resolve_gretil_path_direct(&probe_id).is_some() {
+                hits.push("gretil");
             }
-            // Handle _info_all (combined info)
-            if legacy_name == "_info_all" {
-                let mut resp = handle_info_all(id);
-                crate::unified::rewrite_meta_suggestions(&mut resp);
-                return resp;
+            if resolve_sarit_path_direct(&probe_id).is_some() {
+                hits.push("sarit");
             }
-            (legacy_name, legacy_args)
-        } else {
-            (name_raw.to_string(), args_raw)
-        };
+            if resolve_muktabodha_path_direct(&probe_id).is_some() {
+                hits.push("muktabodha");
+            }
+            match hits.as_slice() {
+                // Exactly one corpus owns this stem → re-dispatch to its legacy fetch
+                // and annotate the response so the caller knows how source was resolved.
+                [detected] => {
+                    let detected: &str = detected;
+                    let legacy_fetch = match detected {
+                        "gretil" => "gretil_fetch",
+                        "sarit" => "sarit_fetch",
+                        _ => "muktabodha_fetch",
+                    };
+                    let inner_params = json!({"name": legacy_fetch, "arguments": legacy_args});
+                    let mut resp = handle_call(id, &inner_params);
+                    if let Some(result_obj) = resp.get_mut("result").and_then(|r| r.as_object_mut())
+                    {
+                        let meta = result_obj.entry("_meta").or_insert_with(|| json!({}));
+                        if let Some(m) = meta.as_object_mut() {
+                            m.insert("sourceDetectedBy".to_string(), json!("file-probe"));
+                            m.insert("detectedSource".to_string(), json!(detected));
+                        }
+                    }
+                    return resp;
+                }
+                // No corpus owns it → not-found, steer toward resolve / explicit source.
+                [] => {
+                    let mut result = fetch_not_found_response("auto", &probe_id, vec![]);
+                    let msg = format!(
+                            "Could not detect source for id '{}'. Use resolve({{query:\"{}\"}}) or specify source explicitly (cbeta, tipitaka, gretil, sarit, muktabodha, shinzen, shoku_shinzen, sat, jozen).",
+                            probe_id, probe_id
+                        );
+                    if let Some(first) = result
+                        .get_mut("content")
+                        .and_then(|c| c.as_array_mut())
+                        .and_then(|a| a.first_mut())
+                    {
+                        first["text"] = json!(msg);
+                    }
+                    return json!({"jsonrpc":"2.0","id": id, "result": result});
+                }
+                // Multiple corpora own it → ambiguous, require explicit source.
+                _ => {
+                    let candidates: Vec<serde_json::Value> = hits
+                        .iter()
+                        .map(|s| {
+                            json!({
+                                "source": s,
+                                "id": probe_id,
+                                "fetch": {"tool": format!("{}_fetch", s), "args": {"id": probe_id}}
+                            })
+                        })
+                        .collect();
+                    let msg = format!(
+                        "id '{}' exists in multiple corpora: {}. Specify source explicitly.",
+                        probe_id,
+                        hits.join(", ")
+                    );
+                    return json!({
+                        "jsonrpc": "2.0",
+                        "id": id,
+                        "result": {
+                            "content": [{"type": "text", "text": msg}],
+                            "isError": true,
+                            "_meta": {
+                                "error": "ambiguous_source",
+                                "query": probe_id,
+                                "candidates": candidates
+                            }
+                        }
+                    });
+                }
+            }
+        }
+        // Handle _info_all (combined info)
+        if legacy_name == "_info_all" {
+            let mut resp = handle_info_all(id);
+            crate::unified::rewrite_meta_suggestions(&mut resp);
+            return resp;
+        }
+        (legacy_name, legacy_args)
+    } else {
+        (name_raw.to_string(), args_raw)
+    };
     let name = name.as_str();
-    let content_text = match name {
+    match name {
         "buddha_version" => {
             let data_status = json!({
                 "cbeta": cbeta_root().exists(),
@@ -2205,11 +2993,12 @@ fn handle_call(id: serde_json::Value, params: &serde_json::Value) -> serde_json:
                 "gretil": gretil_root().exists(),
                 "sarit": sarit_root().exists(),
                 "muktabodha": muktabodha_root().exists(),
+                "shinzen": shinzen_library_available(),
             });
             let version_info = json!({
                 "version": VERSION,
                 "name": "buddha-mcp",
-                "description": "MCP server for Buddhist scripture retrieval (CBETA, Tipitaka, GRETIL, SARIT, MUKTABODHA, SAT, JOZEN, Tibetan online search)",
+                "description": "MCP server for Buddhist scripture retrieval (CBETA, Tipitaka, GRETIL, SARIT, MUKTABODHA, SHINZEN, SAT, JOZEN, Tibetan online search)",
                 "homepage": "https://github.com/sinryo/buddha-cli",
                 "data_available": data_status,
                 "data_path": buddha_home().to_string_lossy(),
@@ -2225,6 +3014,8 @@ fn handle_call(id: serde_json::Value, params: &serde_json::Value) -> serde_json:
                     "GRETIL Sanskrit Texts (梵語文献)",
                     "SARIT TEI P5 corpus",
                     "MUKTABODHA Sanskrit library (IAST)",
+                    "SHINZEN 真言宗全書 local TEI corpus",
+                    "SHOKU_SHINZEN 続真言宗全書 local TEI corpus",
                     "SAT Database search",
                     "Jodo Shu Zensho (浄土宗全書) search/fetch (online)",
                     "Tibetan online full-text search (BUDA/BDRC, Adarshah)"
@@ -2291,6 +3082,21 @@ Use file stem directly with fetch:
 ### MUKTABODHA (Sanskrit library; local files)
 Use file stem directly with fetch:
 - fetch({source: "muktabodha", id: "<file-stem>"})
+
+### SHINZEN (真言宗全書, local TEI)
+To find a WORK (title/author), use work_catalog FIRST:
+- work_catalog({source: "shinzen", query: "即身成佛"})  # returns SZW work ids with page ranges
+- fetch({id: "SZW0001"})  # opens the work's first page (source auto-detected)
+- fetch({id: "SZ09p0243"})  # direct page access
+- search({source: "shinzen", query: "法身偈"})  # passage-level full-text search
+For citations prefer _meta.preferredCitation (e.g. 頼瑜『即身成佛義顯得鈔』、真言宗全書 第13巻 047頁).
+confidence=metadata-only means the work is citable but its page range is unresolved; use search instead of fetch.
+
+### SHOKU_SHINZEN (続真言宗全書, local TEI)
+- work_catalog({source: "shoku_shinzen", query: "<title-or-author>"}) returns SKZW work ids and nextActions.
+- fetch({id: "SKZW0001", maxChars: 2000}) opens a resolved work; fetch({id: "SKZ02p0128"}) opens a page.
+- confidence=metadata-only is bibliographic only: execute its search nextAction instead of fetching the SKZW id.
+- Prefer preferredCitation from search/fetch results.
 
 ## Online sources (no local data needed)
 
@@ -2446,6 +3252,8 @@ Flow: search({source:"jozen"}) -> fetch with lineno
                         "gretil".to_string(),
                         "sarit".to_string(),
                         "muktabodha".to_string(),
+                        "shinzen".to_string(),
+                        "shoku_shinzen".to_string(),
                     ]
                 });
             let limit_per_source = args
@@ -2489,6 +3297,135 @@ Flow: search({source:"jozen"}) -> fetch with lineno
                                 "resolvedBy": "direct-id"
                         });
                         cands_scored.push((1.20 + bias, cand));
+                        direct_id_mode = true;
+                    }
+                }
+            }
+            // SHINZEN work-catalog direct ID (SZW + digits). Must be checked before the
+            // page-ID (SZ…P…) branch since "SZW…" also starts with "SZ".
+            if sources.iter().any(|s| s == "shinzen") && q_upper.starts_with("SZW") {
+                let catalog = load_or_build_shinzen_work_catalog();
+                if let Some(entry) = find_shinzen_work_by_id(catalog, &q_upper) {
+                    let bias = if prefer_source.as_deref() == Some("shinzen") {
+                        0.02
+                    } else {
+                        0.0
+                    };
+                    let mut cand = json!({
+                        "source": "shinzen",
+                        "id": &entry.id,
+                        "title": &entry.title,
+                        "author": &entry.author,
+                        "score": 1.0,
+                        "rangeCitation": &entry.range.citation,
+                        "confidence": &entry.confidence,
+                        "resolvedBy": "direct-id"
+                    });
+                    if shinzen_work_start_fetch_id(entry).is_some() {
+                        cand["fetch"] = json!({"tool": "shinzen_fetch", "args": {"id": &entry.id}});
+                    } else {
+                        cand["note"] = json!(
+                            "page range unresolved; work is citable but has no fetchable pages"
+                        );
+                        cand["next"] =
+                            json!({"tool": "shinzen_search", "args": {"query": &entry.title}});
+                    }
+                    cands_scored.push((1.20 + bias, cand));
+                    direct_id_mode = true;
+                }
+            }
+            if sources.iter().any(|s| s == "shoku_shinzen") && q_upper.starts_with("SKZW") {
+                let catalog = load_or_build_shoku_shinzen_work_catalog();
+                if let Some(entry) = find_shinzen_work_by_id(catalog, &q_upper) {
+                    let bias = if prefer_source.as_deref() == Some("shoku_shinzen") {
+                        0.02
+                    } else {
+                        0.0
+                    };
+                    let mut candidate = json!({
+                        "source":"shoku_shinzen",
+                        "id":entry.id,
+                        "title":entry.title,
+                        "author":entry.author,
+                        "score":1.0,
+                        "rangeCitation":entry.range.citation,
+                        "confidence":entry.confidence,
+                        "resolvedBy":"direct-id"
+                    });
+                    if shinzen_work_start_fetch_id(entry).is_some() {
+                        candidate["fetch"] =
+                            json!({"tool":"shoku_shinzen_fetch","args":{"id":entry.id}});
+                    } else {
+                        candidate["note"] = json!(
+                            "page range unresolved; work is citable but has no fetchable pages"
+                        );
+                        candidate["next"] = json!({
+                            "tool":"shoku_shinzen_search",
+                            "args":{"query":entry.title}
+                        });
+                    }
+                    cands_scored.push((1.20 + bias, candidate));
+                    direct_id_mode = true;
+                }
+            }
+            if sources.iter().any(|s| s == "shinzen")
+                && q_upper.starts_with("SZ")
+                && !q_upper.starts_with("SZW")
+            {
+                let rest = &q_upper[2..];
+                if let Some((volume, page)) = rest.split_once('P') {
+                    if !volume.is_empty()
+                        && !page.is_empty()
+                        && volume.chars().all(|c| c.is_ascii_digit())
+                        && page.chars().all(|c| c.is_ascii_digit())
+                    {
+                        let id_norm =
+                            format!("SZ{}p{:0>4}", volume, page.parse::<usize>().unwrap_or(0));
+                        let bias = if prefer_source.as_deref() == Some("shinzen") {
+                            0.02
+                        } else {
+                            0.0
+                        };
+                        let cand = json!({
+                            "source": "shinzen",
+                            "id": id_norm,
+                            "title": null,
+                            "score": 1.0,
+                            "fetch": {"tool": "shinzen_fetch", "args": {"id": id_norm}},
+                            "resolvedBy": "direct-id"
+                        });
+                        cands_scored.push((1.20 + bias, cand));
+                        direct_id_mode = true;
+                    }
+                }
+            }
+            if sources.iter().any(|s| s == "shoku_shinzen")
+                && q_upper.starts_with("SKZ")
+                && !q_upper.starts_with("SKZW")
+            {
+                let rest = &q_upper[3..];
+                if let Some((volume, page)) = rest.split_once('P') {
+                    if !volume.is_empty()
+                        && !page.is_empty()
+                        && volume.chars().all(|c| c.is_ascii_digit())
+                        && page.chars().all(|c| c.is_ascii_digit())
+                    {
+                        let id_norm =
+                            format!("SKZ{}p{:0>4}", volume, page.parse::<usize>().unwrap_or(0));
+                        let bias = if prefer_source.as_deref() == Some("shoku_shinzen") {
+                            0.02
+                        } else {
+                            0.0
+                        };
+                        let candidate = json!({
+                            "source":"shoku_shinzen",
+                            "id":id_norm,
+                            "title":null,
+                            "score":1.0,
+                            "fetch":{"tool":"shoku_shinzen_fetch","args":{"id":id_norm}},
+                            "resolvedBy":"direct-id"
+                        });
+                        cands_scored.push((1.20 + bias, candidate));
                         direct_id_mode = true;
                     }
                 }
@@ -2560,11 +3497,15 @@ Flow: search({source:"jozen"}) -> fetch with lineno
                 let do_gretil = sources.iter().any(|s| s == "gretil");
                 let do_sarit = sources.iter().any(|s| s == "sarit");
                 let do_muktabodha = sources.iter().any(|s| s == "muktabodha");
+                let do_shinzen = sources.iter().any(|s| s == "shinzen");
+                let do_shoku_shinzen = sources.iter().any(|s| s == "shoku_shinzen");
                 let jobs = (do_cbeta as usize)
                     + (do_tipitaka as usize)
                     + (do_gretil as usize)
                     + (do_sarit as usize)
-                    + (do_muktabodha as usize);
+                    + (do_muktabodha as usize)
+                    + (do_shinzen as usize)
+                    + (do_shoku_shinzen as usize);
                 if jobs >= 2 {
                     std::thread::scope(|scope| {
                         let h_cbeta = if do_cbeta {
@@ -2627,6 +3568,49 @@ Flow: search({source:"jozen"}) -> fetch with lineno
                         } else {
                             None
                         };
+                        let h_shinzen = if do_shinzen {
+                            Some(scope.spawn(|| {
+                                let mut c = resolve_title_candidates_shinzen(
+                                    q,
+                                    limit_per_source,
+                                    min_score,
+                                    prefer,
+                                );
+                                // 作品カタログ候補はページ index 候補より上に出す（+0.05）。
+                                for (s, v) in resolve_work_candidates_shinzen(
+                                    q,
+                                    limit_per_source,
+                                    min_score,
+                                    prefer,
+                                ) {
+                                    c.push((s + 0.05, v));
+                                }
+                                c
+                            }))
+                        } else {
+                            None
+                        };
+                        let h_shoku_shinzen = if do_shoku_shinzen {
+                            Some(scope.spawn(|| {
+                                let mut candidates = resolve_title_candidates_shoku_shinzen(
+                                    q,
+                                    limit_per_source,
+                                    min_score,
+                                    prefer,
+                                );
+                                for (score, value) in resolve_work_candidates_shoku_shinzen(
+                                    q,
+                                    limit_per_source,
+                                    min_score,
+                                    prefer,
+                                ) {
+                                    candidates.push((score + 0.05, value));
+                                }
+                                candidates
+                            }))
+                        } else {
+                            None
+                        };
                         if let Some(h) = h_cbeta {
                             cands_scored.extend(h.join().unwrap_or_default());
                         }
@@ -2640,6 +3624,12 @@ Flow: search({source:"jozen"}) -> fetch with lineno
                             cands_scored.extend(h.join().unwrap_or_default());
                         }
                         if let Some(h) = h_muktabodha {
+                            cands_scored.extend(h.join().unwrap_or_default());
+                        }
+                        if let Some(h) = h_shinzen {
+                            cands_scored.extend(h.join().unwrap_or_default());
+                        }
+                        if let Some(h) = h_shoku_shinzen {
                             cands_scored.extend(h.join().unwrap_or_default());
                         }
                     });
@@ -2683,6 +3673,36 @@ Flow: search({source:"jozen"}) -> fetch with lineno
                             min_score,
                             prefer,
                         ));
+                    }
+                    if do_shinzen {
+                        cands_scored.extend(resolve_title_candidates_shinzen(
+                            q,
+                            limit_per_source,
+                            min_score,
+                            prefer,
+                        ));
+                        // 作品カタログ候補はページ index 候補より上に出す（+0.05）。
+                        for (s, v) in
+                            resolve_work_candidates_shinzen(q, limit_per_source, min_score, prefer)
+                        {
+                            cands_scored.push((s + 0.05, v));
+                        }
+                    }
+                    if do_shoku_shinzen {
+                        cands_scored.extend(resolve_title_candidates_shoku_shinzen(
+                            q,
+                            limit_per_source,
+                            min_score,
+                            prefer,
+                        ));
+                        for (score, value) in resolve_work_candidates_shoku_shinzen(
+                            q,
+                            limit_per_source,
+                            min_score,
+                            prefer,
+                        ) {
+                            cands_scored.push((score + 0.05, value));
+                        }
                     }
                 }
             }
@@ -2846,6 +3866,19 @@ Flow: search({source:"jozen"}) -> fetch with lineno
                     path = PathBuf::from(&hit.entry.path);
                 }
             }
+            // path 未解決（存在しない Taisho 番号など）で空文字列本文を返してしまうのを防ぐ。
+            if path.as_os_str().is_empty() || !path.exists() {
+                let q = args
+                    .get("id")
+                    .and_then(|v| v.as_str())
+                    .or_else(|| args.get("query").and_then(|v| v.as_str()))
+                    .unwrap_or("")
+                    .to_string();
+                let idx = load_or_build_cbeta_index();
+                let candidates =
+                    fetch_candidates_from_hits("cbeta", &best_match(idx, &q, 3), false);
+                return json!({"jsonrpc":"2.0","id": id, "result": fetch_not_found_response("cbeta", &q, candidates)});
+            }
             let xml_arc = cbeta_xml_cached(&path);
             let xml = xml_arc.as_str();
             // includeNotes support
@@ -2906,12 +3939,12 @@ Flow: search({source:"jozen"}) -> fetch with lineno
                     .unwrap_or(
                         args.get("contextLines")
                             .and_then(|v| v.as_u64())
-                            .unwrap_or(10),
+                            .unwrap_or(1),
                     ) as usize;
                 let context_after = args.get("contextAfter").and_then(|v| v.as_u64()).unwrap_or(
                     args.get("contextLines")
                         .and_then(|v| v.as_u64())
-                        .unwrap_or(100),
+                        .unwrap_or(3),
                 ) as usize;
                 let pat = format!(r#"<lb\b[^>]*\bn\s*=\s*["']{}["']"#, regex::escape(&lb));
                 if let Ok(re) = Regex::new(&pat) {
@@ -3252,11 +4285,13 @@ Flow: search({source:"jozen"}) -> fetch with lineno
             if sliced.chars().count() > cap {
                 sliced = sliced.chars().take(cap).collect();
             }
-            let meta = json!({
-                "totalLength": text.len(),
-                "returnedStart": args.get("startChar").and_then(|v| v.as_u64()).unwrap_or( args.get("page").and_then(|v| v.as_u64()).and_then(|p| args.get("pageSize").and_then(|s| s.as_u64()).map(|ps| p*ps)).unwrap_or(0) ) ,
-                "returnedEnd": args.get("startChar").and_then(|v| v.as_u64()).unwrap_or( args.get("page").and_then(|v| v.as_u64()).and_then(|p| args.get("pageSize").and_then(|s| s.as_u64()).map(|ps| p*ps)).unwrap_or(0) ) + (sliced.len() as u64),
-                "truncated": if full_flag { (sliced.len() as u64) < (text.len() as u64) } else { (sliced.len() as u64) < (text.len() as u64) },
+            let (total_chars, returned_start, returned_end, truncated) =
+                fetch_page_bounds(&text, &args, full_flag, cap);
+            let mut meta = json!({
+                "totalLength": total_chars,
+                "returnedStart": returned_start,
+                "returnedEnd": returned_end,
+                "truncated": truncated,
                 "sourcePath": path.to_string_lossy(),
                 "format": if is_plain { "plain" } else { "default" },
                 "extractionMethod": extraction_method,
@@ -3270,6 +4305,16 @@ Flow: search({source:"jozen"}) -> fetch with lineno
                 "highlighted": if highlight_count > 0 { Some(highlight_count) } else { None::<usize> },
                 "highlightPositions": if highlight_positions.is_empty() { None::<Vec<serde_json::Value>> } else { Some(highlight_positions) },
             });
+            let (citation, source_url) = local_source_link("cbeta", matched_id.as_deref(), &path);
+            if let Some(c) = citation {
+                meta["citation"] = json!(c);
+            }
+            if let Some(u) = source_url {
+                meta["sourceUrl"] = json!(u);
+            }
+            if let Some(ns) = fetch_next_start_char(&text, &args, full_flag, default_max_chars()) {
+                meta["nextStartChar"] = json!(ns);
+            }
             return json!({"jsonrpc":"2.0","id": id, "result": { "content": [{"type":"text","text": sliced}], "_meta": meta }});
         }
         "tipitaka_title_search" => {
@@ -3369,9 +4414,18 @@ Flow: search({source:"jozen"}) -> fetch with lineno
                     path = p;
                 }
             }
-            // 見つからない場合は空に近い応答
-            if path.as_os_str().is_empty() {
-                path = PathBuf::from("");
+            // 見つからない場合は自己修復可能な not-found 応答を返す（空本文で続行しない）。
+            if path.as_os_str().is_empty() || !path.exists() {
+                let q = args
+                    .get("id")
+                    .and_then(|v| v.as_str())
+                    .or_else(|| args.get("query").and_then(|v| v.as_str()))
+                    .unwrap_or("")
+                    .to_string();
+                let idx = load_or_build_tipitaka_index();
+                let candidates =
+                    fetch_candidates_from_hits("tipitaka", &best_match_tipitaka(idx, &q, 3), true);
+                return json!({"jsonrpc":"2.0","id": id, "result": fetch_not_found_response("tipitaka", &q, candidates)});
             }
             // If we matched a TOC file (e.g., s0404m1.mul.toc.xml), try to open the first content part (e.g., s0404m1.mul0.xml)
             if let Some(name) = path.file_name().and_then(|s| s.to_str()) {
@@ -3600,11 +4654,13 @@ Flow: search({source:"jozen"}) -> fetch with lineno
                 .get("headingsLimit")
                 .and_then(|v| v.as_u64())
                 .unwrap_or(10) as usize;
-            let meta = json!({
-                "totalLength": text.len(),
-                "returnedStart": args.get("startChar").and_then(|v| v.as_u64()).unwrap_or( args.get("page").and_then(|v| v.as_u64()).and_then(|p| args.get("pageSize").and_then(|s| s.as_u64()).map(|ps| p*ps)).unwrap_or(0) ) ,
-                "returnedEnd": args.get("startChar").and_then(|v| v.as_u64()).unwrap_or( args.get("page").and_then(|v| v.as_u64()).and_then(|p| args.get("pageSize").and_then(|s| s.as_u64()).map(|ps| p*ps)).unwrap_or(0) ) + (sliced.len() as u64),
-                "truncated": (sliced.len() as u64) < (text.len() as u64),
+            let (total_chars, returned_start, returned_end, truncated) =
+                fetch_page_bounds(&text, &args, false, cap);
+            let mut meta = json!({
+                "totalLength": total_chars,
+                "returnedStart": returned_start,
+                "returnedEnd": returned_end,
+                "truncated": truncated,
                 "sourcePath": cur_path.to_string_lossy(),
                 "extractionMethod": extraction_method,
                 "headingsTotal": heads.len(),
@@ -3616,6 +4672,17 @@ Flow: search({source:"jozen"}) -> fetch with lineno
                 "highlighted": if highlight_count > 0 { Some(highlight_count) } else { None::<usize> },
                 "highlightPositions": if highlight_positions.is_empty() { None::<Vec<serde_json::Value>> } else { Some(highlight_positions) },
             });
+            let (citation, source_url) =
+                local_source_link("tipitaka", matched_id.as_deref(), &cur_path);
+            if let Some(c) = citation {
+                meta["citation"] = json!(c);
+            }
+            if let Some(u) = source_url {
+                meta["sourceUrl"] = json!(u);
+            }
+            if let Some(ns) = fetch_next_start_char(&text, &args, false, default_max_chars()) {
+                meta["nextStartChar"] = json!(ns);
+            }
             return json!({"jsonrpc":"2.0","id": id, "result": { "content": [{"type":"text","text": sliced}], "_meta": meta }});
         }
         "sat_search" => {
@@ -3684,11 +4751,7 @@ Flow: search({source:"jozen"}) -> fetch with lineno
                     }
                 }
 
-                let hint_top = std::env::var("BUDDHA_HINT_TOP")
-                    .or_else(|_| std::env::var("DAIZO_HINT_TOP"))
-                    .ok()
-                    .and_then(|s| s.parse::<usize>().ok())
-                    .unwrap_or(5);
+                let hint_top = hint_top(5);
                 let mut fetch_suggestions: Vec<serde_json::Value> = Vec::new();
                 for d in docs_enriched.iter().take(hint_top) {
                     let useid = d
@@ -4123,11 +5186,7 @@ Flow: search({source:"jozen"}) -> fetch with lineno
             };
 
             let parsed = jozen_parse_search_html(&html, &q, max_results, max_snippet_chars);
-            let hint_top = std::env::var("BUDDHA_HINT_TOP")
-                .or_else(|_| std::env::var("DAIZO_HINT_TOP"))
-                .ok()
-                .and_then(|s| s.parse::<usize>().ok())
-                .unwrap_or(1);
+            let hint_top = hint_top(3);
             let mut fetch_suggestions: Vec<serde_json::Value> = Vec::new();
             for r in parsed.results.iter().take(hint_top) {
                 if !r.lineno.is_empty() {
@@ -4279,11 +5338,7 @@ Flow: search({source:"jozen"}) -> fetch with lineno
                 summary.push_str("NOTE: Results may be truncated by maxResults. Increase maxResults to see more.\n");
             }
             // Lightweight next-call hints for AI clients (low token cost)
-            let hint_top = std::env::var("BUDDHA_HINT_TOP")
-                .or_else(|_| std::env::var("DAIZO_HINT_TOP"))
-                .ok()
-                .and_then(|s| s.parse::<usize>().ok())
-                .unwrap_or(1);
+            let hint_top = hint_top(3);
             let mut fetch_suggestions: Vec<serde_json::Value> = Vec::new();
             for r in results.iter().take(hint_top) {
                 if let Some(m) = r.matches.first() {
@@ -4741,7 +5796,17 @@ Flow: search({source:"jozen"}) -> fetch with lineno
                 }
             }
             if path.as_os_str().is_empty() {
-                return json!({"jsonrpc":"2.0","id": id, "result": { "content": [{"type":"text","text": "not found"}] }});
+                // 自己修復可能な not-found: 近傍タイトルを候補として返す（失敗分岐でのみ index ロード）。
+                let q = args
+                    .get("id")
+                    .and_then(|v| v.as_str())
+                    .or_else(|| args.get("query").and_then(|v| v.as_str()))
+                    .unwrap_or("")
+                    .to_string();
+                let idx = load_or_build_gretil_index();
+                let candidates =
+                    fetch_candidates_from_hits("gretil", &best_match_gretil(idx, &q, 3), false);
+                return json!({"jsonrpc":"2.0","id": id, "result": fetch_not_found_response("gretil", &q, candidates)});
             }
             let xml = fs::read_to_string(&path).unwrap_or_default();
             let include_notes = args
@@ -4861,11 +5926,13 @@ Flow: search({source:"jozen"}) -> fetch with lineno
                 .get("headingsLimit")
                 .and_then(|v| v.as_u64())
                 .unwrap_or(10) as usize;
-            let meta = json!({
-                "totalLength": text.len(),
-                "returnedStart": args.get("startChar").and_then(|v| v.as_u64()).unwrap_or( args.get("page").and_then(|v| v.as_u64()).and_then(|p| args.get("pageSize").and_then(|s| s.as_u64()).map(|ps| p*ps)).unwrap_or(0) ),
-                "returnedEnd": args.get("startChar").and_then(|v| v.as_u64()).unwrap_or( args.get("page").and_then(|v| v.as_u64()).and_then(|p| args.get("pageSize").and_then(|s| s.as_u64()).map(|ps| p*ps)).unwrap_or(0) ) + (sliced.len() as u64),
-                "truncated": if full_flag { false } else { (sliced.len() as u64) < (text.len() as u64) },
+            let (total_chars, returned_start, returned_end, truncated) =
+                fetch_page_bounds(&text, &args, full_flag, cap);
+            let mut meta = json!({
+                "totalLength": total_chars,
+                "returnedStart": returned_start,
+                "returnedEnd": returned_end,
+                "truncated": truncated,
                 "sourcePath": path.to_string_lossy(),
                 "extractionMethod": extraction_method,
                 "headingsTotal": heads.len(),
@@ -4876,6 +5943,16 @@ Flow: search({source:"jozen"}) -> fetch with lineno
                 "highlighted": if highlight_count > 0 { Some(highlight_count) } else { None::<usize> },
                 "highlightPositions": if highlight_positions.is_empty() { None::<Vec<serde_json::Value>> } else { Some(highlight_positions) },
             });
+            let (citation, source_url) = local_source_link("gretil", matched_id.as_deref(), &path);
+            if let Some(c) = citation {
+                meta["citation"] = json!(c);
+            }
+            if let Some(u) = source_url {
+                meta["sourceUrl"] = json!(u);
+            }
+            if let Some(ns) = fetch_next_start_char(&text, &args, full_flag, default_max_chars()) {
+                meta["nextStartChar"] = json!(ns);
+            }
             return json!({"jsonrpc":"2.0","id": id, "result": { "content": [{"type":"text","text": sliced}], "_meta": meta }});
         }
         "gretil_search" => {
@@ -4932,11 +6009,7 @@ Flow: search({source:"jozen"}) -> fetch with lineno
                 summary.push('\n');
             }
             // Lightweight next-call hints (low token) for GRETIL
-            let hint_top = std::env::var("BUDDHA_HINT_TOP")
-                .or_else(|_| std::env::var("DAIZO_HINT_TOP"))
-                .ok()
-                .and_then(|s| s.parse::<usize>().ok())
-                .unwrap_or(1);
+            let hint_top = hint_top(3);
             let hl_regex = looks_like_regex || (q != q_raw);
             let mut fetch_suggestions: Vec<serde_json::Value> = Vec::new();
             for r in results.iter().take(hint_top) {
@@ -5196,6 +6269,421 @@ Flow: search({source:"jozen"}) -> fetch with lineno
             }
             return json!({"jsonrpc":"2.0","id": id, "result": { "content": content_items, "_meta": meta }});
         }
+        "shinzen_title_search" => {
+            if !shinzen_library_available() {
+                return shinzen_missing_response(id);
+            }
+            let q = args
+                .get("query")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .trim()
+                .to_string();
+            let limit = args.get("limit").and_then(|v| v.as_u64()).unwrap_or(10) as usize;
+            let idx = load_or_build_shinzen_index();
+            let hits = best_match_sarit(idx, &q, limit);
+            let summary = hits
+                .iter()
+                .enumerate()
+                .map(|(i, h)| format!("{}. {}  {}", i + 1, h.entry.id, h.entry.title))
+                .collect::<Vec<_>>()
+                .join("\n");
+            let results: Vec<_> = hits
+                .iter()
+                .map(|h| {
+                    json!({
+                        "id": h.entry.id,
+                        "title": h.entry.title,
+                        "path": h.entry.path,
+                        "score": h.score,
+                        "meta": h.entry.meta
+                    })
+                })
+                .collect();
+            let meta = json!({ "count": results.len(), "results": results });
+            return json!({"jsonrpc":"2.0","id": id, "result": { "content": [{"type":"text","text": summary }], "_meta": meta }});
+        }
+        "shinzen_work_catalog" => {
+            if !shinzen_library_available() {
+                return shinzen_missing_response(id);
+            }
+            let query = args.get("query").and_then(|v| v.as_str());
+            let volume = args.get("volume").and_then(|v| v.as_str());
+            let limit = args.get("limit").and_then(|v| v.as_u64()).unwrap_or(20) as usize;
+            let catalog = load_or_build_shinzen_work_catalog();
+            let results = search_shinzen_work_catalog(catalog, query, volume, limit);
+            let summary = results
+                .iter()
+                .enumerate()
+                .map(|(i, entry)| {
+                    let author = entry.author.as_deref().unwrap_or("著者未詳");
+                    let suffix = if entry.confidence == "metadata-only" {
+                        "（頁未確定・書誌のみ）"
+                    } else {
+                        ""
+                    };
+                    format!(
+                        "{}. {} {}『{}』 {} [{}]{}",
+                        i + 1,
+                        entry.id,
+                        author,
+                        entry.title,
+                        entry.range.citation,
+                        entry.confidence,
+                        suffix
+                    )
+                })
+                .collect::<Vec<_>>()
+                .join("\n");
+            // Suggest opening the first page of up to 3 works whose start id is fetchable.
+            let mut fetch_suggestions: Vec<serde_json::Value> = Vec::new();
+            for entry in results.iter() {
+                if fetch_suggestions.len() >= 3 {
+                    break;
+                }
+                if let Some(start_id) = shinzen_work_start_fetch_id(entry) {
+                    fetch_suggestions.push(json!({
+                        "tool": "shinzen_fetch",
+                        "args": {"id": start_id, "maxChars": 2000},
+                        "mode": "work-start",
+                        "workId": entry.id,
+                        "citation": entry.range.citation,
+                    }));
+                }
+            }
+            let next_actions = results
+                .iter()
+                .take(5)
+                .map(|entry| {
+                    if let Some(start_id) = shinzen_work_start_fetch_id(entry) {
+                        json!({
+                            "tool":"shinzen_fetch",
+                            "args":{"id":entry.id,"maxChars":2000},
+                            "resolvedPageId":start_id,
+                            "citation":entry.range.citation,
+                            "reason":"work-start"
+                        })
+                    } else {
+                        json!({
+                            "tool":"shinzen_search",
+                            "args":{"query":entry.title,"maxResults":5,"maxMatchesPerFile":3},
+                            "reason":"metadata-only"
+                        })
+                    }
+                })
+                .collect::<Vec<_>>();
+            let result_views = results
+                .iter()
+                .map(|entry| shinzen_work_agent_view(entry))
+                .collect::<Vec<_>>();
+            let meta = json!({
+                "count": results.len(),
+                "totalCatalogEntries": catalog.entries.len(),
+                "results": result_views,
+                "warnings": catalog.warnings,
+                "fetchSuggestions": fetch_suggestions,
+                "nextActions": next_actions,
+                "hint": "fetchSuggestions open each work's first page. For passages inside a work, use shinzen_search. confidence=metadata-only entries are citable (title/author verified) but their page range is unresolved — use shinzen_search with the title instead.",
+            });
+            return json!({"jsonrpc":"2.0","id": id, "result": { "content": [{"type":"text","text": summary }], "_meta": meta }});
+        }
+        "shinzen_fetch" => {
+            if !shinzen_library_available() {
+                return shinzen_missing_response(id);
+            }
+            // Own a mutable copy so we can rewrite a work-catalog id (SZW...) to a fetchable page id.
+            let mut args = args;
+            let mut resolved_from_work: Option<String> = None;
+            if let Some(raw_id) = args.get("id").and_then(|v| v.as_str()) {
+                let trimmed = raw_id.trim().to_string();
+                if trimmed.to_ascii_uppercase().starts_with("SZW") {
+                    let catalog = load_or_build_shinzen_work_catalog();
+                    if let Some(entry) = find_shinzen_work_by_id(catalog, &trimmed) {
+                        if let Some(start_id) = shinzen_work_start_fetch_id(entry) {
+                            // Rewrite the id to the fetchable page id and continue the normal flow.
+                            let start_id = start_id.to_string();
+                            resolved_from_work = Some(entry.id.clone());
+                            args["id"] = json!(start_id);
+                        } else {
+                            // metadata-only work: no resolved page range, but still citable.
+                            let author = entry.author.as_deref().unwrap_or("著者未詳");
+                            let text = format!(
+                                "この作品（{}『{}』、{}）は頁範囲未確定です。書誌情報としては有効です。本文を探すには search({{source:\"shinzen\", query:\"{}\"}}) を使ってください。",
+                                author, entry.title, entry.range.citation, entry.title
+                            );
+                            let meta = json!({
+                                "workId": entry.id,
+                                "work": shinzen_work_agent_view(entry),
+                                "hint": "This work has a verified bibliography but its page range is unresolved. Use shinzen_search with the title to locate passages.",
+                                "available": true,
+                            });
+                            return json!({"jsonrpc":"2.0","id": id, "result": { "content": [{"type":"text","text": text}], "_meta": meta }});
+                        }
+                    }
+                    // entry not found: fall through to the normal not-found path (unchanged).
+                }
+            }
+            let (path, matched_id_hint) = resolve_shinzen_path_mcp(&args);
+            if path.as_os_str().is_empty() || !path.exists() {
+                // 自己修復可能な not-found: 近傍ページ（SZ..p..）を候補として返す。
+                // SZW ガードの metadata-only 正常応答は上で return 済みなので、ここは真の未発見のみ。
+                let q = args
+                    .get("id")
+                    .and_then(|v| v.as_str())
+                    .or_else(|| args.get("query").and_then(|v| v.as_str()))
+                    .unwrap_or("")
+                    .to_string();
+                let idx = load_or_build_shinzen_index();
+                let candidates =
+                    fetch_candidates_from_hits("shinzen", &best_match_sarit(idx, &q, 3), false);
+                return json!({"jsonrpc":"2.0","id": id, "result": fetch_not_found_response("shinzen", &q, candidates)});
+            }
+
+            let xml = fs::read_to_string(&path).unwrap_or_default();
+            let format = args
+                .get("format")
+                .and_then(|v| v.as_str())
+                .unwrap_or("plain");
+            let (text, extraction_method) = if format == "tei" {
+                (xml.clone(), "tei".to_string())
+            } else if let Some(line_num) = args.get("lineNumber").and_then(|v| v.as_u64()) {
+                let before = args
+                    .get("contextBefore")
+                    .and_then(|v| v.as_u64())
+                    .unwrap_or(
+                        args.get("contextLines")
+                            .and_then(|v| v.as_u64())
+                            .unwrap_or(10),
+                    ) as usize;
+                let after = args.get("contextAfter").and_then(|v| v.as_u64()).unwrap_or(
+                    args.get("contextLines")
+                        .and_then(|v| v.as_u64())
+                        .unwrap_or(100),
+                ) as usize;
+                (
+                    extract_shinzen_context(&xml, line_num as usize, before, after),
+                    format!("line-context-{}-{}-{}", line_num, before, after),
+                )
+            } else {
+                (extract_shinzen_text(&xml), "full".to_string())
+            };
+
+            let full_flag = args.get("full").and_then(|v| v.as_bool()).unwrap_or(false);
+            let mut sliced = if full_flag {
+                text.clone()
+            } else {
+                slice_text(&text, &args)
+            };
+            let returned_len = sliced.chars().count();
+
+            let mut highlight_count = 0usize;
+            let mut highlight_positions: Vec<serde_json::Value> = Vec::new();
+            if let Some(hpat) = args.get("highlight").and_then(|v| v.as_str()) {
+                let use_re = args
+                    .get("highlightRegex")
+                    .and_then(|v| v.as_bool())
+                    .unwrap_or(false);
+                let hpre = args
+                    .get("highlightPrefix")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or(">>> ");
+                let hsuf = args
+                    .get("highlightSuffix")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or(" <<<");
+                let (decorated, count, positions) =
+                    buddha_core::text_utils::highlight_text(&sliced, hpat, use_re, hpre, hsuf);
+                sliced = decorated;
+                highlight_count = count;
+                highlight_positions = positions
+                    .into_iter()
+                    .map(|p| json!({"startChar": p.start_char, "endChar": p.end_char}))
+                    .collect();
+            }
+
+            let idx = load_or_build_shinzen_index();
+            let canonical = std::fs::canonicalize(&path).unwrap_or_else(|_| path.clone());
+            let matched = matched_id_hint
+                .as_deref()
+                .and_then(|needle| idx.iter().find(|entry| entry.id == needle))
+                .or_else(|| {
+                    idx.iter()
+                        .find(|entry| entry.path == canonical.to_string_lossy())
+                });
+            let biblio = resolve_shinzen_bibliography_for_path(&shinzen_kunten_tei_root(), &path);
+            let work = biblio.as_ref().and_then(|b| {
+                find_shinzen_work_for_bibliography(load_or_build_shinzen_work_catalog(), b)
+            });
+            let total_chars = text.chars().count();
+            let requested_start = args
+                .get("page")
+                .and_then(|value| value.as_u64())
+                .and_then(|page| {
+                    args.get("pageSize")
+                        .and_then(|value| value.as_u64())
+                        .map(|size| page.saturating_mul(size))
+                })
+                .or_else(|| args.get("startChar").and_then(|value| value.as_u64()))
+                .unwrap_or(0) as usize;
+            let returned_start = if full_flag {
+                0
+            } else {
+                requested_start.min(total_chars)
+            };
+            let returned_end = if full_flag {
+                total_chars
+            } else {
+                returned_start.saturating_add(returned_len).min(total_chars)
+            };
+            let work_view = work.as_ref().map(shinzen_work_agent_view);
+            let mut meta = json!({
+                "totalLength": total_chars,
+                "returnedStart": returned_start,
+                "returnedEnd": returned_end,
+                "truncated": returned_start > 0 || returned_end < total_chars,
+                "sourcePath": path.to_string_lossy(),
+                "extractionMethod": extraction_method,
+                "matchedId": matched.map(|entry| entry.id.clone()).or(matched_id_hint),
+                "matchedTitle": matched.map(|entry| entry.title.clone()),
+                "biblio": biblio,
+                "work": work_view,
+                "preferredCitation": biblio.as_ref().map(|b| shinzen_preferred_citation(b, work.as_ref())),
+                "resolvedFromWork": resolved_from_work,
+                "volume": matched.and_then(|entry| entry.meta.as_ref()).and_then(|m| m.get("volume")).cloned(),
+                "page": matched.and_then(|entry| entry.meta.as_ref()).and_then(|m| m.get("page")).cloned(),
+                "imagePath": matched
+                    .and_then(|entry| entry.meta.as_ref())
+                    .and_then(|m| m.get("imagePath"))
+                    .cloned()
+                    .or_else(|| extract_shinzen_graphic_url(&xml)),
+                "lineNumber": args.get("lineNumber").and_then(|v| v.as_u64()),
+                "highlighted": if highlight_count > 0 { Some(highlight_count) } else { None::<usize> },
+                "highlightPositions": if !highlight_positions.is_empty() { Some(highlight_positions) } else { None::<Vec<serde_json::Value>> },
+            });
+            if let Some(ns) = fetch_next_start_char(&text, &args, full_flag, usize::MAX) {
+                meta["nextStartChar"] = json!(ns);
+            }
+            return json!({"jsonrpc":"2.0","id": id, "result": { "content": [{"type":"text","text": sliced}], "_meta": meta }});
+        }
+        "shinzen_search" => {
+            if !shinzen_library_available() {
+                return shinzen_missing_response(id);
+            }
+            let q_raw = args.get("query").and_then(|v| v.as_str()).unwrap_or("");
+            let q = q_raw.to_string();
+            let max_results = args
+                .get("maxResults")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(20) as usize;
+            let max_matches_per_file = args
+                .get("maxMatchesPerFile")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(5) as usize;
+            let results = shinzen_grep(
+                &shinzen_kunten_tei_root(),
+                &q,
+                max_results,
+                max_matches_per_file,
+            );
+            let mut summary = format!(
+                "Found {} files with matches for '{}':\n\n",
+                results.len(),
+                q_raw
+            );
+            for (i, result) in results.iter().enumerate() {
+                summary.push_str(&format!(
+                    "{}. {} ({})\n",
+                    i + 1,
+                    result.title,
+                    result.file_id
+                ));
+                for (j, m) in result.matches.iter().enumerate().take(2) {
+                    summary.push_str(&format!("   Match {}: ...{}...\n", j + 1, m.context));
+                }
+                summary.push('\n');
+            }
+            // Work catalog is loaded once; skip work enrichment entirely if unavailable.
+            let catalog = load_or_build_shinzen_work_catalog();
+            let catalog_ok = !catalog.entries.is_empty();
+            // Lightweight next-call hints for AI clients (same env + default as cbeta_search).
+            let hint_top = hint_top(3);
+            let mut fetch_suggestions: Vec<serde_json::Value> = Vec::new();
+            for r in results.iter().take(hint_top) {
+                if let Some(ln) = r.matches.iter().find_map(|m| m.line_number) {
+                    let citation = r.biblio.as_ref().map(|b| b.citation.clone());
+                    let work_id = if catalog_ok {
+                        r.biblio
+                            .as_ref()
+                            .and_then(|b| find_shinzen_work_for_page(catalog, &b.volume, &b.page))
+                            .map(|w| w.id)
+                    } else {
+                        None
+                    };
+                    fetch_suggestions.push(json!({
+                        "tool": "shinzen_fetch",
+                        "args": {"id": r.file_id, "lineNumber": ln, "contextBefore": 1, "contextAfter": 3, "highlight": q},
+                        "mode": "low-cost",
+                        "citation": citation,
+                        "workId": work_id
+                    }));
+                }
+            }
+            // Enrich structured results with a lightweight work reference for _meta only.
+            let mut results_meta = serde_json::to_value(&results).unwrap_or(json!([]));
+            if catalog_ok {
+                if let Some(arr) = results_meta.as_array_mut() {
+                    for (r, rv) in results.iter().zip(arr.iter_mut()) {
+                        if let Some(b) = r.biblio.as_ref() {
+                            if let Some(w) = find_shinzen_work_for_page(catalog, &b.volume, &b.page)
+                            {
+                                rv["work"] = json!({
+                                    "id": w.id,
+                                    "title": w.title,
+                                    "author": w.author,
+                                    "rangeCitation": w.range.citation,
+                                    "confidence": w.confidence
+                                });
+                            }
+                        }
+                    }
+                }
+            }
+            let mut meta = json!({
+                "searchPattern": q,
+                "totalFiles": results.len(),
+                "results": results_meta,
+                "hint": "Use shinzen_fetch (id + lineNumber) for low-cost context; shinzen_pipeline with autoFetch=false to summarize. To find a WORK by title/author, use shinzen_work_catalog.",
+                "fetchSuggestions": fetch_suggestions
+            });
+            meta["pipelineHint"] = json!({
+                "tool": "shinzen_pipeline",
+                "args": {"query": q, "autoFetch": false, "maxResults": 5, "maxMatchesPerFile": 1}
+            });
+            return json!({"jsonrpc":"2.0","id": id, "result": { "content": [{"type":"text","text": summary}], "_meta": meta }});
+        }
+        "shinzen_pipeline" => {
+            if !shinzen_library_available() {
+                return shinzen_missing_response(id);
+            }
+            let q = args.get("query").and_then(|v| v.as_str()).unwrap_or("");
+            let max_results = args
+                .get("maxResults")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(10) as usize;
+            let max_matches_per_file = args
+                .get("maxMatchesPerFile")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(3) as usize;
+            let results = shinzen_grep(
+                &shinzen_kunten_tei_root(),
+                q,
+                max_results,
+                max_matches_per_file,
+            );
+            let summary = format!("Found {} files with matches for '{}'", results.len(), q);
+            let meta = json!({"searchPattern": q, "totalFiles": results.len(), "results": results});
+            return json!({"jsonrpc":"2.0","id": id, "result": { "content": [{"type":"text","text": summary}], "_meta": meta }});
+        }
         "sarit_title_search" => {
             let q = args
                 .get("query")
@@ -5226,6 +6714,442 @@ Flow: search({source:"jozen"}) -> fetch with lineno
                 .collect();
             let meta = json!({ "count": results.len(), "results": results });
             return json!({"jsonrpc":"2.0","id": id, "result": { "content": [{"type":"text","text": summary }], "_meta": meta }});
+        }
+        "shoku_shinzen_title_search" => {
+            if !shoku_shinzen_library_available() {
+                return shoku_shinzen_missing_response(id);
+            }
+            let q = args
+                .get("query")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .trim()
+                .to_string();
+            let limit = args.get("limit").and_then(|v| v.as_u64()).unwrap_or(10) as usize;
+            let idx = load_or_build_shoku_shinzen_index();
+            let hits = best_match_sarit(idx, &q, limit);
+            let summary = hits
+                .iter()
+                .enumerate()
+                .map(|(i, h)| format!("{}. {}  {}", i + 1, h.entry.id, h.entry.title))
+                .collect::<Vec<_>>()
+                .join("\n");
+            let results: Vec<_> = hits.iter().map(|h| json!({
+                "id": h.entry.id, "title": h.entry.title, "path": h.entry.path, "score": h.score, "meta": h.entry.meta
+            })).collect();
+            return json!({"jsonrpc":"2.0","id": id, "result": { "content": [{"type":"text","text": summary }], "_meta": json!({ "count": results.len(), "results": results }) }});
+        }
+        "shoku_shinzen_work_catalog" => {
+            if !shoku_shinzen_library_available() {
+                return shoku_shinzen_missing_response(id);
+            }
+            let query = args.get("query").and_then(|value| value.as_str());
+            let volume = args.get("volume").and_then(|value| value.as_str());
+            let limit = args
+                .get("limit")
+                .and_then(|value| value.as_u64())
+                .unwrap_or(20) as usize;
+            let catalog = load_or_build_shoku_shinzen_work_catalog();
+            let results = search_shinzen_work_catalog(catalog, query, volume, limit);
+            let summary = results
+                .iter()
+                .enumerate()
+                .map(|(index, entry)| {
+                    let author = entry.author.as_deref().unwrap_or("著者未詳");
+                    let suffix = if entry.confidence == "metadata-only" {
+                        "（頁未確定・書誌のみ）"
+                    } else {
+                        ""
+                    };
+                    format!(
+                        "{}. {} {}『{}』 {} [{}]{}",
+                        index + 1,
+                        entry.id,
+                        author,
+                        entry.title,
+                        entry.range.citation,
+                        entry.confidence,
+                        suffix
+                    )
+                })
+                .collect::<Vec<_>>()
+                .join("\n");
+            let next_actions = results
+                .iter()
+                .take(5)
+                .map(|entry| {
+                    if let Some(start_id) = shinzen_work_start_fetch_id(entry) {
+                        json!({
+                            "tool":"shoku_shinzen_fetch",
+                            "args":{"id":entry.id,"maxChars":2000},
+                            "resolvedPageId":start_id,
+                            "citation":entry.range.citation,
+                            "reason":"work-start"
+                        })
+                    } else {
+                        json!({
+                            "tool":"shoku_shinzen_search",
+                            "args":{"query":entry.title,"maxResults":5,"maxMatchesPerFile":3},
+                            "reason":"metadata-only"
+                        })
+                    }
+                })
+                .collect::<Vec<_>>();
+            let fetch_suggestions = next_actions
+                .iter()
+                .filter(|action| action["reason"] == "work-start")
+                .cloned()
+                .collect::<Vec<_>>();
+            let result_views = results
+                .iter()
+                .map(|entry| shinzen_work_agent_view(entry))
+                .collect::<Vec<_>>();
+            let meta = json!({
+                "count":results.len(),
+                "totalCatalogEntries":catalog.entries.len(),
+                "results":result_views,
+                "warnings":catalog.warnings,
+                "nextActions":next_actions,
+                "fetchSuggestions":fetch_suggestions,
+                "hint":"Execute a returned nextAction. metadata-only entries are bibliographic evidence, not fetchable body text."
+            });
+            return json!({"jsonrpc":"2.0","id":id,"result":{"content":[{"type":"text","text":summary}],"_meta":meta}});
+        }
+        "shoku_shinzen_search" => {
+            if !shoku_shinzen_library_available() {
+                return shoku_shinzen_missing_response(id);
+            }
+            let q = args
+                .get("query")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .trim()
+                .to_string();
+            let max_results = args
+                .get("maxResults")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(20) as usize;
+            let per = args
+                .get("maxMatchesPerFile")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(5) as usize;
+            let results =
+                shoku_shinzen_grep(&shoku_shinzen_kunten_tei_root(), &q, max_results, per);
+            let summary = results
+                .iter()
+                .enumerate()
+                .map(|(i, r)| {
+                    format!(
+                        "{}. {} ({})  ({} matches)",
+                        i + 1,
+                        r.title,
+                        r.file_id,
+                        r.matches.len()
+                    )
+                })
+                .collect::<Vec<_>>()
+                .join("\n");
+            let fetch_suggestions: Vec<serde_json::Value> = results.iter()
+                .filter_map(|r| r.matches.first().and_then(|m| m.line_number)
+                    .map(|ln| json!({"tool":"shoku_shinzen_fetch","args":{"id":r.file_id,"lineNumber":ln,"contextBefore":1,"contextAfter":3,"highlight":q},"mode":"low-cost"})))
+                .take(3).collect();
+            let catalog = load_or_build_shoku_shinzen_work_catalog();
+            let mut results_meta = serde_json::to_value(&results).unwrap_or_else(|_| json!([]));
+            if let Some(values) = results_meta.as_array_mut() {
+                for (result, value) in results.iter().zip(values.iter_mut()) {
+                    if let Some(biblio) = result.biblio.as_ref() {
+                        let work =
+                            find_shinzen_work_for_page(catalog, &biblio.volume, &biblio.page);
+                        value["preferredCitation"] = json!(shoku_shinzen_preferred_citation(
+                            &biblio.volume,
+                            &biblio.page,
+                            work.as_ref(),
+                        ));
+                        value["work"] = json!(work.as_ref().map(shinzen_work_agent_view));
+                    }
+                }
+            }
+            return json!({"jsonrpc":"2.0","id": id, "result": { "content": [{"type":"text","text": summary }], "_meta": json!({
+                "count": results.len(), "results": results_meta, "fetchSuggestions": fetch_suggestions,
+                "hint": "Use shoku_shinzen_fetch with id + lineNumber for context."
+            }) }});
+        }
+        "shoku_shinzen_fetch" => {
+            if !shoku_shinzen_library_available() {
+                return shoku_shinzen_missing_response(id);
+            }
+            let mut args = args;
+            let mut resolved_from_work: Option<String> = None;
+            let mut resolved_work = None;
+            if let Some(raw_id) = args.get("id").and_then(|value| value.as_str()) {
+                let raw_id = raw_id.trim().to_ascii_uppercase();
+                if raw_id.starts_with("SKZW") {
+                    let catalog = load_or_build_shoku_shinzen_work_catalog();
+                    if let Some(entry) = find_shinzen_work_by_id(catalog, &raw_id) {
+                        if let Some(start_id) = shinzen_work_start_fetch_id(entry) {
+                            resolved_from_work = Some(entry.id.clone());
+                            resolved_work = Some(entry.clone());
+                            args["id"] = json!(start_id);
+                        } else {
+                            let text = format!(
+                                "{} は頁範囲未確定の書誌エントリです。本文を探すには返却した nextAction を実行してください。",
+                                entry.id
+                            );
+                            let next_actions = vec![json!({
+                                "tool":"shoku_shinzen_search",
+                                "args":{"query":entry.title,"maxResults":5,"maxMatchesPerFile":3},
+                                "reason":"metadata-only"
+                            })];
+                            let meta = json!({
+                                "workId":entry.id,
+                                "work":shinzen_work_agent_view(entry),
+                                "available":true,
+                                "nextActions":next_actions,
+                                "hint":"Bibliography is usable, but body pages are unresolved. Do not invent or fetch body text from this work ID."
+                            });
+                            return json!({"jsonrpc":"2.0","id":id,"result":{"content":[{"type":"text","text":text}],"_meta":meta}});
+                        }
+                    }
+                }
+            }
+
+            let (path, matched_id) = resolve_shoku_shinzen_path_mcp(&args);
+            if path.as_os_str().is_empty() || !path.exists() {
+                let query = args
+                    .get("id")
+                    .and_then(|value| value.as_str())
+                    .or_else(|| args.get("query").and_then(|value| value.as_str()))
+                    .unwrap_or("")
+                    .to_string();
+                let candidates = fetch_candidates_from_hits(
+                    "shoku_shinzen",
+                    &best_match_sarit(load_or_build_shoku_shinzen_index(), &query, 3),
+                    false,
+                );
+                return json!({"jsonrpc":"2.0","id":id,"result":fetch_not_found_response("shoku_shinzen",&query,candidates)});
+            }
+            let xml = fs::read_to_string(&path).unwrap_or_default();
+            let format = args
+                .get("format")
+                .and_then(|value| value.as_str())
+                .unwrap_or("plain");
+            let page_id = path
+                .file_stem()
+                .and_then(|stem| stem.to_str())
+                .and_then(buddha_core::parse_shoku_page_id);
+            let corrections = buddha_core::load_shoku_corrections(
+                &buddha_core::path_resolver::shoku_shinzen_root(),
+            );
+            let (text, extraction_method, corrections_applied) = if format == "tei" {
+                (xml.clone(), "tei".to_string(), 0usize)
+            } else if let Some(ln) = args.get("lineNumber").and_then(|v| v.as_u64()) {
+                let before = args
+                    .get("contextBefore")
+                    .and_then(|v| v.as_u64())
+                    .unwrap_or(1) as usize;
+                let after = args
+                    .get("contextAfter")
+                    .and_then(|v| v.as_u64())
+                    .unwrap_or(3) as usize;
+                let lines = buddha_core::extract_shinzen_lines(&xml);
+                let corrected = buddha_core::apply_shoku_page_corrections(
+                    &lines,
+                    page_id.as_deref().unwrap_or(""),
+                    &corrections,
+                );
+                let applied = lines
+                    .iter()
+                    .zip(corrected.iter())
+                    .filter(|(line, corrected)| line.text.as_str() != corrected.as_str())
+                    .count();
+                let target = lines
+                    .iter()
+                    .position(|line| line.number == ln as usize)
+                    .unwrap_or_else(|| (ln as usize).min(lines.len().saturating_sub(1)));
+                let start = target.saturating_sub(before);
+                let end = (target + after + 1).min(lines.len());
+                let context = lines[start..end]
+                    .iter()
+                    .zip(corrected[start..end].iter())
+                    .map(|(line, text)| format!("[{}] {}", line.number, text))
+                    .collect::<Vec<_>>()
+                    .join("\n");
+                (
+                    context,
+                    format!("line-context-{}-{}-{}", ln, before, after),
+                    applied,
+                )
+            } else {
+                let lines = buddha_core::extract_shinzen_lines(&xml);
+                let corrected = buddha_core::apply_shoku_page_corrections(
+                    &lines,
+                    page_id.as_deref().unwrap_or(""),
+                    &corrections,
+                );
+                let applied = lines
+                    .iter()
+                    .zip(corrected.iter())
+                    .filter(|(line, corrected)| line.text.as_str() != corrected.as_str())
+                    .count();
+                (corrected.join("\n"), "full".to_string(), applied)
+            };
+
+            let full_flag = args
+                .get("full")
+                .and_then(|value| value.as_bool())
+                .unwrap_or(false);
+            let mut sliced = if full_flag {
+                text.clone()
+            } else {
+                slice_text(&text, &args)
+            };
+            let total_chars = text.chars().count();
+            let returned_chars = sliced.chars().count();
+            let requested_start = args
+                .get("page")
+                .and_then(|value| value.as_u64())
+                .and_then(|page| {
+                    args.get("pageSize")
+                        .and_then(|value| value.as_u64())
+                        .map(|size| page.saturating_mul(size))
+                })
+                .or_else(|| args.get("startChar").and_then(|value| value.as_u64()))
+                .unwrap_or(0) as usize;
+            let returned_start = if full_flag {
+                0
+            } else {
+                requested_start.min(total_chars)
+            };
+            let returned_end = if full_flag {
+                total_chars
+            } else {
+                returned_start
+                    .saturating_add(returned_chars)
+                    .min(total_chars)
+            };
+
+            let mut highlight_count = 0usize;
+            let mut highlight_positions = Vec::new();
+            if let Some(pattern) = args.get("highlight").and_then(|value| value.as_str()) {
+                let (decorated, count, positions) = buddha_core::text_utils::highlight_text(
+                    &sliced,
+                    pattern,
+                    args.get("highlightRegex")
+                        .and_then(|value| value.as_bool())
+                        .unwrap_or(false),
+                    args.get("highlightPrefix")
+                        .and_then(|value| value.as_str())
+                        .unwrap_or(">>> "),
+                    args.get("highlightSuffix")
+                        .and_then(|value| value.as_str())
+                        .unwrap_or(" <<<"),
+                );
+                sliced = decorated;
+                highlight_count = count;
+                highlight_positions = positions
+                    .into_iter()
+                    .map(|position| json!({"startChar":position.start_char,"endChar":position.end_char}))
+                    .collect::<Vec<_>>();
+            }
+            let idx = load_or_build_shoku_shinzen_index();
+            let entry = matched_id
+                .as_deref()
+                .and_then(|needle| idx.iter().find(|e| e.id == needle))
+                .or_else(|| {
+                    let canonical = std::fs::canonicalize(&path).unwrap_or_else(|_| path.clone());
+                    idx.iter().find(|e| e.path == canonical.to_string_lossy())
+                });
+            let volume = entry
+                .and_then(|value| value.meta.as_ref())
+                .and_then(|meta| meta.get("volume"))
+                .cloned();
+            let page = entry
+                .and_then(|value| value.meta.as_ref())
+                .and_then(|meta| meta.get("page"))
+                .cloned();
+            let volume_str = volume.as_deref();
+            let page_str = page.as_deref();
+            let work = resolved_work.or_else(|| match (volume_str, page_str) {
+                (Some(volume), Some(page)) => find_shinzen_work_for_page(
+                    load_or_build_shoku_shinzen_work_catalog(),
+                    volume,
+                    page,
+                ),
+                _ => None,
+            });
+            let preferred_citation = match (volume_str, page_str) {
+                (Some(volume), Some(page)) => Some(shoku_shinzen_preferred_citation(
+                    volume,
+                    page,
+                    work.as_ref(),
+                )),
+                _ => None,
+            };
+            let work_view = work.as_ref().map(shinzen_work_agent_view);
+            let mut meta = json!({
+                "totalLength":total_chars,
+                "returnedStart":returned_start,
+                "returnedEnd":returned_end,
+                "truncated":returned_start > 0 || returned_end < total_chars,
+                "matchedId": entry.map(|e| e.id.clone()).or(matched_id),
+                "matchedTitle": entry.map(|e| e.title.clone()),
+                "sourcePath": path.to_string_lossy(),
+                "extractionMethod":extraction_method,
+                "imagePath": extract_shinzen_graphic_url(&xml),
+                "lineNumber": args.get("lineNumber").and_then(|v| v.as_u64()),
+                "volume":volume,
+                "page":page,
+                "work":work_view,
+                "preferredCitation":preferred_citation,
+                "resolvedFromWork":resolved_from_work,
+                "correctionsApplied":corrections_applied,
+                "highlighted":if highlight_count > 0 { Some(highlight_count) } else { None::<usize> },
+                "highlightPositions":if highlight_positions.is_empty() { None::<Vec<serde_json::Value>> } else { Some(highlight_positions) },
+            });
+            if returned_end < total_chars {
+                meta["nextStartChar"] = json!(returned_end);
+            }
+            return json!({"jsonrpc":"2.0","id": id, "result": { "content": [{"type":"text","text": sliced }], "_meta": meta }});
+        }
+        "shoku_shinzen_pipeline" => {
+            if !shoku_shinzen_library_available() {
+                return shoku_shinzen_missing_response(id);
+            }
+            let q = args
+                .get("query")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .trim()
+                .to_string();
+            let max_results = args
+                .get("maxResults")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(10) as usize;
+            let per = args
+                .get("maxMatchesPerFile")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(3) as usize;
+            let results =
+                shoku_shinzen_grep(&shoku_shinzen_kunten_tei_root(), &q, max_results, per);
+            let summary = results
+                .iter()
+                .enumerate()
+                .map(|(i, r)| {
+                    format!(
+                        "{}. {} ({})  ({} matches)",
+                        i + 1,
+                        r.title,
+                        r.file_id,
+                        r.matches.len()
+                    )
+                })
+                .collect::<Vec<_>>()
+                .join("\n");
+            let fetch_suggestions: Vec<serde_json::Value> = results.iter()
+                .filter_map(|r| r.matches.first().and_then(|m| m.line_number)
+                    .map(|ln| json!({"tool":"shoku_shinzen_fetch","args":{"id":r.file_id,"lineNumber":ln,"contextBefore":1,"contextAfter":3,"highlight":q},"mode":"low-cost"})))
+                .take(3).collect();
+            return json!({"jsonrpc":"2.0","id": id, "result": { "content": [{"type":"text","text": summary }], "_meta": json!({ "count": results.len(), "results": results, "fetchSuggestions": fetch_suggestions }) }});
         }
         "sarit_fetch" => {
             ensure_sarit_data();
@@ -5269,7 +7193,17 @@ Flow: search({source:"jozen"}) -> fetch with lineno
             }
 
             if path.as_os_str().is_empty() {
-                return json!({"jsonrpc":"2.0","id": id, "result": { "content": [{"type":"text","text": "not found"}] }});
+                // 自己修復可能な not-found: 近傍タイトルを候補として返す（失敗分岐でのみ index ロード）。
+                let q = args
+                    .get("id")
+                    .and_then(|v| v.as_str())
+                    .or_else(|| args.get("query").and_then(|v| v.as_str()))
+                    .unwrap_or("")
+                    .to_string();
+                let idx = load_or_build_sarit_index();
+                let candidates =
+                    fetch_candidates_from_hits("sarit", &best_match_sarit(idx, &q, 3), false);
+                return json!({"jsonrpc":"2.0","id": id, "result": fetch_not_found_response("sarit", &q, candidates)});
             }
 
             let xml = fs::read_to_string(&path).unwrap_or_default();
@@ -5373,10 +7307,13 @@ Flow: search({source:"jozen"}) -> fetch with lineno
                 .get("headingsLimit")
                 .and_then(|v| v.as_u64())
                 .unwrap_or(20) as usize;
-            let meta = json!({
-                "totalLength": text.chars().count(),
-                "returnedStart": args.get("startChar").and_then(|v| v.as_u64()).unwrap_or(0),
-                "returnedEnd": args.get("endChar").and_then(|v| v.as_u64()).unwrap_or(sliced.chars().count() as u64),
+            let (total_chars, returned_start, returned_end, truncated) =
+                fetch_page_bounds(&text, &args, full_flag, usize::MAX);
+            let mut meta = json!({
+                "totalLength": total_chars,
+                "returnedStart": returned_start,
+                "returnedEnd": returned_end,
+                "truncated": truncated,
                 "sourcePath": path.to_string_lossy(),
                 "extractionMethod": extraction_method,
                 "headingsTotal": heads.len(),
@@ -5387,6 +7324,16 @@ Flow: search({source:"jozen"}) -> fetch with lineno
                 "highlighted": if highlight_count > 0 { Some(highlight_count) } else { None::<usize> },
                 "highlightPositions": if !highlight_positions.is_empty() { Some(highlight_positions) } else { None::<Vec<serde_json::Value>> },
             });
+            let (citation, source_url) = local_source_link("sarit", matched_id.as_deref(), &path);
+            if let Some(c) = citation {
+                meta["citation"] = json!(c);
+            }
+            if let Some(u) = source_url {
+                meta["sourceUrl"] = json!(u);
+            }
+            if let Some(ns) = fetch_next_start_char(&text, &args, full_flag, usize::MAX) {
+                meta["nextStartChar"] = json!(ns);
+            }
             return json!({"jsonrpc":"2.0","id": id, "result": { "content": [{"type":"text","text": sliced}], "_meta": meta }});
         }
         "sarit_search" => {
@@ -5783,7 +7730,20 @@ Flow: search({source:"jozen"}) -> fetch with lineno
             }
 
             if path.as_os_str().is_empty() {
-                return json!({"jsonrpc":"2.0","id": id, "result": { "content": [{"type":"text","text": "not found"}] }});
+                // 自己修復可能な not-found: 近傍タイトルを候補として返す（失敗分岐でのみ index ロード）。
+                let q = args
+                    .get("id")
+                    .and_then(|v| v.as_str())
+                    .or_else(|| args.get("query").and_then(|v| v.as_str()))
+                    .unwrap_or("")
+                    .to_string();
+                let idx = load_or_build_muktabodha_index();
+                let candidates = fetch_candidates_from_hits(
+                    "muktabodha",
+                    &best_match_muktabodha(idx, &q, 3),
+                    false,
+                );
+                return json!({"jsonrpc":"2.0","id": id, "result": fetch_not_found_response("muktabodha", &q, candidates)});
             }
 
             let bytes = fs::read(&path).unwrap_or_default();
@@ -5873,8 +7833,13 @@ Flow: search({source:"jozen"}) -> fetch with lineno
                 .get("headingsLimit")
                 .and_then(|v| v.as_u64())
                 .unwrap_or(20) as usize;
-            let meta = json!({
-                "totalLength": text.chars().count(),
+            let (total_chars, returned_start, returned_end, truncated) =
+                fetch_page_bounds(&text, &args, full_flag, usize::MAX);
+            let mut meta = json!({
+                "totalLength": total_chars,
+                "returnedStart": returned_start,
+                "returnedEnd": returned_end,
+                "truncated": truncated,
                 "sourcePath": path.to_string_lossy(),
                 "extractionMethod": extraction_method,
                 "headingsTotal": heads.len(),
@@ -5885,6 +7850,17 @@ Flow: search({source:"jozen"}) -> fetch with lineno
                 "highlighted": if highlight_count > 0 { Some(highlight_count) } else { None::<usize> },
                 "highlightPositions": if !highlight_positions.is_empty() { Some(highlight_positions) } else { None::<Vec<serde_json::Value>> },
             });
+            let (citation, source_url) =
+                local_source_link("muktabodha", matched_id.as_deref(), &path);
+            if let Some(c) = citation {
+                meta["citation"] = json!(c);
+            }
+            if let Some(u) = source_url {
+                meta["sourceUrl"] = json!(u);
+            }
+            if let Some(ns) = fetch_next_start_char(&text, &args, full_flag, usize::MAX) {
+                meta["nextStartChar"] = json!(ns);
+            }
             return json!({"jsonrpc":"2.0","id": id, "result": { "content": [{"type":"text","text": sliced}], "_meta": meta }});
         }
         "muktabodha_search" => {
@@ -6165,11 +8141,7 @@ Flow: search({source:"jozen"}) -> fetch with lineno
                 summary.push('\n');
             }
             // Lightweight next-call hints for Tipitaka (no pipeline tool)
-            let hint_top = std::env::var("BUDDHA_HINT_TOP")
-                .or_else(|_| std::env::var("DAIZO_HINT_TOP"))
-                .ok()
-                .and_then(|s| s.parse::<usize>().ok())
-                .unwrap_or(1);
+            let hint_top = hint_top(3);
             let hl_regex = looks_like_regex || (q != q_raw);
             let mut fetch_suggestions: Vec<serde_json::Value> = Vec::new();
             for r in results.iter().take(hint_top) {
@@ -6193,13 +8165,18 @@ Flow: search({source:"jozen"}) -> fetch with lineno
 
             return json!({"jsonrpc":"2.0","id": id, "result": { "content": [{"type":"text","text": summary}], "_meta": meta }});
         }
-        _ => format!("unknown tool: {}", name),
-    };
-    json!({
-        "jsonrpc":"2.0",
-        "id": id,
-        "result": { "content": [{"type":"text","text": content_text }] }
-    })
+        _ => {
+            return json!({
+                "jsonrpc":"2.0",
+                "id": id,
+                "error": {
+                    "code": -32602,
+                    "message": format!("Unknown tool: {}", name),
+                    "data": {"tool": name}
+                }
+            });
+        }
+    }
 }
 
 // find_tipitaka_content_for_base and find_exact_file_by_name moved to buddha_core::path_resolver
@@ -7611,11 +9588,209 @@ fn normalize_ws(s: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::{
-        cbeta_extract_lb_from_line_near, cbeta_part_arg, jozen_extract_detail,
-        jozen_parse_search_html, sat_pick_best_doc, should_focus_highlight, slice_text_bounds,
-        spill_large_content_response_to,
+        cbeta_dila_id, cbeta_extract_lb_from_line_near, cbeta_part_arg, fetch_next_start_char,
+        fetch_not_found_response, fetch_page_bounds, handle_call, handle_initialize, hint_top_from,
+        jozen_extract_detail, jozen_parse_search_html, local_source_link, sat_pick_best_doc,
+        should_focus_highlight, slice_text_bounds, spill_large_content_response_to,
     };
     use serde_json::json;
+    use std::path::Path;
+
+    #[test]
+    fn initialize_negotiates_protocol_and_only_advertises_implemented_capabilities() {
+        let response = handle_initialize(
+            json!(1),
+            &json!({"protocolVersion":"2025-11-25","capabilities":{},"clientInfo":{"name":"test","version":"1"}}),
+        );
+        assert_eq!(response["result"]["protocolVersion"], "2025-11-25");
+        assert!(response["result"]["capabilities"]["tools"].is_object());
+        assert!(response["result"]["capabilities"]
+            .get("resources")
+            .is_none());
+        assert!(response["result"]["capabilities"].get("prompts").is_none());
+        assert!(response["result"]["instructions"]
+            .as_str()
+            .unwrap()
+            .contains("nextActions"));
+        assert!(response["result"]["instructions"]
+            .as_str()
+            .unwrap()
+            .contains("retry at most once"));
+
+        let fallback = handle_initialize(json!(2), &json!({"protocolVersion":"2099-01-01"}));
+        assert_eq!(fallback["result"]["protocolVersion"], "2025-11-25");
+    }
+
+    #[test]
+    fn unknown_tool_is_a_protocol_error() {
+        let response = handle_call(json!(1), &json!({"name":"no_such_tool","arguments":{}}));
+        assert_eq!(response["error"]["code"], -32602);
+        assert_eq!(response["error"]["data"]["tool"], "no_such_tool");
+        assert!(response.get("result").is_none());
+    }
+
+    #[test]
+    fn cbeta_dila_id_normalizes_forms() {
+        // canon + Taisho番号（そのまま）
+        assert_eq!(cbeta_dila_id("T0235").as_deref(), Some("T0235"));
+        // volume 付き T{vol}n{num} → T{num}
+        assert_eq!(cbeta_dila_id("T10n0299").as_deref(), Some("T0299"));
+        assert_eq!(cbeta_dila_id("T08n0235").as_deref(), Some("T0235"));
+        // 数字が無いものは None
+        assert_eq!(cbeta_dila_id("T"), None);
+        assert_eq!(cbeta_dila_id(""), None);
+    }
+
+    #[test]
+    fn local_source_link_cbeta_builds_dila_url() {
+        let (citation, url) =
+            local_source_link("cbeta", Some("T0235"), Path::new("/x/T/T08/T08n0235.xml"));
+        assert_eq!(citation.as_deref(), Some("CBETA T0235"));
+        assert_eq!(
+            url.as_deref(),
+            Some("https://cbetaonline.dila.edu.tw/zh/T0235")
+        );
+        // matched_id 無しなら両方 None
+        let (c2, u2) = local_source_link("cbeta", None, Path::new("/x/T08n0235.xml"));
+        assert_eq!(c2, None);
+        assert_eq!(u2, None);
+    }
+
+    #[test]
+    fn local_source_link_muktabodha_has_citation_no_url() {
+        let (citation, url) = local_source_link(
+            "muktabodha",
+            Some("some_tantra"),
+            Path::new("/x/MUKTABODHA/some_tantra.xml"),
+        );
+        assert_eq!(citation.as_deref(), Some("Muktabodha: some_tantra"));
+        assert_eq!(url, None);
+    }
+
+    #[test]
+    fn local_source_link_tipitaka_no_url_branch_undetermined() {
+        // repo.rs でブランチ未特定のため URL は出さない（citation のみ）。
+        let (citation, url) = local_source_link(
+            "tipitaka",
+            Some("s0101m.mul"),
+            Path::new("/x/tipitaka-xml/romn/s0101m.mul.xml"),
+        );
+        assert_eq!(citation.as_deref(), Some("Tipitaka (romn): s0101m.mul"));
+        assert_eq!(url, None);
+    }
+
+    #[test]
+    fn local_source_link_sarit_and_gretil_urls() {
+        let (c_s, u_s) = local_source_link(
+            "sarit",
+            Some("astavakragita"),
+            Path::new("/x/SARIT-corpus/astavakragita.xml"),
+        );
+        assert_eq!(c_s.as_deref(), Some("SARIT: astavakragita"));
+        assert_eq!(
+            u_s.as_deref(),
+            Some("https://github.com/sarit/SARIT-corpus/blob/master/astavakragita.xml")
+        );
+        let (c_g, u_g) = local_source_link(
+            "gretil",
+            Some("sa_saddharmapuNDarIkasUtra"),
+            Path::new("/x/GRETIL/sa_saddharmapuNDarIkasUtra.xml"),
+        );
+        assert_eq!(c_g.as_deref(), Some("GRETIL: sa_saddharmapuNDarIkasUtra"));
+        assert_eq!(
+            u_g.as_deref(),
+            Some("https://gretil.sub.uni-goettingen.de/")
+        );
+    }
+
+    #[test]
+    fn fetch_next_start_char_paging() {
+        let text: String = "あ".repeat(5000);
+        // maxChars=1000 → 続き 1000 から
+        let a = json!({"maxChars": 1000});
+        assert_eq!(
+            fetch_next_start_char(&text, &a, false, usize::MAX),
+            Some(1000)
+        );
+        // startChar=1000 + maxChars=1000 → 2000
+        let a2 = json!({"startChar": 1000, "maxChars": 1000});
+        assert_eq!(
+            fetch_next_start_char(&text, &a2, false, usize::MAX),
+            Some(2000)
+        );
+        // full 指定は全文返却＝続き無し
+        assert_eq!(
+            fetch_next_start_char(&text, &json!({"full": true}), true, usize::MAX),
+            None
+        );
+        // 残り全部を取り切ったら続き無し
+        let a3 = json!({"startChar": 4000, "maxChars": 1000});
+        assert_eq!(fetch_next_start_char(&text, &a3, false, usize::MAX), None);
+        // cap（出力上限）がウィンドウより小さければ cap で切れる
+        let a4 = json!({"maxChars": 5000});
+        assert_eq!(fetch_next_start_char(&text, &a4, false, 2000), Some(2000));
+
+        assert_eq!(
+            fetch_page_bounds(
+                "a法華b",
+                &json!({"startChar":1,"maxChars":2}),
+                false,
+                usize::MAX,
+            ),
+            (4, 1, 3, true)
+        );
+    }
+
+    #[test]
+    fn hint_top_from_defaults_and_parsing() {
+        // 未設定なら default_n を返す
+        assert_eq!(hint_top_from(None, 3), 3);
+        // 明示値は parse して採用（SAT の 5 など）
+        assert_eq!(hint_top_from(Some("5"), 3), 5);
+        // parse 失敗（非数値）は default_n にフォールバック
+        assert_eq!(hint_top_from(Some("abc"), 3), 3);
+        // "0" はクランプせず 0 を採用（BUDDHA_HINT_TOP=0 で抑止する後方互換）
+        assert_eq!(hint_top_from(Some("0"), 3), 0);
+    }
+
+    #[test]
+    fn fetch_not_found_response_shape() {
+        // 候補は手組み JSON（index 不要）。
+        let candidates = vec![json!({
+            "source": "gretil",
+            "id": "saddharmapuNDarIka",
+            "title": "Saddharmapundarika",
+            "score": 0.42,
+            "fetch": {"tool": "gretil_fetch", "args": {"id": "saddharmapuNDarIka"}}
+        })];
+        let resp = fetch_not_found_response("gretil", "zzzz", candidates.clone());
+
+        assert_eq!(resp["isError"], json!(true));
+        assert_eq!(resp["_meta"]["error"], "not_found");
+        assert_eq!(resp["_meta"]["source"], "gretil");
+        assert_eq!(resp["_meta"]["query"], "zzzz");
+        // candidates はそのまま入る。
+        assert_eq!(resp["_meta"]["candidates"], json!(candidates));
+        // suggestions[0] は自己修復用 resolve（unified モードで rewrite される元の名前）。
+        assert_eq!(resp["_meta"]["suggestions"][0]["tool"], "buddha_resolve");
+        assert_eq!(resp["_meta"]["suggestions"][0]["args"]["query"], "zzzz");
+        // content text に query と source が含まれる。
+        let text = resp["content"][0]["text"].as_str().unwrap();
+        assert!(text.contains("not found: 'zzzz' in gretil."));
+        assert!(text.contains("saddharmapuNDarIka"));
+    }
+
+    #[test]
+    fn fetch_not_found_response_empty_candidates() {
+        let resp = fetch_not_found_response("cbeta", "T99999", vec![]);
+        assert_eq!(resp["isError"], json!(true));
+        assert_eq!(resp["_meta"]["error"], "not_found");
+        assert_eq!(resp["_meta"]["candidates"], json!([]));
+        let text = resp["content"][0]["text"].as_str().unwrap();
+        assert!(text.contains("not found: 'T99999' in cbeta."));
+        // 候補が無くても retry ヒントは出る。
+        assert!(text.contains("resolve("));
+    }
 
     #[test]
     fn slice_text_bounds_handles_multibyte_characters() {
@@ -7825,11 +10000,22 @@ pub fn run_stdio_server() -> Result<()> {
         if let Ok(req) = serde_json::from_value::<Request>(msg.clone()) {
             dbg_log(&format!("[recv] method={} id={}", req.method, req.id));
             let resp = match req.method.as_str() {
-                "initialize" => handle_initialize(req.id),
+                "initialize" => handle_initialize(req.id, &req.params),
                 "tools/list" => handle_tools_list(req.id),
                 "tools/call" => {
                     let mut resp = handle_call(req.id, &req.params);
                     crate::unified::rewrite_meta_suggestions(&mut resp);
+                    let tool_name = req
+                        .params
+                        .get("name")
+                        .and_then(|value| value.as_str())
+                        .unwrap_or("");
+                    let arguments = req
+                        .params
+                        .get("arguments")
+                        .cloned()
+                        .unwrap_or_else(|| json!({}));
+                    crate::unified::enrich_tool_response(&mut resp, tool_name, &arguments);
                     spill_large_content_response(resp)
                 }
                 _ => {

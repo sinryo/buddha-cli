@@ -1,0 +1,92 @@
+# SHOKU_SHINZEN (続真言宗全書) work list — 巻頭凡例ベースで修正版
+# 出典: CiNii Books 各巻レコード(復刊 2008) + 各巻 巻頭凡例/目次(コーパスOCR) + 総目次OCR
+#
+# 形式: volume<TAB>title<TAB>author<TAB>source_page<TAB>confidence<TAB>note<TAB>aliases
+# volume は続真言宗全書の巻番号。頁範囲はコーパス本文照合で確定する。
+# 第24巻以降は巻頭凡例(曼荼羅部・血脈部・御遺告部・悉曇部・聲明部・傳記部等)に基づく。
+volume	title	author	source_page	confidence	note	aliases
+01	諸經儀軌傳授次第目録		CiNii-BA85167711	high	public-catalog	諸経儀軌伝授次第目録
+01	諸儀軌訣影		CiNii-BA85167711	high	public-catalog	諸儀軌訣影
+02	諸軌稟承録(自第一至第九)		CiNii-BA85168190	high	public-catalog	諸軌稟承録
+03	諸軌稟承録(自第十至第十三)		CiNii-BA85168441	high	public-catalog	諸軌稟承録
+03	諸儀軌傳授撮要		CiNii-BA85168441	high	public-catalog	諸儀軌伝授撮要
+04	密軌問辨		CiNii-BA85169036	high	public-catalog	密軌問弁
+04	密軌問辨啓迪		CiNii-BA85169036	high	public-catalog	密軌問辨啓迪|密軌問弁啓迪
+04	祕密儀軌傳授隨筆		CiNii-BA85169036	high	public-catalog	秘密儀軌伝授随筆
+05	大日經疏除暗鈔		CiNii-BA85169604	high	public-catalog	大日経疏除暗鈔
+05	大日經疏遍明鈔		CiNii-BA85169604	high	public-catalog	大毘盧遮那成経疏遍明鈔|大日経疏遍明鈔
+06	大日經疏鈔		CiNii-BA8516990X	high	public-catalog	大日経疏鈔|大日經疏第一本鈔
+07	金剛頂經開題勘註		CiNii/NTU	medium	somokuji	金剛頂経開題勘註
+07	金剛頂經開題問題		CiNii/NTU	medium	somokuji	金剛頂経開題問題
+08	釋摩訶衍論鈔		CiNii-BA85174160	high	public-catalog	釈摩訶衍論鈔|釋摩訶衍論鈔
+09	釋摩訶衍論鈔		CiNii-BA85174160	high	public-catalog	釈摩訶衍論鈔|釋摩訶衍論鈔
+10	釋摩訶衍論鈔		CiNii-BA85174160	high	public-catalog	釈摩訶衍論鈔|釋摩訶衍論鈔
+11	菩提心論愚草	頼瑜	vol24-frontmatter	medium	巻頭凡例	菩提心論愚草
+11	菩提心論引音		vol24-frontmatter	medium	巻頭凡例	菩提心論引音
+11	菩提心論追記		vol24-frontmatter	medium	巻頭凡例	菩提心論追記
+12	十住心論私記		CiNii-BA85174524	high	public-catalog	十住心論私記
+13	祕密曼荼羅十住心論科註		CiNii-BA85175436	high	public-catalog	秘密曼荼羅十住心論科註
+14	祕密曼荼羅十住心論科註		CiNii-BA85175436	high	public-catalog	秘密曼荼羅十住心論科註
+15	祕藏記鈔		volfront	medium	巻頭凡例	秘蔵記鈔
+15	祕藏記勘文		volfront	medium	巻頭凡例	秘蔵記勘文
+16	祕藏記傳授抄		volfront	medium	巻頭凡例	秘蔵記伝授抄
+16	祕藏記寶性合記		volfront	medium	巻頭凡例	秘蔵記宝性合記
+15	祕藏記旨要鈔		volfront	medium	巻頭凡例	秘蔵記旨要鈔
+17	即身成佛義聞書		volfront	medium	巻頭凡例(即身義部)	即身成仏義聞書
+17	即身成佛義身心帝網		volfront	medium	巻頭凡例(即身義部)	即身成仏義身心帝網
+17	聲字實相義愚草		volfront	medium	巻頭凡例(聲字義部)	声字実相義愚草|聲字義部
+17	聲字實相義研心鈔		volfront	medium	巻頭凡例(聲字義部)	声字実相義研心鈔
+18	二教論研覈抄		volfront	medium	巻頭凡例	二教論研覈抄
+19	祕藏寶鑰鈔		CiNii-BA85175786	high	public-catalog	秘蔵宝鑰鈔
+20	般若心經祕鍵愚草		volfront	medium	巻頭凡例	般若心経秘鍵愚草
+20	般若心經祕鍵伊路波聞書		volfront	medium	巻頭凡例	般若心経秘鍵伊路波聞書
+20	般若心經祕鍵撮義鈔		volfront	medium	巻頭凡例	般若心経秘鍵撮義鈔
+20	般若心經祕鍵蛇鱗記		volfront	medium	巻頭凡例	般若心経秘鍵蛇鱗記
+21	眞言本母集		CiNii-BA85176224	high	public-catalog	真言本母集
+22	眞言本母集		CiNii-BA85176224	high	public-catalog	真言本母集
+23	宗義祕傳私鈔		volfront	medium	巻頭凡例	宗義秘伝私鈔
+23	密宗佛身建立鈔		volfront	medium	巻頭凡例	密宗仏身建立鈔
+24	兩部曼荼羅祕訣	宏教	vol24-凡例	high	巻頭凡例(曼荼羅部)	両部曼荼羅秘訣|內部曼余羅祕訣
+24	胎藏界四重曼荼羅略問答		vol24-凡例	medium	巻頭凡例(曼荼羅部)	胎藏界四重曼荼羅略問答
+24	兩界曼荼羅口決		vol24-凡例	medium	巻頭凡例(曼荼羅部)	両界曼荼羅口決
+24	現圖曼荼羅略要	輝潭	vol24-凡例	medium	巻頭凡例(曼荼羅部)	現図曼荼羅略要
+24	造壇問決		vol24-凡例	medium	巻頭凡例(曼荼羅部)	造壇問決
+24	理趣會曼荼羅		vol24-凡例	medium	巻頭凡例(曼荼羅部)	理趣会曼荼羅
+24	理趣經祕密曼荼羅圖		vol24-凡例	medium	巻頭凡例(曼荼羅部)	理趣経秘密曼荼羅図
+25	眞言附法本朝血脈勘		vol25-凡例	medium	巻頭凡例(血脈部)	真言附法本朝血脈勘
+25	野澤大血脈		vol25-凡例	medium	巻頭凡例(血脈部)	野澤大血脈|野沢大血脈
+25	血脈鈔野澤	杲寶	vol25-凡例	medium	巻頭凡例(血脈部)	血脈鈔|野澤血脈
+26	御遺告勘註抄	尚祚	vol26-凡例	medium	巻頭凡例(御遺告部)	御遺告勘註抄
+26	御遺告裏書	宥快	vol26-凡例	medium	巻頭凡例(御遺告部)	御遺告裏書
+26	御遺告聞書	頼慶	vol26-凡例	medium	巻頭凡例(御遺告部)	御遺告聞書
+27	後七日御修法日記	範賢	vol27-凡例	medium	巻頭凡例	後七日御修法日記|後七日御修法日記
+27	勸修寺流後七日御修法具書		vol27-凡例	medium	巻頭凡例	勧修寺流後七日御修法具書
+27	後七日御修法披露文		vol27-凡例	medium	巻頭凡例	後七日御修法披露文
+27	西院流後七日道場莊嚴心得		vol27-凡例	medium	巻頭凡例	西院流後七日道場莊嚴心得
+28	悉曇私記	宗叡	vol28-凡例	medium	巻頭凡例(悉曇部)	悉曇私記
+28	悉曇初心抄	正智房	vol28-凡例	medium	巻頭凡例(悉曇部)	悉曇初心抄
+29	悉曇連聲集	澄禪	vol29-凡例	medium	巻頭凡例(悉曇部)	悉曇連聲集
+29	梵字悉曇字母并釋義發軫	靈瑞	vol29-凡例	medium	巻頭凡例(悉曇部)	梵字悉曇字母并釋義發軫
+29	十八章反音私抄		vol29-凡例	medium	巻頭凡例(悉曇部)	十八章反音私抄
+30	聲明集聞書		vol30-凡例	medium	巻頭凡例(聲明部)	聲明集聞書|声明集聞書
+30	魚山私鈔略解	理峯	vol30-凡例	medium	巻頭凡例(聲明部)	魚山私鈔略解
+30	諸講表白甲乙事	蘊善	vol30-凡例	medium	巻頭凡例(聲明部)	諸講表白甲乙事
+31	祕鈔表白	覺草	vol31-凡例	medium	巻頭凡例	祕鈔表白|秘鈔表白
+31	表白集	貞慶	vol31-凡例	medium	巻頭凡例	表白集|表白集
+31	東草集	頼豪	vol31-凡例	medium	巻頭凡例	東草集|東草し集
+31	諸尊表白抄	印融	vol31-凡例	medium	巻頭凡例	諸尊表白抄
+32	祕密漫荼羅教付法傳纂解	運敞	vol32-凡例	medium	巻頭凡例(傳記部)	祕密漫荼羅教付法傳纂解
+32	付法傳見聞	運徹	vol32-凡例	medium	巻頭凡例(傳記部)	付法傳見聞
+33	類聚八祖傳		CiNii-BA85176927	high	public-catalog	類聚八祖伝
+33	傳燈廣録		CiNii-BA85176927	high	public-catalog	伝燈広録
+34	金剛峯寺諸院家析負輯		CiNii-BA85177588	high	public-catalog
+35	金剛峯寺諸院家析負輯		CiNii-BA85177588	high	public-catalog
+36	紀伊續風土記 : 高野山之部		CiNii-BA85179346	high	public-catalog	紀伊続風土記
+37	紀伊續風土記 : 高野山之部		CiNii-BA85179346	high	public-catalog	紀伊続風土記
+38	紀伊續風土記 : 高野山之部		CiNii-BA85179346	high	public-catalog	紀伊続風土記
+39	紀伊續風土記 : 高野山之部		CiNii-BA85179346	high	public-catalog	紀伊続風土記
+40	紀伊續風土記 : 高野山之部		CiNii-BA85179346	high	public-catalog	紀伊続風土記
+41	高野山先哲灌頂記録		volfront	medium	巻頭凡例	高野山先哲灌頂記録
+41	高野山諸院家日記		volfront	medium	巻頭凡例	高野山諸院家日記
+41	金剛峯寺年中行事記		volfront	medium	巻頭凡例	金剛峯寺年中行事記
+42	解題		CiNii-BB09522902	high	public-catalog	解題

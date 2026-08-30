@@ -44,6 +44,72 @@ pub fn sarit_root() -> PathBuf {
 pub fn muktabodha_root() -> PathBuf {
     buddha_home().join("MUKTABODHA")
 }
+pub fn shinzen_root() -> PathBuf {
+    if let Ok(p) = std::env::var("BUDDHA_SHINZEN_DIR") {
+        return PathBuf::from(p);
+    }
+    buddha_home().join("SHINZEN")
+}
+pub fn shinzen_kunten_tei_root() -> PathBuf {
+    shinzen_root().join("kunten_tei_xml")
+}
+
+/// 続真言宗全書(SHOKU_SHINZEN)。SHINZEN と同一の volme_XX_page_YYY.xml 形式。
+pub fn shoku_shinzen_root() -> PathBuf {
+    if let Ok(p) = std::env::var("BUDDHA_SHOKU_SHINZEN_DIR") {
+        return PathBuf::from(p);
+    }
+    buddha_home().join("SHOKU_SHINZEN")
+}
+pub fn shoku_shinzen_kunten_tei_root() -> PathBuf {
+    shoku_shinzen_root().join("kunten_tei_xml")
+}
+pub fn shoku_shinzen_library_available() -> bool {
+    let root = shoku_shinzen_kunten_tei_root();
+    if !root.is_dir() {
+        return false;
+    }
+    WalkBuilder::new(root)
+        .max_depth(Some(1))
+        .hidden(false)
+        .git_ignore(false)
+        .git_global(false)
+        .git_exclude(false)
+        .build()
+        .filter_map(|entry| entry.ok())
+        .any(|entry| {
+            entry.file_type().is_some_and(|ft| ft.is_file())
+                && entry
+                    .path()
+                    .extension()
+                    .and_then(|s| s.to_str())
+                    .map(|s| s.eq_ignore_ascii_case("xml"))
+                    .unwrap_or(false)
+        })
+}
+pub fn shinzen_library_available() -> bool {
+    let root = shinzen_kunten_tei_root();
+    if !root.is_dir() {
+        return false;
+    }
+    WalkBuilder::new(root)
+        .max_depth(Some(1))
+        .hidden(false)
+        .git_ignore(false)
+        .git_global(false)
+        .git_exclude(false)
+        .build()
+        .filter_map(|entry| entry.ok())
+        .any(|entry| {
+            entry.file_type().is_some_and(|ft| ft.is_file())
+                && entry
+                    .path()
+                    .extension()
+                    .and_then(|s| s.to_str())
+                    .map(|s| s.eq_ignore_ascii_case("xml"))
+                    .unwrap_or(false)
+        })
+}
 pub fn cache_dir() -> PathBuf {
     buddha_home().join("cache")
 }
@@ -702,6 +768,50 @@ pub fn resolve_muktabodha_by_id(index: &[IndexEntry], id: &str) -> Option<PathBu
             })
         });
     result.into_inner().unwrap()
+}
+
+pub fn resolve_shinzen_path_direct(id: &str) -> Option<PathBuf> {
+    let re = Regex::new(r"^SZ(\d+)p(\d+)$").ok()?;
+    let caps = re.captures(id)?;
+    let volume = caps.get(1)?.as_str();
+    let page_raw = caps.get(2)?.as_str();
+    let page_num = page_raw.parse::<usize>().ok()?;
+    let filename = format!("volume_{}_page_{:03}.xml", volume, page_num);
+    let path = shinzen_kunten_tei_root().join(filename);
+    path.exists().then_some(path)
+}
+
+pub fn resolve_shinzen_by_id(index: &[IndexEntry], id: &str) -> Option<PathBuf> {
+    if let Some(path) = resolve_shinzen_path_direct(id) {
+        return Some(path);
+    }
+    index
+        .iter()
+        .find(|e| e.id == id)
+        .map(|e| PathBuf::from(&e.path))
+        .filter(|p| p.exists())
+}
+
+/// 続真言宗全書: ページID(e.g. SKZ09p0243)から直接パス解決。
+pub fn resolve_shoku_shinzen_path_direct(id: &str) -> Option<PathBuf> {
+    let re = Regex::new(r"^SKZ(\d+)p(\d+)$").ok()?;
+    let caps = re.captures(id)?;
+    let volume = caps.get(1)?.as_str();
+    let page_num = caps.get(2)?.as_str().parse::<usize>().ok()?;
+    let filename = format!("volume_{}_page_{:03}.xml", volume, page_num);
+    let path = shoku_shinzen_kunten_tei_root().join(filename);
+    path.exists().then_some(path)
+}
+
+pub fn resolve_shoku_shinzen_by_id(index: &[IndexEntry], id: &str) -> Option<PathBuf> {
+    if let Some(path) = resolve_shoku_shinzen_path_direct(id) {
+        return Some(path);
+    }
+    index
+        .iter()
+        .find(|e| e.id == id)
+        .map(|e| PathBuf::from(&e.path))
+        .filter(|p| p.exists())
 }
 
 /// Resolve a GRETIL TEI path by id (file stem) using fast direct resolution first, then index fallbacks.

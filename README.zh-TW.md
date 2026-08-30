@@ -15,6 +15,8 @@
 | GRETIL / 梵文 TEI | install/init 後本機 | 標題搜尋、正則全文搜尋、TEI 擷取 |
 | SARIT / TEI P5 | install/init 後本機 | 標題搜尋、正則全文搜尋、TEI 擷取 |
 | MUKTABODHA / 梵文資料庫 | `$BUDDHA_DIR/MUKTABODHA` 下的本機檔案 | 標題搜尋、正則全文搜尋、text/XML 擷取 |
+| SHINZEN / 真言宗全書 TEI | `$BUDDHA_DIR/SHINZEN/kunten_tei_xml` 下的本機檔案 | 頁面標題搜尋、行對應正則全文搜尋、TEI/純文字擷取 |
+| SHOKU_SHINZEN / 続真言宗全書 TEI | `$BUDDHA_DIR/SHOKU_SHINZEN/kunten_tei_xml` 下的本機檔案 | 作品目錄、頁面搜尋、套用校訂的純文字擷取 |
 | SAT 大藏經資料庫 | 線上，含快取 | 搜尋、詳細擷取、pipeline |
 | 浄土宗全書 | 線上，含快取 | 搜尋、以 `lineno` 擷取頁面 |
 | 藏文語料 | 線上，含快取 | BUDA/BDRC 與 Adarshah 全文搜尋 |
@@ -76,17 +78,20 @@ unified MCP tools 預設啟用（以 `BUDDHA_UNIFIED_TOOLS=0` 停用）。
 | 工具 | 用途 |
 |------|------|
 | `fetch` | 依 ID、`useid`、`lineno`、query、行號、章節或字元範圍擷取文本 |
-| `search` | 在 `cbeta`, `tipitaka`, `gretil`, `sarit`, `muktabodha`, `sat`, `jozen` 進行全文搜尋 |
+| `search` | 在 `cbeta`, `tipitaka`, `gretil`, `sarit`, `muktabodha`, `shinzen`, `shoku_shinzen`, `sat`, `jozen` 進行全文搜尋 |
+| `work_catalog` | 在 `shinzen` / `shoku_shinzen` 依書名或作者尋找作品，回傳 `SZW` / `SKZW` 與可執行的下一步 |
 | `title_search` | 本機 indexed corpus 的標題搜尋 |
-| `pipeline` | `cbeta`, `gretil`, `sarit`, `muktabodha`, `sat` 的搜尋 + 可選自動擷取 |
+| `pipeline` | `cbeta`, `gretil`, `sarit`, `muktabodha`, `shinzen`, `shoku_shinzen`, `sat` 的搜尋 + 可選自動擷取 |
 | `resolve` | 將經名/別名/ID 對應到候選語料庫 ID 與下一步 fetch 呼叫 |
-| `info` | version、usage guide、system prompt，或全部 |
-| `profile` | 以 warm cache 測量工具呼叫時間 |
 | `tibetan_search` | 藏文線上全文搜尋；保留為獨立工具 |
+
+`info` / `profile` 仍可呼叫，但為節省 schema token 預設不列給模型。設定 `BUDDHA_MCP_DIAGNOSTIC_TOOLS=1` 才會列出。工具結果在 `structuredContent` 回傳狀態、分頁位置、引用、錯誤與 `nextActions`。
 
 停用 unified mode 時，或舊客戶端仍快取舊工具名時，仍可使用 `cbeta_fetch`, `cbeta_search`, `gretil_pipeline`, `sat_detail`, `jozen_fetch`, `buddha_version` 等 legacy tools。
 
 ## CLI 快速開始
+
+`buddha doctor --json` 會以機器可讀 JSON 回傳已安裝的執行檔，以及所有本機語料庫路徑與 `available` 狀態。
 
 已知 ID 時直接擷取：
 
@@ -114,7 +119,13 @@ buddha cbeta-search --query "阿彌陀" --max-results 10 --json
 buddha cbeta-fetch --id T0858 --line-number 342 --context-before 2 --context-after 6 --highlight "阿彌陀" --json
 buddha tipitaka-search --query "nibbana|vipassana" --max-results 15 --json
 buddha gretil-search --query "dharma" --max-results 10 --json
+buddha shinzen-search --query "法身偈" --max-results 10 --json
+buddha shinzen-fetch --id SZ09p0243 --line-number 19 --context-before 2 --context-after 4 --json
+buddha shinzen-work-catalog --query "即身成佛" --json
+buddha shinzen-fetch --id SZW0001 --json
 ```
+
+以 `shinzen-work-catalog` 回傳的 `SZW` 作品 ID 直接 fetch，會自動解析到該作品的第一頁（`_meta.resolvedFromWork`）。SHINZEN 的 fetch 結果也包含可直接引用的 `_meta.preferredCitation`（例如 頼瑜『即身成佛義顯得鈔』、真言宗全書 第13巻 047頁）。是否採用產生的 `citation`，請以 `confidence` 判斷。目錄 entry 的值為 `medium`、`range-only` 或 `metadata-only`；`metadata-only` 表示書名與作者已確認、可以引用，但頁面範圍尚未解析，此時請改用 SHINZEN 內的全文搜尋，而不是以作品 ID fetch。
 
 線上來源：
 
@@ -158,9 +169,13 @@ buddha version
 |--------|---------|
 | CBETA | `T0001`, `T0099`, `T0235`, `T0251`, `T0262` |
 | Tipitaka | `DN1`, `MN1`, `SN1`, `AN1`, `s0101m.mul` |
-| GRETIL | `saddharmapuNDarIka`, `vajracchedikA`, `prajJApAramitAhRdayasUtra` |
+| GRETIL | `sa_saddharmapuNDarIka`, `sa_vajracchedikA`, `sa_prajJApAramitAhRdayasUtra` |
 | SARIT | `asvaghosa-buddhacarita` |
+| SHINZEN | `SZ09p0243`（頁面）、`SZW0001`（作品；開啟第一頁） |
+| SHOKU_SHINZEN | `SKZ02p0128`（頁面）、`SKZW0001`（作品） |
 | 浄土宗全書 | `J01_0200B19` 形式的 `lineno` |
+
+> 註記：僅有帶 `sa_` 前綴的 GRETIL id 能可靠地自動判定。GRETIL/SARIT/MUKTABODHA 的裸檔名 stem（例如 `saddharmapuNDarIka`、`asvaghosa-buddhacarita`）在省略 `source` 時會自動探測本地語料庫來解析；若需可靠性請明確指定 `source`。
 
 ## 輸出與錯誤
 
@@ -177,6 +192,8 @@ JSON mode 的錯誤會輸出到 stderr：
 ```json
 {"error":{"message":"...","code":"NOT_FOUND"}}
 ```
+
+MCP 工具失敗會回傳 `result.isError: true`，並在 `structuredContent.error` / `_meta.error` 提供 `category`、`code`、`field`、`retryable`，可安全修正時也會附上可執行的 `nextActions`。`retryable: false` 時不要用相同參數重試；`retryable: true` 時請短暫等待後最多重試一次，若仍失敗就停止並回報。
 
 結束碼：
 
@@ -256,7 +273,7 @@ golden 輸出包含 CLI version，因此 release bump 時 `tasks/golden/*/versio
 
 ## 釋出
 
-目前釋出版本：`0.6.15`
+目前釋出版本：`0.6.16`
 
 版本號反映位置：
 
@@ -274,10 +291,10 @@ golden 輸出包含 CLI version，因此 release bump 時 `tasks/golden/*/versio
 scripts/release.sh --patch --dry-run --no-fmt --no-test
 
 # 建立 commit、push branch、建立 v0.6.15 tag、push tag、建立 GitHub Release
-scripts/release.sh 0.6.15 --push --tag --release --auto-notes
+scripts/release.sh 0.6.16 --push --tag --release --auto-notes
 
 # 使用 CHANGELOG 而非 GitHub generated notes
-scripts/release.sh 0.6.15 --push --tag --release
+scripts/release.sh 0.6.16 --push --tag --release
 ```
 
 注意：`scripts/release.sh` 會執行 `git add -A` 並 commit。若工作區有無關變更，會被一起納入；執行前請務必檢查 worktree。

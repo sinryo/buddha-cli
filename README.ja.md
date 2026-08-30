@@ -15,6 +15,8 @@
 | GRETIL / 梵文 TEI | install/init 後ローカル | タイトル検索、正規表現検索、TEI 取得 |
 | SARIT / TEI P5 | install/init 後ローカル | タイトル検索、正規表現検索、TEI 取得 |
 | MUKTABODHA / 梵文ライブラリ | `$BUDDHA_DIR/MUKTABODHA` 配下のローカルファイル | タイトル検索、正規表現検索、text/XML 取得 |
+| SHINZEN / 真言宗全書 TEI | `$BUDDHA_DIR/SHINZEN/kunten_tei_xml` 配下のローカルファイル | ページタイトル検索、行対応の正規表現検索、TEI/plain 取得 |
+| SHOKU_SHINZEN / 続真言宗全書 TEI | `$BUDDHA_DIR/SHOKU_SHINZEN/kunten_tei_xml` 配下のローカルファイル | 作品カタログ、頁検索、校訂適用済み plain 取得 |
 | SAT 大蔵経DB | オンライン、キャッシュあり | 検索、詳細取得、pipeline |
 | 浄土宗全書 | オンライン、キャッシュあり | 検索、`lineno` によるページ取得 |
 | チベット語コーパス | オンライン、キャッシュあり | BUDA/BDRC と Adarshah の全文検索 |
@@ -76,17 +78,20 @@ unified MCP tools は既定で有効です（`BUDDHA_UNIFIED_TOOLS=0` で無効�
 | ツール | 用途 |
 |--------|------|
 | `fetch` | ID、`useid`、`lineno`、query、行番号、章節、文字範囲で本文取得 |
-| `search` | `cbeta`, `tipitaka`, `gretil`, `sarit`, `muktabodha`, `sat`, `jozen` の全文検索 |
+| `search` | `cbeta`, `tipitaka`, `gretil`, `sarit`, `muktabodha`, `shinzen`, `shoku_shinzen`, `sat`, `jozen` の全文検索 |
+| `work_catalog` | `shinzen` / `shoku_shinzen` で書名・著者から作品を探し、`SZW` / `SKZW` と実行可能な次アクションを返す |
 | `title_search` | ローカル indexed corpus のタイトル検索 |
-| `pipeline` | `cbeta`, `gretil`, `sarit`, `muktabodha`, `sat` の検索 + 任意の自動取得 |
+| `pipeline` | `cbeta`, `gretil`, `sarit`, `muktabodha`, `shinzen`, `shoku_shinzen`, `sat` の検索 + 任意の自動取得 |
 | `resolve` | 人間の経典名/別名/ID を候補IDと次の fetch 呼び出しへ橋渡し |
-| `info` | version、usage guide、system prompt、または全部 |
-| `profile` | warm cache でのツール呼び出し時間計測 |
 | `tibetan_search` | チベット語オンライン全文検索。単独ツールとして維持 |
+
+`info` / `profile` は互換性のため呼び出せますが、schema token 削減と誤ベンチマーク防止のため既定の一覧からは隠します。一覧に出す場合は `BUDDHA_MCP_DIAGNOSTIC_TOOLS=1` を設定します。応答は本文を `content`に保ち、状態・継続位置・引用・エラー・次の呼び出しを compact な `structuredContent` に返します。
 
 unified mode を無効にした場合、または古いクライアントが個別名を保持している場合でも、`cbeta_fetch`, `cbeta_search`, `gretil_pipeline`, `sat_detail`, `jozen_fetch`, `buddha_version` などの legacy tools は利用できます。
 
 ## CLI クイックスタート
+
+`buddha doctor --json` は、導入済みバイナリと全ローカルコーパスのパス・利用可否を機械可読JSONで返します。
 
 ID が分かっている場合は直接取得します。
 
@@ -114,6 +119,28 @@ buddha cbeta-search --query "阿弥陀" --max-results 10 --json
 buddha cbeta-fetch --id T0858 --line-number 342 --context-before 2 --context-after 6 --highlight "阿弥陀" --json
 buddha tipitaka-search --query "nibbana|vipassana" --max-results 15 --json
 buddha gretil-search --query "dharma" --max-results 10 --json
+buddha shinzen-search --query "法身偈" --max-results 10 --json
+buddha shinzen-fetch --id SZ09p0243 --line-number 19 --context-before 2 --context-after 4 --json
+buddha shinzen-work-catalog --query "即身成佛" --json
+buddha shinzen-fetch --id SZW0001 --json
+buddha shoku-shinzen-work-catalog --query "<作品名または著者>" --json
+buddha shoku-shinzen-fetch --id SKZW0001 --max-chars 2000 --json
+```
+
+`shinzen-work-catalog` が返す `SZW` 作品IDをそのまま fetch すると、作品の冒頭ページへ自動解決されます（`_meta.resolvedFromWork`）。SHINZEN の JSON 応答では、検索ヒットと fetch 結果に best-effort の `biblio` metadata を含めます。書名・著者は TEI header ではなく、CiNii/佛學數位圖書館などの公開目録、ローカル総目次、巻頭題、柱、奥書、周辺頁から推定します。fetch 結果には、事前生成した `shinzen-work-catalog.json` に基づく `work` metadata と、そのまま引用に使える `_meta.preferredCitation`（例: 頼瑜『即身成佛義顯得鈔』、真言宗全書 第13巻 047頁）も含めます。生成された `citation` を採用できるかは `confidence` を見て判断してください。カタログ entry の値は `medium`・`range-only`・`metadata-only` のいずれかで、`metadata-only` は書誌としては引用可能（書名・著者は確認済み）だが頁範囲が未確定という意味です。この場合は作品IDの fetch ではなく SHINZEN 内の検索を使ってください。未確定の場合はページ単位の引用と warning を返します。
+
+真言宗全書の work catalog は同梱の公開目録ベース TSV を優先します。総目次画像を補助 OCR する場合は、Tesseract ではなくローカルの `ndlkotenocr-rs` を使います。
+
+```bash
+scripts/ocr-shinzen-somokuji.sh
+buddha shinzen-work-catalog-index
+```
+
+書目範囲や著者データを改善したあと、各書の事前概要を更新する場合:
+
+```bash
+scripts/build-shinzen-work-summaries.py
+buddha shinzen-work-catalog-index
 ```
 
 オンラインソース:
@@ -158,9 +185,13 @@ buddha version
 |----------|------|
 | CBETA | `T0001`, `T0099`, `T0235`, `T0251`, `T0262` |
 | Tipitaka | `DN1`, `MN1`, `SN1`, `AN1`, `s0101m.mul` |
-| GRETIL | `saddharmapuNDarIka`, `vajracchedikA`, `prajJApAramitAhRdayasUtra` |
+| GRETIL | `sa_saddharmapuNDarIka`, `sa_vajracchedikA`, `sa_prajJApAramitAhRdayasUtra` |
 | SARIT | `asvaghosa-buddhacarita` |
+| SHINZEN | `SZ09p0243`（ページ）、`SZW0001`（作品。冒頭ページが開く） |
+| SHOKU_SHINZEN | `SKZ02p0128`（ページ）、`SKZW0001`（作品） |
 | 浄土宗全書 | `J01_0200B19` 形式の `lineno` |
+
+> 注記: 確実に自動判定できるのは `sa_` 接頭辞つきの GRETIL id のみです。GRETIL/SARIT/MUKTABODHA の素のファイル stem（例 `saddharmapuNDarIka`、`asvaghosa-buddhacarita`）は、`source` 省略時にローカルコーパスへ自動プローブして解決します。確実性を求める場合は `source` を明示してください。
 
 ## 出力とエラー
 
@@ -177,6 +208,8 @@ JSON mode のエラーは stderr に出ます。
 ```json
 {"error":{"message":"...","code":"NOT_FOUND"}}
 ```
+
+MCP のツール失敗は `result.isError: true` と、`structuredContent.error` / `_meta.error` の `category`, `code`, `field`, `retryable` を返します。安全に修正できる場合は実行可能な `nextActions` も返します。`retryable: false` の呼び出しを同じ引数で繰り返さないでください。`retryable: true` は短い待機後に最大1回だけ再試行し、再失敗したら停止して報告してください。
 
 終了コード:
 
@@ -256,7 +289,7 @@ golden 出力には CLI version も含まれるため、release bump では `tas
 
 ## リリース
 
-現在のリリースバージョン: `0.6.15`
+現在のリリースバージョン: `0.6.16`
 
 バージョン番号の反映先:
 
@@ -274,10 +307,10 @@ golden 出力には CLI version も含まれるため、release bump では `tas
 scripts/release.sh --patch --dry-run --no-fmt --no-test
 
 # commit、branch push、v0.6.15 tag、tag push、GitHub Release を作成
-scripts/release.sh 0.6.15 --push --tag --release --auto-notes
+scripts/release.sh 0.6.16 --push --tag --release --auto-notes
 
 # GitHub generated notes ではなく CHANGELOG を release notes に使う
-scripts/release.sh 0.6.15 --push --tag --release
+scripts/release.sh 0.6.16 --push --tag --release
 ```
 
 注意: `scripts/release.sh` は `git add -A` して commit します。無関係な変更があると巻き込むため、実行前に worktree を必ず確認してください。

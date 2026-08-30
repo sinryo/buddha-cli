@@ -6,5 +6,7 @@ pub mod muktabodha;
 pub mod resolve;
 pub mod sarit;
 pub mod sat;
+pub mod shinzen;
+pub mod shoku_shinzen;
 pub mod tibetan;
 pub mod tipitaka;

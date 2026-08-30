@@ -4,6 +4,49 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [0.6.16] - 2026-08-30
+
+### Added
+- Unified MCP support for `shoku_shinzen` across search, title search, work catalog, fetch, pipeline, resolve, and `SKZ`/`SKZW` ID auto-detection.
+- MCP results expose a compact `structuredContent` control plane with status, pagination cursors, citations, machine-readable errors, and executable `nextActions` while preserving legacy `content`/`_meta`.
+- CLI `schema` now reports actual flags, scalar/array types, cardinality, delimiters, enum values, examples, and JSON-output guidance for agents.
+- CLI `doctor --json` now emits a stable machine-readable inventory for binaries and all seven local corpus families, including `shinzen` and `shoku_shinzen`.
+- Unified MCP tool `work_catalog` (source: `shinzen`) searches the SHINZEN work catalog by title/author/volume and returns `SZW` work ids with page ranges and citations.
+- `fetch` accepts `SZW` work ids and resolves them to the work's first page (`_meta.resolvedFromWork`); metadata-only works return bibliographic info plus guidance instead of text.
+- SHINZEN fetch responses include `_meta.preferredCitation` (e.g. 頼瑜『即身成佛義顯得鈔』、真言宗全書 第13巻 047頁).
+- SHINZEN search results attach a lightweight `work` object per hit, and fetch suggestions carry `citation`/`workId`.
+- `resolve` returns SHINZEN work-catalog candidates (`resolvedBy: "work-catalog"`) and handles `SZW` direct ids.
+- Fetch not-found responses are self-healing: `isError: true` plus `_meta.candidates` (nearby ids with runnable fetch args) and `_meta.suggestions` (resolve/title_search calls).
+- Bare file stems (GRETIL/SARIT/MUKTABODHA) are auto-probed across local corpora when `source` is omitted (`_meta.sourceDetectedBy: "file-probe"`).
+- Local-corpus fetch responses include `_meta.citation` and `_meta.sourceUrl` (CBETA links to DILA, SARIT to GitHub, GRETIL to the corpus top page), and truncated responses include `_meta.nextStartChar` (character index for continuation).
+- CI workflow running `cargo fmt`, `clippy`, and tests.
+
+### Changed
+- MCP initialize negotiates current protocol versions, advertises only implemented capabilities, and supplies concise server instructions. Tool definitions now use JSON Schema 2020-12 constraints and read-only annotations.
+- `info` and `profile` remain callable but are hidden from the default model tool list unless `BUDDHA_MCP_DIAGNOSTIC_TOOLS=1`.
+- The default MCP tool-list payload is guarded by a size budget; repeated schema declarations and presentation-only fields were removed while retaining validation constraints, annotations, and `outputSchema`.
+- Model-facing SHINZEN/SHOKU_SHINZEN work metadata caps provenance to four representative records and reports `evidenceCount`/`evidenceTruncated`; full provenance remains in the cached catalog.
+- SHINZEN/SHOKU_SHINZEN pagination metadata consistently uses Unicode character offsets.
+- Default `_meta.fetchSuggestions` count raised from 1 to 3 (SAT stays at 5); still overridable via `BUDDHA_HINT_TOP`.
+- Unified tool descriptions enriched with direct-id fast paths and SHINZEN work-catalog guidance.
+- Deprecated `contextLines` removed from the unified fetch schema (still accepted at runtime).
+- SHINZEN work-catalog `confidence` values are now `medium`, `range-only`, or `metadata-only` (dead `high` branch removed).
+
+### Fixed
+- SHOKU_SHINZEN search now emits `SKZ` IDs and 続真言宗全書 citations instead of reusing SHINZEN identities/citations.
+- SHOKU_SHINZEN `SKZW` work IDs resolve to page-backed text or return a metadata-only search action; fetch applies verified OCR corrections and returns work/citation metadata.
+- Unified tool validation now rejects missing sources/locators, invalid ranges, source/ID mismatches, and malformed values with actionable non-retryable errors.
+- `structuredContent.nextActions` removes duplicate calls that were present in both legacy `nextActions` and `fetchSuggestions`.
+- CBETA, Tipitaka, GRETIL, SARIT, and Muktabodha fetch metadata now reports `totalLength`, `returnedStart`, and `returnedEnd` as Unicode character offsets consistent with `nextStartChar`.
+- SHOKU_SHINZEN search and pipeline summaries identify hits by stable `SKZ` ID/title instead of exposing local filesystem paths in model-visible text.
+- Extracted SHINZEN line text preserves source punctuation while search normalization remains punctuation-insensitive.
+- Legacy `resolve` schema was missing the `shinzen` source.
+- CBETA/Tipitaka fetch returned an empty response instead of a not-found error for unresolved ids.
+- SHINZEN fetchSuggestions ignored `BUDDHA_HINT_TOP`.
+
+### Changed
+- Version bumped: `buddha-core` 0.6.16, `buddha` 0.6.16, `buddha-mcp` 0.6.16.
+
 ## [0.6.15] - 2026-07-01
 
 ### Added

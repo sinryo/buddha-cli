@@ -2,13 +2,16 @@ use buddha_core::path_resolver::{
     cache_dir, cbeta_root, find_exact_file_by_name, find_tipitaka_content_for_base, gretil_root,
     muktabodha_root, resolve_cbeta_path_by_id, resolve_gretil_by_id, resolve_gretil_path_direct,
     resolve_muktabodha_by_id, resolve_muktabodha_path_direct, resolve_sarit_by_id,
-    resolve_sarit_path_direct, resolve_tipitaka_by_id, sarit_root, tipitaka_root,
+    resolve_sarit_path_direct, resolve_shinzen_by_id, resolve_shinzen_path_direct,
+    resolve_shoku_shinzen_by_id, resolve_shoku_shinzen_path_direct, resolve_tipitaka_by_id,
+    sarit_root, shinzen_kunten_tei_root, shinzen_library_available, shoku_shinzen_kunten_tei_root,
+    shoku_shinzen_library_available, tipitaka_root,
 };
 use buddha_core::text_utils::compute_match_score_sanskrit;
 use buddha_core::text_utils::{compute_match_score_precomputed, normalized, PrecomputedQuery};
 use buddha_core::{
     build_cbeta_index, build_gretil_index, build_index, build_muktabodha_index, build_sarit_index,
-    build_tipitaka_index, extract_text,
+    build_shinzen_index, build_shoku_shinzen_index, build_tipitaka_index, extract_text,
 };
 use clap::{CommandFactory, Parser, Subcommand};
 use serde::Serialize;
@@ -561,6 +564,292 @@ enum Commands {
         #[arg(long, default_value_t = false)]
         json: bool,
     },
+    /// Search 真言宗全書 SHINZEN page titles by fuzzy matching (index-based, offline).
+    ///
+    /// Related: shinzen-fetch, shinzen-search
+    #[command(after_help = "EXAMPLES:\n  buddha shinzen-title-search --query \"第09巻\" --json")]
+    ShinzenTitleSearch {
+        /// Query string
+        #[arg(long)]
+        query: String,
+        /// Max results
+        #[arg(long, default_value_t = 10)]
+        limit: usize,
+        /// Output JSON
+        #[arg(long, default_value_t = false)]
+        json: bool,
+    },
+    /// Fetch SHINZEN text by page ID or title query.
+    ///
+    /// Related: shinzen-title-search, shinzen-search
+    #[command(
+        after_help = "EXAMPLES:\n  buddha shinzen-fetch --id SZ09p0243 --line-number 19 --json"
+    )]
+    ShinzenFetch {
+        /// Page id (e.g., SZ09p0243)
+        #[arg(long)]
+        id: Option<String>,
+        /// Alternative: search query to pick best page-title match
+        #[arg(long)]
+        query: Option<String>,
+        /// Output format: plain or tei
+        #[arg(long)]
+        format: Option<String>,
+        /// Return full text (no slicing)
+        #[arg(long, default_value_t = false)]
+        full: bool,
+        /// Highlight string/regex pattern
+        #[arg(long)]
+        highlight: Option<String>,
+        /// Interpret highlight as regex
+        #[arg(long, default_value_t = false)]
+        highlight_regex: bool,
+        /// Highlight prefix
+        #[arg(long)]
+        highlight_prefix: Option<String>,
+        /// Highlight suffix
+        #[arg(long)]
+        highlight_suffix: Option<String>,
+        /// Pagination: start char (inclusive)
+        #[arg(long)]
+        start_char: Option<usize>,
+        /// Pagination: end char (exclusive)
+        #[arg(long)]
+        end_char: Option<usize>,
+        /// Pagination: max chars
+        #[arg(long)]
+        max_chars: Option<usize>,
+        /// Pagination: page index
+        #[arg(long)]
+        page: Option<usize>,
+        /// Pagination: page size
+        #[arg(long)]
+        page_size: Option<usize>,
+        /// Target SHINZEN lb n line number for context extraction
+        #[arg(long)]
+        line_number: Option<usize>,
+        /// Number of lines before target line (default: 10)
+        #[arg(long, default_value_t = 10)]
+        context_before: usize,
+        /// Number of lines after target line (default: 100)
+        #[arg(long, default_value_t = 100)]
+        context_after: usize,
+        /// Number of lines before/after target line (deprecated, use context_before/context_after)
+        #[arg(long)]
+        context_lines: Option<usize>,
+        /// Output JSON
+        #[arg(long, default_value_t = false)]
+        json: bool,
+    },
+    /// Search SHINZEN corpus by regex over extracted line text (offline full-text search).
+    ///
+    /// Related: shinzen-title-search, shinzen-fetch
+    #[command(after_help = "EXAMPLES:\n  buddha shinzen-search --query \"法身偈\" --json")]
+    ShinzenSearch {
+        /// Query string (regular expression)
+        #[arg(long)]
+        query: String,
+        /// Maximum number of files to return
+        #[arg(long, default_value_t = 20)]
+        max_results: usize,
+        /// Maximum matches per file
+        #[arg(long, default_value_t = 5)]
+        max_matches_per_file: usize,
+        /// Output JSON
+        #[arg(long, default_value_t = false)]
+        json: bool,
+    },
+    /// SHINZEN summarize/context pipeline.
+    #[command(after_help = "EXAMPLES:\n  buddha shinzen-pipeline --query \"法身偈\" --json")]
+    ShinzenPipeline {
+        /// Query string (regular expression)
+        #[arg(long)]
+        query: String,
+        /// Maximum number of files to return
+        #[arg(long, default_value_t = 10)]
+        max_results: usize,
+        /// Maximum matches per file
+        #[arg(long, default_value_t = 3)]
+        max_matches_per_file: usize,
+        /// Output JSON
+        #[arg(long, default_value_t = false)]
+        json: bool,
+    },
+    /// Search precomputed SHINZEN work catalog (title/author/range).
+    ///
+    /// Related: shinzen-work-catalog-index, shinzen-fetch, shinzen-search
+    #[command(
+        after_help = "EXAMPLES:\n  buddha shinzen-work-catalog --query \"即身成佛\" --json\n  buddha shinzen-work-catalog --volume 13"
+    )]
+    ShinzenWorkCatalog {
+        /// Optional title/author query
+        #[arg(long)]
+        query: Option<String>,
+        /// Optional SHINZEN volume number
+        #[arg(long)]
+        volume: Option<String>,
+        /// Max results
+        #[arg(long, default_value_t = 20)]
+        limit: usize,
+        /// Output JSON
+        #[arg(long, default_value_t = false)]
+        json: bool,
+    },
+    /// Search 続真言宗全書 SHOKU_SHINZEN page titles by fuzzy matching (index-based, offline).
+    ///
+    /// Related: shoku-shinzen-fetch, shoku-shinzen-search
+    #[command(
+        after_help = "EXAMPLES:\n  buddha shoku-shinzen-title-search --query \"第09巻\" --json"
+    )]
+    ShokuShinzenTitleSearch {
+        /// Query string
+        #[arg(long)]
+        query: String,
+        /// Max results
+        #[arg(long, default_value_t = 10)]
+        limit: usize,
+        /// Output JSON
+        #[arg(long, default_value_t = false)]
+        json: bool,
+    },
+    /// Fetch SHOKU_SHINZEN text by page ID or title query.
+    ///
+    /// Related: shoku-shinzen-title-search, shoku-shinzen-search
+    #[command(
+        after_help = "EXAMPLES:\n  buddha shoku-shinzen-fetch --id SKZ09p0243 --line-number 19 --json"
+    )]
+    ShokuShinzenFetch {
+        /// Page id (e.g., SKZ09p0243)
+        #[arg(long)]
+        id: Option<String>,
+        /// Alternative: search query to pick best page-title match
+        #[arg(long)]
+        query: Option<String>,
+        /// Output format: plain or tei
+        #[arg(long)]
+        format: Option<String>,
+        /// Return full text (no slicing)
+        #[arg(long, default_value_t = false)]
+        full: bool,
+        /// Highlight string/regex pattern
+        #[arg(long)]
+        highlight: Option<String>,
+        /// Interpret highlight as regex
+        #[arg(long, default_value_t = false)]
+        highlight_regex: bool,
+        /// Highlight prefix
+        #[arg(long)]
+        highlight_prefix: Option<String>,
+        /// Highlight suffix
+        #[arg(long)]
+        highlight_suffix: Option<String>,
+        /// Pagination: start char (inclusive)
+        #[arg(long)]
+        start_char: Option<usize>,
+        /// Pagination: end char (exclusive)
+        #[arg(long)]
+        end_char: Option<usize>,
+        /// Pagination: max chars
+        #[arg(long)]
+        max_chars: Option<usize>,
+        /// Pagination: page index
+        #[arg(long)]
+        page: Option<usize>,
+        /// Pagination: page size
+        #[arg(long)]
+        page_size: Option<usize>,
+        /// Target lb n line number
+        #[arg(long)]
+        line_number: Option<usize>,
+        /// Number of lines before target line (default: 10)
+        #[arg(long, default_value_t = 10)]
+        context_before: usize,
+        /// Number of lines after target line (default: 100)
+        #[arg(long, default_value_t = 100)]
+        context_after: usize,
+        /// Number of lines before/after target line (deprecated)
+        #[arg(long)]
+        context_lines: Option<usize>,
+        /// Output JSON
+        #[arg(long, default_value_t = false)]
+        json: bool,
+    },
+    /// Search SHOKU_SHINZEN corpus by regex over extracted line text.
+    ///
+    /// Related: shoku-shinzen-title-search, shoku-shinzen-fetch
+    #[command(after_help = "EXAMPLES:\n  buddha shoku-shinzen-search --query \"護摩\" --json")]
+    ShokuShinzenSearch {
+        /// Query string (regular expression)
+        #[arg(long)]
+        query: String,
+        /// Maximum number of files to return
+        #[arg(long, default_value_t = 20)]
+        max_results: usize,
+        /// Maximum matches per file
+        #[arg(long, default_value_t = 5)]
+        max_matches_per_file: usize,
+        /// Output JSON
+        #[arg(long, default_value_t = false)]
+        json: bool,
+    },
+    /// SHOKU_SHINZEN summarize/context pipeline.
+    #[command(after_help = "EXAMPLES:\n  buddha shoku-shinzen-pipeline --query \"護摩\" --json")]
+    ShokuShinzenPipeline {
+        /// Query string (regular expression)
+        #[arg(long)]
+        query: String,
+        /// Maximum number of files to return
+        #[arg(long, default_value_t = 10)]
+        max_results: usize,
+        /// Maximum matches per file
+        #[arg(long, default_value_t = 3)]
+        max_matches_per_file: usize,
+        /// Output JSON
+        #[arg(long, default_value_t = false)]
+        json: bool,
+    },
+    /// Build SHOKU_SHINZEN index under ~/.buddha/cache/shoku-shinzen-index.json
+    ShokuShinzenIndex {
+        /// Root directory of SHOKU_SHINZEN kunten TEI XML files (default ~/.buddha/SHOKU_SHINZEN/kunten_tei_xml)
+        #[arg(long)]
+        root: Option<PathBuf>,
+        /// Output path (default ~/.buddha/cache/shoku-shinzen-index.json)
+        #[arg(long)]
+        out: Option<PathBuf>,
+    },
+    /// Search precomputed SHOKU_SHINZEN work catalog (title/author/range).
+    #[command(
+        after_help = "EXAMPLES:\n  buddha shoku-shinzen-work-catalog --query \"護摩\" --json\n  buddha shoku-shinzen-work-catalog --volume 13"
+    )]
+    ShokuShinzenWorkCatalog {
+        /// Optional title/author query
+        #[arg(long)]
+        query: Option<String>,
+        /// Optional SHOKU_SHINZEN volume number
+        #[arg(long)]
+        volume: Option<String>,
+        /// Max results
+        #[arg(long, default_value_t = 20)]
+        limit: usize,
+        /// Output JSON
+        #[arg(long, default_value_t = false)]
+        json: bool,
+    },
+    /// List OCR corrections (校訂) for SHOKU_SHINZEN.
+    ShokuShinzenCorrections {
+        /// Output JSON
+        #[arg(long, default_value_t = false)]
+        json: bool,
+    },
+    /// Build SHOKU_SHINZEN work catalog under ~/.buddha/cache/shoku-shinzen-work-catalog.json
+    ShokuShinzenWorkCatalogIndex {
+        /// Root directory of SHOKU_SHINZEN kunten TEI XML files (default ~/.buddha/SHOKU_SHINZEN/kunten_tei_xml)
+        #[arg(long)]
+        root: Option<PathBuf>,
+        /// Output path (default ~/.buddha/cache/shoku-shinzen-work-catalog.json)
+        #[arg(long)]
+        out: Option<PathBuf>,
+    },
     /// Search 浄土宗全書 (Jodo Shu Zensho) full-text database online.
     ///
     /// Searches jodoshuzensho.jp for matching text passages.
@@ -702,11 +991,11 @@ enum Commands {
     /// Resolve a text identifier or title across all corpora.
     ///
     /// Given a query (ID like "T0262", or title like "法華経"), finds matching
-    /// texts across CBETA, Tipitaka, GRETIL, SARIT, and MUKTABODHA.
+    /// texts across CBETA, Tipitaka, Sanskrit corpora, 真言宗全書, and 続真言宗全書.
     /// Returns ranked candidates with fetch instructions.
     ///
     /// Direct ID patterns: T+digits (CBETA), DN/MN/SN/AN/KN+digits (Tipitaka),
-    /// *.mul (Tipitaka file stem).
+    /// *.mul (Tipitaka file stem), SZ/SZW (真言宗全書), SKZ/SKZW (続真言宗全書).
     ///
     /// Related: cbeta-title-search, gretil-title-search, tipitaka-title-search
     #[command(
@@ -716,8 +1005,8 @@ enum Commands {
         /// Query: text ID or title to resolve
         #[arg(long)]
         query: String,
-        /// Corpora to search (default: all). Comma-separated: cbeta,tipitaka,gretil,sarit,muktabodha
-        #[arg(long, value_delimiter = ',')]
+        /// Corpora to search (default: all). Comma-separated.
+        #[arg(long, value_delimiter = ',', value_parser = ["cbeta", "tipitaka", "gretil", "sarit", "muktabodha", "shinzen", "shoku_shinzen"])]
         sources: Vec<String>,
         /// Max candidates per source
         #[arg(long, default_value_t = 5)]
@@ -726,7 +1015,7 @@ enum Commands {
         #[arg(long, default_value_t = 10)]
         limit: usize,
         /// Prefer this source (slight score boost)
-        #[arg(long)]
+        #[arg(long, value_parser = ["cbeta", "tipitaka", "gretil", "sarit", "muktabodha", "shinzen", "shoku_shinzen"])]
         prefer_source: Option<String>,
         /// Minimum score threshold (0.0–1.0)
         #[arg(long, default_value_t = 0.1)]
@@ -1150,9 +1439,27 @@ enum Commands {
         #[arg(long)]
         out: Option<PathBuf>,
     },
+    /// Build SHINZEN index under ~/.buddha/cache/shinzen-index.json
+    ShinzenIndex {
+        /// Root directory of SHINZEN kunten TEI XML files (default ~/.buddha/SHINZEN/kunten_tei_xml)
+        #[arg(long)]
+        root: Option<PathBuf>,
+        /// Output path (default ~/.buddha/cache/shinzen-index.json)
+        #[arg(long)]
+        out: Option<PathBuf>,
+    },
+    /// Build SHINZEN work catalog under ~/.buddha/cache/shinzen-work-catalog.json
+    ShinzenWorkCatalogIndex {
+        /// Root directory of SHINZEN kunten TEI XML files (default ~/.buddha/SHINZEN/kunten_tei_xml)
+        #[arg(long)]
+        root: Option<PathBuf>,
+        /// Output path (default ~/.buddha/cache/shinzen-work-catalog.json)
+        #[arg(long)]
+        out: Option<PathBuf>,
+    },
     /// Rebuild search indexes (deletes cache JSON first)
     IndexRebuild {
-        /// Source to rebuild: cbeta | tipitaka | sarit | muktabodha | all
+        /// Source to rebuild: cbeta | tipitaka | sarit | muktabodha | shinzen | all
         #[arg(long, default_value = "all")]
         source: String,
     },
@@ -1756,6 +2063,194 @@ fn run_cli() -> i32 {
                     should_output_json(global_json, json),
                 )?;
             }
+            Commands::ShinzenTitleSearch { query, limit, json } => {
+                cmd_shinzen::shinzen_title_search(
+                    &query,
+                    limit,
+                    should_output_json(global_json, json),
+                )?;
+            }
+            Commands::ShinzenFetch {
+                id,
+                query,
+                format,
+                full,
+                highlight,
+                highlight_regex,
+                highlight_prefix,
+                highlight_suffix,
+                start_char,
+                end_char,
+                max_chars,
+                page,
+                page_size,
+                line_number,
+                context_before,
+                context_after,
+                context_lines,
+                json,
+            } => {
+                let tmp = Commands::ShinzenFetch {
+                    id,
+                    query,
+                    format,
+                    full,
+                    highlight,
+                    highlight_regex,
+                    highlight_prefix,
+                    highlight_suffix,
+                    start_char,
+                    end_char,
+                    max_chars,
+                    page,
+                    page_size,
+                    line_number,
+                    context_before,
+                    context_after,
+                    context_lines,
+                    json: should_output_json(global_json, json),
+                };
+                cmd_shinzen::shinzen_fetch(&tmp)?;
+            }
+            Commands::ShinzenSearch {
+                query,
+                max_results,
+                max_matches_per_file,
+                json,
+            } => {
+                cmd_shinzen::shinzen_search(
+                    &query,
+                    max_results,
+                    max_matches_per_file,
+                    should_output_json(global_json, json),
+                )?;
+            }
+            Commands::ShinzenPipeline {
+                query,
+                max_results,
+                max_matches_per_file,
+                json,
+            } => {
+                cmd_shinzen::shinzen_pipeline(
+                    &query,
+                    max_results,
+                    max_matches_per_file,
+                    should_output_json(global_json, json),
+                )?;
+            }
+            Commands::ShokuShinzenTitleSearch { query, limit, json } => {
+                cmd_shoku_shinzen::shoku_shinzen_title_search(
+                    &query,
+                    limit,
+                    should_output_json(global_json, json),
+                )?;
+            }
+            Commands::ShokuShinzenFetch {
+                id,
+                query,
+                format,
+                full,
+                highlight,
+                highlight_regex,
+                highlight_prefix,
+                highlight_suffix,
+                start_char,
+                end_char,
+                max_chars,
+                page,
+                page_size,
+                line_number,
+                context_before,
+                context_after,
+                context_lines,
+                json,
+            } => {
+                let tmp = Commands::ShokuShinzenFetch {
+                    id,
+                    query,
+                    format,
+                    full,
+                    highlight,
+                    highlight_regex,
+                    highlight_prefix,
+                    highlight_suffix,
+                    start_char,
+                    end_char,
+                    max_chars,
+                    page,
+                    page_size,
+                    line_number,
+                    context_before,
+                    context_after,
+                    context_lines,
+                    json: should_output_json(global_json, json),
+                };
+                cmd_shoku_shinzen::shoku_shinzen_fetch(&tmp)?;
+            }
+            Commands::ShokuShinzenSearch {
+                query,
+                max_results,
+                max_matches_per_file,
+                json,
+            } => {
+                cmd_shoku_shinzen::shoku_shinzen_search(
+                    &query,
+                    max_results,
+                    max_matches_per_file,
+                    should_output_json(global_json, json),
+                )?;
+            }
+            Commands::ShokuShinzenPipeline {
+                query,
+                max_results,
+                max_matches_per_file,
+                json,
+            } => {
+                cmd_shoku_shinzen::shoku_shinzen_pipeline(
+                    &query,
+                    max_results,
+                    max_matches_per_file,
+                    should_output_json(global_json, json),
+                )?;
+            }
+            Commands::ShokuShinzenIndex { root, out } => {
+                cmd_shoku_shinzen::shoku_shinzen_index(root, out)?;
+            }
+            Commands::ShokuShinzenWorkCatalog {
+                query,
+                volume,
+                limit,
+                json,
+            } => {
+                cmd_shoku_shinzen::shoku_shinzen_work_catalog(
+                    query.as_deref(),
+                    volume.as_deref(),
+                    limit,
+                    should_output_json(global_json, json),
+                )?;
+            }
+            Commands::ShokuShinzenWorkCatalogIndex { root, out } => {
+                cmd_shoku_shinzen::shoku_shinzen_work_catalog_index(root, out)?;
+            }
+            Commands::ShokuShinzenCorrections { json } => {
+                cmd_shoku_shinzen::shoku_shinzen_corrections(should_output_json(
+                    global_json,
+                    json,
+                ))?;
+            }
+            Commands::ShinzenWorkCatalog {
+                query,
+                volume,
+                limit,
+                json,
+            } => {
+                cmd_shinzen::shinzen_work_catalog(
+                    query.as_deref(),
+                    volume.as_deref(),
+                    limit,
+                    should_output_json(global_json, json),
+                )?;
+            }
 
             Commands::SatSearch {
                 query,
@@ -1948,6 +2443,29 @@ fn run_cli() -> i32 {
                     })?
                 );
             }
+            Commands::ShinzenIndex { root, out } => {
+                if !shinzen_library_available() && root.is_none() {
+                    cmd_shinzen::print_shinzen_missing(should_output_json(global_json, true))?;
+                    return Ok(());
+                }
+                let base = root.unwrap_or_else(shinzen_kunten_tei_root);
+                let entries = build_shinzen_index(&base);
+                let outp = out.unwrap_or(default_buddha().join("cache").join("shinzen-index.json"));
+                if let Some(parent) = outp.parent() {
+                    fs::create_dir_all(parent)?;
+                }
+                fs::write(&outp, serde_json::to_vec(&entries)?)?;
+                println!(
+                    "{}",
+                    serde_json::to_string(&IndexResult {
+                        count: entries.len(),
+                        out: outp.to_string_lossy().as_ref()
+                    })?
+                );
+            }
+            Commands::ShinzenWorkCatalogIndex { root, out } => {
+                cmd_shinzen::shinzen_work_catalog_index(root, out)?;
+            }
             Commands::TipitakaTitleSearch { query, limit, json } => {
                 cmd_tipitaka::tipitaka_title_search(
                     &query,
@@ -2024,6 +2542,9 @@ fn run_cli() -> i32 {
                 if src == "muktabodha" || src == "all" {
                     let _ = fs::remove_file(cache.join("muktabodha-index.json"));
                 }
+                if src == "shinzen" || src == "all" {
+                    let _ = fs::remove_file(cache.join("shinzen-index.json"));
+                }
 
                 // Call individual index commands
                 if src == "cbeta" || src == "all" {
@@ -2077,6 +2598,28 @@ fn run_cli() -> i32 {
                         summary.insert("muktabodha".to_string(), serde_json::json!("completed"));
                     } else {
                         eprintln!("[error] MUKTABODHA index rebuild failed");
+                    }
+                }
+                if src == "shinzen" || src == "all" {
+                    if shinzen_library_available() {
+                        progress!("[rebuild] Running shinzen-index...");
+                        let cli_path = std::env::current_exe()?;
+                        let ok = run(
+                            cli_path.to_string_lossy().as_ref(),
+                            &["shinzen-index"],
+                            None,
+                        );
+                        if ok {
+                            rebuilt.push("shinzen");
+                            summary.insert("shinzen".to_string(), serde_json::json!("completed"));
+                        } else {
+                            eprintln!("[error] SHINZEN index rebuild failed");
+                        }
+                    } else {
+                        summary.insert(
+                            "shinzen".to_string(),
+                            serde_json::json!("skipped:not-installed"),
+                        );
                     }
                 }
 
@@ -2266,76 +2809,93 @@ fn run_cli() -> i32 {
                 let cli = bin.join("buddha");
                 let cli_legacy = bin.join("daizo-cli");
                 let mcp = bin.join("buddha-mcp");
-                let cbeta = base.join("xml-p5");
-                let tipi = base.join("tipitaka-xml");
-                let sarit = base.join("SARIT-corpus");
-                let mukta = base.join("MUKTABODHA");
                 let cache = base.join("cache");
-                println!("BUDDHA_DIR: {}", base.display());
-                println!("bin: {}", bin.display());
-                println!(" - buddha: {}", if cli.exists() { "OK" } else { "MISSING" });
-                println!(
-                    " - daizo-cli (legacy alias): {}",
-                    if cli_legacy.exists() { "OK" } else { "MISSING" }
-                );
-                println!(
-                    " - buddha-mcp: {}",
-                    if mcp.exists() { "OK" } else { "MISSING" }
-                );
-                println!("data:");
-                println!(
-                    " - xml-p5: {}",
-                    if cbeta.exists() {
-                        "OK"
-                    } else {
-                        "MISSING (will clone on demand)"
-                    }
-                );
-                println!(
-                    " - tipitaka-xml: {}",
-                    if tipi.exists() {
-                        "OK"
-                    } else {
-                        "MISSING (will clone on demand)"
-                    }
-                );
-                println!(
-                    " - SARIT-corpus: {}",
-                    if sarit.exists() {
-                        "OK"
-                    } else {
-                        "MISSING (will clone on demand)"
-                    }
-                );
-                println!(
-                    " - MUKTABODHA: {}",
-                    if mukta.exists() {
-                        "OK"
-                    } else {
-                        "MISSING (will download on install)"
-                    }
-                );
-                println!(
-                    "cache: {}",
-                    if cache.exists() {
-                        cache.display().to_string()
-                    } else {
-                        format!("{} (will create)", cache.display())
-                    }
-                );
-                if verbose {
-                    if cli.exists() {
+                let binaries = [
+                    ("buddha", &cli, true),
+                    ("daizo-cli", &cli_legacy, false),
+                    ("buddha-mcp", &mcp, true),
+                ];
+                let corpora = [
+                    ("cbeta", cbeta_root()),
+                    ("tipitaka", tipitaka_root()),
+                    ("gretil", gretil_root()),
+                    ("sarit", sarit_root()),
+                    ("muktabodha", muktabodha_root()),
+                    ("shinzen", shinzen_kunten_tei_root()),
+                    ("shoku_shinzen", shoku_shinzen_kunten_tei_root()),
+                ];
+                let ready = binaries
+                    .iter()
+                    .all(|(_, path, required)| !required || path.exists());
+
+                if global_json {
+                    let binary_status = binaries
+                        .iter()
+                        .map(|(name, path, required)| {
+                            serde_json::json!({
+                                "name": name,
+                                "path": path,
+                                "available": path.exists(),
+                                "required": required,
+                                "sizeBytes": std::fs::metadata(path).ok().map(|meta| meta.len())
+                            })
+                        })
+                        .collect::<Vec<_>>();
+                    let corpus_status = corpora
+                        .iter()
+                        .map(|(source, path)| {
+                            serde_json::json!({
+                                "source": source,
+                                "path": path,
+                                "available": path.exists()
+                            })
+                        })
+                        .collect::<Vec<_>>();
+                    println!(
+                        "{}",
+                        serde_json::json!({
+                            "schemaVersion": 1,
+                            "status": if ready { "ok" } else { "degraded" },
+                            "buddhaDir": base,
+                            "binaries": binary_status,
+                            "corpora": corpus_status,
+                            "availableSourceCount": corpora.iter().filter(|(_, path)| path.exists()).count(),
+                            "cache": {"path": cache, "available": cache.exists()}
+                        })
+                    );
+                } else {
+                    println!("BUDDHA_DIR: {}", base.display());
+                    println!("bin: {}", bin.display());
+                    for (name, path, _) in binaries {
                         println!(
-                            "   size: {} bytes",
-                            std::fs::metadata(&cli).map(|m| m.len()).unwrap_or(0)
+                            " - {}: {}",
+                            name,
+                            if path.exists() { "OK" } else { "MISSING" }
+                        );
+                        if verbose && path.exists() {
+                            println!(
+                                "   size: {} bytes",
+                                std::fs::metadata(path).map(|meta| meta.len()).unwrap_or(0)
+                            );
+                        }
+                    }
+                    println!("data:");
+                    for (source, path) in corpora {
+                        println!(
+                            " - {}: {} ({})",
+                            source,
+                            if path.exists() { "OK" } else { "MISSING" },
+                            path.display()
                         );
                     }
-                    if mcp.exists() {
-                        println!(
-                            "   size: {} bytes",
-                            std::fs::metadata(&mcp).map(|m| m.len()).unwrap_or(0)
-                        );
-                    }
+                    println!(
+                        "cache: {}",
+                        if cache.exists() {
+                            cache.display().to_string()
+                        } else {
+                            format!("{} (will create)", cache.display())
+                        }
+                    );
                 }
             }
             Commands::Uninstall { purge } => {
@@ -2421,17 +2981,119 @@ fn build_command_schema(filter: Option<&str>) -> serde_json::Value {
 
         let mut args = Vec::new();
         for arg in sub.get_arguments() {
-            if arg.get_id() == "help" || arg.get_id() == "json" || arg.get_id() == "quiet" {
+            if arg.get_id() == "help" || arg.get_id() == "quiet" {
                 continue;
             }
             let mut a = serde_json::Map::new();
             a.insert("name".into(), serde_json::json!(arg.get_id().as_str()));
+            if let Some(long) = arg.get_long() {
+                a.insert("flag".into(), serde_json::json!(format!("--{}", long)));
+            }
             if let Some(short) = arg.get_short() {
-                a.insert("short".into(), serde_json::json!(short.to_string()));
+                a.insert("short".into(), serde_json::json!(format!("-{}", short)));
             }
             a.insert("required".into(), serde_json::json!(arg.is_required_set()));
-            if let Some(vals) = arg.get_default_values().first() {
-                a.insert("default".into(), serde_json::json!(vals.to_string_lossy()));
+            let parser_type = arg.get_value_parser().type_id();
+            let is_boolean_action = matches!(
+                arg.get_action(),
+                clap::ArgAction::SetTrue | clap::ArgAction::SetFalse
+            );
+            let scalar_type = if is_boolean_action || parser_type == std::any::TypeId::of::<bool>()
+            {
+                "boolean"
+            } else if [
+                std::any::TypeId::of::<usize>(),
+                std::any::TypeId::of::<u8>(),
+                std::any::TypeId::of::<u16>(),
+                std::any::TypeId::of::<u32>(),
+                std::any::TypeId::of::<u64>(),
+                std::any::TypeId::of::<isize>(),
+                std::any::TypeId::of::<i8>(),
+                std::any::TypeId::of::<i16>(),
+                std::any::TypeId::of::<i32>(),
+                std::any::TypeId::of::<i64>(),
+            ]
+            .iter()
+            .any(|type_id| parser_type == *type_id)
+            {
+                "integer"
+            } else if [std::any::TypeId::of::<f32>(), std::any::TypeId::of::<f64>()]
+                .iter()
+                .any(|type_id| parser_type == *type_id)
+            {
+                "number"
+            } else if parser_type == std::any::TypeId::of::<PathBuf>() {
+                "path"
+            } else {
+                "string"
+            };
+            let is_array = matches!(arg.get_action(), clap::ArgAction::Append)
+                || arg.get_value_delimiter().is_some();
+            a.insert(
+                "valueType".into(),
+                serde_json::json!(if is_array { "array" } else { scalar_type }),
+            );
+            if is_array {
+                a.insert("itemType".into(), serde_json::json!(scalar_type));
+            }
+            if let Some(range) = arg.get_num_args() {
+                a.insert(
+                    "cardinality".into(),
+                    serde_json::json!({
+                        "min": range.min_values(),
+                        "max": if range.max_values() == usize::MAX {
+                            serde_json::Value::Null
+                        } else {
+                            serde_json::json!(range.max_values())
+                        }
+                    }),
+                );
+            }
+            if let Some(delimiter) = arg.get_value_delimiter() {
+                a.insert(
+                    "valueDelimiter".into(),
+                    serde_json::json!(delimiter.to_string()),
+                );
+            }
+            let defaults = arg
+                .get_default_values()
+                .iter()
+                .map(|value| {
+                    let value = value.to_string_lossy();
+                    match scalar_type {
+                        "boolean" => value
+                            .parse::<bool>()
+                            .map(serde_json::Value::Bool)
+                            .unwrap_or_else(|_| serde_json::json!(value)),
+                        "integer" => value
+                            .parse::<i64>()
+                            .map(|number| serde_json::json!(number))
+                            .unwrap_or_else(|_| serde_json::json!(value)),
+                        "number" => value
+                            .parse::<f64>()
+                            .map(|number| serde_json::json!(number))
+                            .unwrap_or_else(|_| serde_json::json!(value)),
+                        _ => serde_json::json!(value),
+                    }
+                })
+                .collect::<Vec<_>>();
+            if !defaults.is_empty() {
+                a.insert(
+                    "default".into(),
+                    if defaults.len() == 1 {
+                        defaults[0].clone()
+                    } else {
+                        serde_json::json!(defaults)
+                    },
+                );
+            }
+            if let Some(values) = arg.get_value_parser().possible_values() {
+                let values = values
+                    .map(|value| value.get_name().to_string())
+                    .collect::<Vec<_>>();
+                if !values.is_empty() {
+                    a.insert("possibleValues".into(), serde_json::json!(values));
+                }
             }
             if let Some(help) = arg.get_help() {
                 a.insert("help".into(), serde_json::json!(help.to_string()));
@@ -2441,15 +3103,33 @@ fn build_command_schema(filter: Option<&str>) -> serde_json::Value {
 
         let mut cmd = serde_json::Map::new();
         cmd.insert("name".into(), serde_json::json!(name));
+        cmd.insert(
+            "invocation".into(),
+            serde_json::json!(format!("buddha {}", name)),
+        );
         if let Some(about) = sub.get_about() {
             cmd.insert("about".into(), serde_json::json!(about.to_string()));
+        }
+        if let Some(after_help) = sub.get_after_help() {
+            cmd.insert(
+                "examplesAndOutput".into(),
+                serde_json::json!(after_help.to_string()),
+            );
         }
         cmd.insert("args".into(), serde_json::Value::Array(args));
         commands.push(serde_json::Value::Object(cmd));
     }
 
     let output = serde_json::json!({
+        "schemaVersion": 2,
+        "binary": "buddha",
         "version": version,
+        "agentGuidance": {
+            "machineOutput": "Pass --json (or set BUDDHA_JSON=1). stdout is JSON; diagnostics go to stderr.",
+            "knownId": "Use the matching *-fetch command directly; do not search first.",
+            "pagination": "Treat start-char/end-char/max-chars as Unicode character offsets and continue from result._meta.nextStartChar when present.",
+            "errors": "A non-zero exit status or result.isError=true is a failed call. Never repeat unchanged arguments when retryable=false; when retryable=true, retry at most once after a short delay, then stop and report."
+        },
         "commands": commands,
     });
     output
@@ -2646,6 +3326,36 @@ pub(crate) fn load_or_build_sarit_index_cli() -> Vec<buddha_core::IndexEntry> {
     entries
 }
 
+pub(crate) fn load_or_build_shinzen_index_cli() -> Vec<buddha_core::IndexEntry> {
+    if !shinzen_library_available() {
+        return Vec::new();
+    }
+    let out = cache_dir().join("shinzen-index.json");
+    if let Ok(b) = std::fs::read(&out) {
+        if let Ok(v) = serde_json::from_slice::<Vec<buddha_core::IndexEntry>>(&b) {
+            let missing = v
+                .iter()
+                .take(10)
+                .filter(|e| !std::path::Path::new(&e.path).exists())
+                .count();
+            let lacks_ver = v.iter().take(10).any(|e| {
+                e.meta
+                    .as_ref()
+                    .and_then(|m| m.get("indexVersion"))
+                    .map(|s| s.as_str() != "shinzen_index_v1")
+                    .unwrap_or(true)
+            });
+            if !v.is_empty() && missing == 0 && !lacks_ver {
+                return v;
+            }
+        }
+    }
+    let entries = build_shinzen_index(&shinzen_kunten_tei_root());
+    let _ = std::fs::create_dir_all(cache_dir());
+    let _ = std::fs::write(&out, serde_json::to_vec(&entries).unwrap_or_default());
+    entries
+}
+
 pub(crate) fn load_or_build_muktabodha_index_cli() -> Vec<buddha_core::IndexEntry> {
     let out = cache_dir().join("muktabodha-index.json");
     if let Ok(b) = std::fs::read(&out) {
@@ -2758,6 +3468,77 @@ pub(crate) fn resolve_sarit_path_cli(id: Option<&str>, query: Option<&str>) -> P
     PathBuf::new()
 }
 
+pub(crate) fn resolve_shinzen_path_cli(id: Option<&str>, query: Option<&str>) -> PathBuf {
+    if let Some(id_str) = id {
+        if let Some(p) = resolve_shinzen_path_direct(id_str) {
+            return p;
+        }
+        let idx = load_or_build_shinzen_index_cli();
+        if let Some(p) = resolve_shinzen_by_id(&idx, id_str) {
+            return p;
+        }
+    }
+    if let Some(q) = query {
+        let idx = load_or_build_shinzen_index_cli();
+        if let Some(hit) = best_match(&idx, q, 1).into_iter().next() {
+            return PathBuf::from(&hit.entry.path);
+        }
+    }
+    PathBuf::new()
+}
+
+// ---------------------------------------------------------------------------
+// 続真言宗全書(SHOKU_SHINZEN)
+// ---------------------------------------------------------------------------
+pub(crate) fn load_or_build_shoku_shinzen_index_cli() -> Vec<buddha_core::IndexEntry> {
+    if !shoku_shinzen_library_available() {
+        return Vec::new();
+    }
+    let out = cache_dir().join("shoku-shinzen-index.json");
+    if let Ok(b) = std::fs::read(&out) {
+        if let Ok(v) = serde_json::from_slice::<Vec<buddha_core::IndexEntry>>(&b) {
+            let missing = v
+                .iter()
+                .take(10)
+                .filter(|e| !std::path::Path::new(&e.path).exists())
+                .count();
+            let lacks_ver = v.iter().take(10).any(|e| {
+                e.meta
+                    .as_ref()
+                    .and_then(|m| m.get("indexVersion"))
+                    .map(|s| s.as_str() != "shoku_shinzen_index_v1")
+                    .unwrap_or(true)
+            });
+            if !v.is_empty() && missing == 0 && !lacks_ver {
+                return v;
+            }
+        }
+    }
+    let entries = build_shoku_shinzen_index(&shoku_shinzen_kunten_tei_root());
+    let _ = std::fs::create_dir_all(cache_dir());
+    let _ = std::fs::write(&out, serde_json::to_vec(&entries).unwrap_or_default());
+    entries
+}
+
+pub(crate) fn resolve_shoku_shinzen_path_cli(id: Option<&str>, query: Option<&str>) -> PathBuf {
+    if let Some(id_str) = id {
+        if let Some(p) = resolve_shoku_shinzen_path_direct(id_str) {
+            return p;
+        }
+        let idx = load_or_build_shoku_shinzen_index_cli();
+        if let Some(p) = resolve_shoku_shinzen_by_id(&idx, id_str) {
+            return p;
+        }
+    }
+    if let Some(q) = query {
+        let idx = load_or_build_shoku_shinzen_index_cli();
+        if let Some(hit) = best_match(&idx, q, 1).into_iter().next() {
+            return PathBuf::from(&hit.entry.path);
+        }
+    }
+    PathBuf::new()
+}
+
 pub(crate) fn resolve_muktabodha_path_cli(id: Option<&str>, query: Option<&str>) -> PathBuf {
     if let Some(id_str) = id {
         if let Some(p) = resolve_muktabodha_path_direct(id_str) {
@@ -2854,14 +3635,14 @@ pub(crate) struct SliceArgs {
     pub max_chars: Option<usize>,
 }
 impl SliceArgs {
-    fn start(&self) -> Option<usize> {
+    pub(crate) fn start(&self) -> Option<usize> {
         if let (Some(p), Some(ps)) = (self.page, self.page_size) {
             Some(p * ps)
         } else {
             self.start_char
         }
     }
-    fn end_bound(&self, total: usize, sliced_len: usize) -> usize {
+    pub(crate) fn end_bound(&self, total: usize, sliced_len: usize) -> usize {
         if let (Some(p), Some(ps)) = (self.page, self.page_size) {
             std::cmp::min(p * ps + ps, total)
         } else if let Some(e) = self.end_char {
@@ -2997,7 +3778,7 @@ pub(crate) fn sniff_xml_encoding(head: &[u8]) -> Option<String> {
 mod cmd;
 use cmd::{
     cbeta as cmd_cbeta, gretil as cmd_gretil, muktabodha as cmd_muktabodha, sarit as cmd_sarit,
-    tipitaka as cmd_tipitaka,
+    shinzen as cmd_shinzen, shoku_shinzen as cmd_shoku_shinzen, tipitaka as cmd_tipitaka,
 };
 
 #[cfg(test)]
@@ -3117,6 +3898,45 @@ mod tests {
                 .unwrap();
             assert!(start_char_help.contains("fetched Tibetan text"));
             assert!(start_char_help.contains("not a tibetan-search match offset"));
+        });
+    }
+
+    #[test]
+    fn command_schema_exposes_flags_types_enums_and_machine_output() {
+        with_large_stack(|| {
+            let schema = build_command_schema(Some("resolve"));
+            assert_eq!(schema["schemaVersion"], 2);
+            assert!(schema["agentGuidance"]["machineOutput"]
+                .as_str()
+                .unwrap()
+                .contains("--json"));
+            assert!(schema["agentGuidance"]["errors"]
+                .as_str()
+                .unwrap()
+                .contains("retry at most once"));
+            let args = schema["commands"][0]["args"].as_array().unwrap();
+            let sources = args.iter().find(|arg| arg["name"] == "sources").unwrap();
+            assert_eq!(sources["flag"], "--sources");
+            assert_eq!(sources["valueType"], "array");
+            assert!(sources["possibleValues"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|value| value == "shoku_shinzen"));
+            let json_arg = args.iter().find(|arg| arg["name"] == "json").unwrap();
+            assert_eq!(json_arg["flag"], "--json");
+            assert_eq!(json_arg["valueType"], "boolean");
+        });
+    }
+
+    #[test]
+    fn shoku_fetch_schema_marks_character_offsets_as_integers() {
+        with_large_stack(|| {
+            let schema = build_command_schema(Some("shoku-shinzen-fetch"));
+            let args = schema["commands"][0]["args"].as_array().unwrap();
+            let max_chars = args.iter().find(|arg| arg["name"] == "max_chars").unwrap();
+            assert_eq!(max_chars["flag"], "--max-chars");
+            assert_eq!(max_chars["valueType"], "integer");
         });
     }
 
