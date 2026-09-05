@@ -89,6 +89,8 @@ Unified MCP tools are enabled by default (`BUDDHA_UNIFIED_TOOLS=0` disables them
 
 Legacy corpus-specific tools are still available when unified mode is disabled or when an older client has cached tool names, for example `cbeta_fetch`, `cbeta_search`, `gretil_pipeline`, `sat_detail`, `jozen_fetch`, and `buddha_version`.
 
+CBETA CLI fetch and unified MCP fetch default to readable text without the TEI header, preserving gaiji and line breaks. Line excerpts continue across paragraph boundaries.
+
 ## CLI Quick Start
 
 Use `buddha doctor --json` for a machine-readable inventory of installed binaries and all local corpus paths; each item has an explicit `available` boolean.
@@ -175,8 +177,8 @@ For low-token AI use:
 
 1. If an ID is known, call `fetch` directly.
 2. If the corpus or ID is unclear, call `resolve`.
-3. Otherwise call `search`, read `_meta.fetchSuggestions`, then call `fetch` with the suggested `id` plus `lineNumber` or `lb`.
-4. Include `highlight` with the original search term when fetching context.
+3. Otherwise call `search`, follow `structuredContent.nextActions` (legacy fallback: `_meta.fetchSuggestions`), and preserve the suggested line context.
+4. Use `highlight` for exploration; fetch without markers when quoting the original text.
 5. Use `pipeline` only when you want a multi-file summary or automated search-to-fetch flow.
 
 Common direct IDs:
@@ -208,6 +210,8 @@ JSON errors are written to stderr as:
 ```json
 {"error":{"message":"...","code":"NOT_FOUND"}}
 ```
+
+CBETA, Tipitaka, GRETIL, SARIT and MUKTABODHA fetches require `--id` or `--query`; ID takes precedence when both are supplied. Missing text exits 10, and invalid arguments exit 2 with `INVALID_ARGUMENT` in JSON mode. Their slice metadata uses Unicode character offsets measured before highlighting; continue from `result._meta.nextStartChar` when present. `--full`, where supported, ignores slice offsets.
 
 MCP tool failures instead return `result.isError: true` with machine-readable `structuredContent.error` / `_meta.error` (`category`, `code`, `field`, `retryable`) and, when safe, executable `nextActions`. Do not retry unchanged arguments when `retryable` is false. When it is true, retry at most once after a short delay; if that fails, stop and report.
 
@@ -290,7 +294,7 @@ Golden output includes the CLI version, so a release bump can intentionally chan
 
 ## Release
 
-Current release version: `0.6.16`.
+Current release version: `0.6.17`.
 
 Version numbers live in:
 
@@ -307,11 +311,11 @@ Release helper:
 # Inspect the next patch release without modifying files
 scripts/release.sh --patch --dry-run --no-fmt --no-test
 
-# Create commit, push branch, create v0.6.15 tag, push tag, create GitHub Release with generated notes
-scripts/release.sh 0.6.16 --push --tag --release --auto-notes
+# Create commit, push branch, create v0.6.17 tag, push tag, create GitHub Release with generated notes
+scripts/release.sh 0.6.17 --push --tag --release --auto-notes
 
 # Use CHANGELOG notes instead of GitHub generated notes
-scripts/release.sh 0.6.16 --push --tag --release
+scripts/release.sh 0.6.17 --push --tag --release
 ```
 
 Important: `scripts/release.sh` runs `git add -A` and commits. Review the working tree before using it, especially when unrelated changes are present.

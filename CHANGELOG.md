@@ -4,9 +4,19 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [0.6.17] - 2026-09-05
+
 ### Fixed
-- Release notes extraction now preserves state across CHANGELOG lines, preventing empty GitHub Release bodies.
-- The existing Rust CI workflow is now tracked so pushes to `main` actually run format, Clippy, and test checks.
+- Local CLI fetches return explicit not-found and structured argument errors; ID-selected text and metadata stay consistent when a query is also supplied.
+- Fetch pagination uses shared Unicode character offsets before highlighting, with reliable continuation cursors and full-text boundaries.
+- CBETA CLI and unified MCP fetches return plain text without TEI headers, resolve gaiji, and continue across paragraph boundaries in line excerpts.
+- Unified MCP honors SAT result limits and CBETA's default plain format.
+- Canonical next actions take precedence over duplicate legacy hints; metadata-only SHINZEN works provide an executable text search.
+- Release notes extraction preserves CHANGELOG state and the tracked CI workflow runs checks on pushes.
+
+### Verification
+- 97 workspace tests passed, including CLI fixtures for five corpora and a CBETA fragment regression.
+- Format, Clippy, and MCP stdio checks passed. Existing Clippy warnings remain.
 
 ## [0.6.16] - 2026-08-30
 

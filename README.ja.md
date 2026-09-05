@@ -89,6 +89,8 @@ unified MCP tools は既定で有効です（`BUDDHA_UNIFIED_TOOLS=0` で無効�
 
 unified mode を無効にした場合、または古いクライアントが個別名を保持している場合でも、`cbeta_fetch`, `cbeta_search`, `gretil_pipeline`, `sat_detail`, `jozen_fetch`, `buddha_version` などの legacy tools は利用できます。
 
+CBETA の CLI fetch と unified MCP fetch の既定出力は、TEIヘッダーを除外し、外字と改行を保つ本文です。行取得は段落の途中からでも後続本文を返します。
+
 ## CLI クイックスタート
 
 `buddha doctor --json` は、導入済みバイナリと全ローカルコーパスのパス・利用可否を機械可読JSONで返します。
@@ -175,8 +177,8 @@ buddha version
 
 1. ID が分かっていれば `fetch` を直接呼びます。
 2. コーパスや ID が曖昧なら `resolve` を呼びます。
-3. それ以外は `search` を呼び、`_meta.fetchSuggestions` を読んで、提案された `id` と `lineNumber` または `lb` で `fetch` します。
-4. コンテキスト取得時は検索語を `highlight` に入れます。
+3. それ以外は `search` の `structuredContent.nextActions`（旧形式は `_meta.fetchSuggestions`）に従い、提案された行の取得条件を保ちます。
+4. `highlight` は探索に使い、原文を引用するときは装飾なしで取得します。
 5. `pipeline` は複数ファイル要約や自動 search-to-fetch が必要な時だけ使います。
 
 よく使う直接ID:
@@ -208,6 +210,8 @@ JSON mode のエラーは stderr に出ます。
 ```json
 {"error":{"message":"...","code":"NOT_FOUND"}}
 ```
+
+CBETA・Tipitaka・GRETIL・SARIT・MUKTABODHAのfetchには `--id` または `--query` が必要で、併用時はIDを優先します。本文未発見は終了10、不正引数は終了2となり、JSONモードでは `INVALID_ARGUMENT` を返します。取得範囲はハイライト前のUnicode文字数で表し、続きは `result._meta.nextStartChar` から取得します。対応するコマンドの `--full` は部分取得の指定を無視します。
 
 MCP のツール失敗は `result.isError: true` と、`structuredContent.error` / `_meta.error` の `category`, `code`, `field`, `retryable` を返します。安全に修正できる場合は実行可能な `nextActions` も返します。`retryable: false` の呼び出しを同じ引数で繰り返さないでください。`retryable: true` は短い待機後に最大1回だけ再試行し、再失敗したら停止して報告してください。
 
@@ -289,7 +293,7 @@ golden 出力には CLI version も含まれるため、release bump では `tas
 
 ## リリース
 
-現在のリリースバージョン: `0.6.16`
+現在のリリースバージョン: `0.6.17`
 
 バージョン番号の反映先:
 
@@ -306,11 +310,11 @@ golden 出力には CLI version も含まれるため、release bump では `tas
 # 次の patch release を変更なしで確認
 scripts/release.sh --patch --dry-run --no-fmt --no-test
 
-# commit、branch push、v0.6.15 tag、tag push、GitHub Release を作成
-scripts/release.sh 0.6.16 --push --tag --release --auto-notes
+# commit、branch push、v0.6.17 tag、tag push、GitHub Release を作成
+scripts/release.sh 0.6.17 --push --tag --release --auto-notes
 
 # GitHub generated notes ではなく CHANGELOG を release notes に使う
-scripts/release.sh 0.6.16 --push --tag --release
+scripts/release.sh 0.6.17 --push --tag --release
 ```
 
 注意: `scripts/release.sh` は `git add -A` して commit します。無関係な変更があると巻き込むため、実行前に worktree を必ず確認してください。

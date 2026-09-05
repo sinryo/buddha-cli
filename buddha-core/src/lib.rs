@@ -4025,11 +4025,13 @@ fn extract_cbeta_plain_impl(
     xml: &str,
     gaiji: Option<&HashMap<String, String>>,
     include_notes: bool,
-    skip_tei_header: bool,
+    fragment: bool,
 ) -> String {
     let mut reader = Reader::from_str(xml);
     reader.config_mut().trim_text_start = true;
     reader.config_mut().trim_text_end = true;
+    // A line slice may begin inside a paragraph and contain its closing tag.
+    reader.config_mut().allow_unmatched_ends = fragment;
     let mut buf = Vec::new();
     let mut out = String::new();
 
@@ -4053,7 +4055,7 @@ fn extract_cbeta_plain_impl(
                     skip_header_depth += 1;
                     continue;
                 }
-                if skip_tei_header && name == b"teiHeader" {
+                if name == b"teiHeader" {
                     skip_header_depth = 1;
                     continue;
                 }
@@ -4108,7 +4110,7 @@ fn extract_cbeta_plain_impl(
                 if skip_header_depth > 0 {
                     continue;
                 }
-                if skip_tei_header && name == b"teiHeader" {
+                if name == b"teiHeader" {
                     continue;
                 }
 
@@ -4206,7 +4208,7 @@ fn extract_cbeta_plain_impl(
 /// - preserves line breaks (`lb` -> `\n`, `pb` -> blank line)
 pub fn extract_cbeta_plain_from_xml(xml: &str, include_notes: bool) -> String {
     let gaiji = cbeta_gaiji_map_fast(xml);
-    extract_cbeta_plain_impl(xml, Some(&gaiji), include_notes, true)
+    extract_cbeta_plain_impl(xml, Some(&gaiji), include_notes, false)
 }
 
 /// Extract CBETA plain text from an XML snippet, using a gaiji map precomputed
@@ -6028,6 +6030,13 @@ mod tests_cbeta_index_and_plain {
         let snippet = r##"<p>乙<g ref="#CB00416"/>丙</p>"##;
         let out = extract_cbeta_plain_from_snippet(snippet, &gaiji, false);
         assert_eq!(out, "乙佛丙");
+    }
+
+    #[test]
+    fn cbeta_line_fragment_continues_after_unmatched_paragraph_end() {
+        let xml = r#"<lb n="0336a01"/>前段。</p><p>布施空無所有，眾生須故施與。</p>"#;
+        let out = extract_cbeta_plain_from_snippet(xml, &HashMap::new(), false);
+        assert_eq!(out, "前段。布施空無所有，眾生須故施與。");
     }
 
     #[test]

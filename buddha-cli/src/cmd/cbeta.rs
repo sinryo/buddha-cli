@@ -4,7 +4,9 @@ use crate::{
     SliceArgs,
 };
 use buddha_core::path_resolver::cbeta_root;
-use buddha_core::{cbeta_grep, extract_cbeta_juan, extract_text_opts, list_heads_cbeta};
+use buddha_core::{
+    cbeta_grep, extract_cbeta_juan_plain, extract_cbeta_plain_from_xml, list_heads_cbeta,
+};
 
 pub fn cbeta_title_search(query: &str, limit: usize, json: bool) -> anyhow::Result<()> {
     let idx = load_or_build_cbeta_index_cli();
@@ -38,34 +40,37 @@ pub fn cbeta_fetch(args: &crate::Commands) -> anyhow::Result<()> {
     {
         let path = resolve_cbeta_path_cli(id.as_deref(), query.as_deref());
         if path.as_os_str().is_empty() || !path.exists() {
-            return Ok(());
+            anyhow::bail!("cbeta text not found; check --id or --query");
         }
-        let xml = std::fs::read(&path)
-            .map(|b| decode_xml_bytes(&b))
-            .unwrap_or_default();
+        let xml = decode_xml_bytes(&std::fs::read(&path)?);
         let (text, extraction_method, part_matched) = if let Some(line_num) = line_number {
             let before = context_lines.unwrap_or(*context_before);
             let after = context_lines.unwrap_or(*context_after);
-            let context_text =
-                buddha_core::extract_xml_around_line_asymmetric(&xml, *line_num, before, after);
+            let raw =
+                buddha_core::extract_text_around_line_asymmetric(&xml, *line_num, before, after);
+            let context_text = buddha_core::extract_cbeta_plain_from_snippet(
+                &raw,
+                &buddha_core::cbeta_gaiji_map_fast(&xml),
+                *include_notes,
+            );
             (
                 context_text,
                 format!("line-context-{}-{}-{}", line_num, before, after),
                 false,
             )
         } else if let Some(p) = part.as_ref() {
-            if let Some(sec) = extract_cbeta_juan(&xml, p) {
+            if let Some(sec) = extract_cbeta_juan_plain(&xml, p, *include_notes) {
                 (sec, "cbeta-juan".to_string(), true)
             } else {
                 (
-                    extract_text_opts(&xml, *include_notes),
+                    extract_cbeta_plain_from_xml(&xml, *include_notes),
                     "full".to_string(),
                     false,
                 )
             }
         } else {
             (
-                extract_text_opts(&xml, *include_notes),
+                extract_cbeta_plain_from_xml(&xml, *include_notes),
                 "full".to_string(),
                 false,
             )
@@ -82,9 +87,7 @@ pub fn cbeta_fetch(args: &crate::Commands) -> anyhow::Result<()> {
         } else {
             slice_text_cli(&text, &slice)
         };
-        // Snapshot the real returned length before highlight markers inflate `sliced`,
-        // so `returnedEnd`/`truncated` reflect the actual slice, not the decoration.
-        let returned_len = sliced.len();
+        let pagination = super::common::pagination_meta(&text, &sliced, &slice, *full);
         let (decorated, highlighted, hl_positions) = apply_highlight(
             &sliced,
             highlight.as_deref(),
@@ -96,25 +99,23 @@ pub fn cbeta_fetch(args: &crate::Commands) -> anyhow::Result<()> {
         sliced = decorated;
         let heads = list_heads_cbeta(&xml);
         if *json {
-            let idx = load_or_build_cbeta_index_cli();
-            let (matched_id, matched_title, matched_score) = if let Some(q) = query.as_deref() {
-                if let Some(hit) = super::super::best_match(&idx, q, 1).into_iter().next() {
-                    (
-                        Some(hit.entry.id.clone()),
-                        Some(hit.entry.title.clone()),
-                        Some(hit.score),
-                    )
+            let (matched_id, matched_title, matched_score) =
+                if let Some(q) = query.as_deref().filter(|_| id.is_none()) {
+                    let idx = load_or_build_cbeta_index_cli();
+                    if let Some(hit) = super::super::best_match(&idx, q, 1).into_iter().next() {
+                        (
+                            Some(hit.entry.id.clone()),
+                            Some(hit.entry.title.clone()),
+                            Some(hit.score),
+                        )
+                    } else {
+                        (id.clone(), None, None)
+                    }
                 } else {
                     (id.clone(), None, None)
-                }
-            } else {
-                (id.clone(), None, None)
-            };
+                };
             let meta = super::common::build_fetch_meta(super::common::FetchMetaParams {
-                total_length: text.len(),
-                returned_start: slice.start().unwrap_or(0),
-                returned_end: slice.end_bound(text.len(), returned_len),
-                truncated: (returned_len as u64) < (text.len() as u64),
+                pagination,
                 source_path: path.to_string_lossy(),
                 extraction_method: extraction_method.into(),
                 part_matched: Some(part_matched),
@@ -220,7 +221,7 @@ pub fn cbeta_pipeline(args: &crate::Commands) -> anyhow::Result<()> {
                 if *full {
                     // Mirror the fetch path: honor --include-notes consistently
                     // (extract_text() and extract_text_opts(.., false) can differ).
-                    let text = extract_text_opts(&xml, *include_notes);
+                    let text = extract_cbeta_plain_from_xml(&xml, *include_notes);
                     contents.push(serde_json::json!({"type":"text","text": text}));
                     fetched.push(serde_json::json!({"id": r.file_id, "full": true}));
                 } else {

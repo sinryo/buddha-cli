@@ -1,8 +1,6 @@
 //! Shared helpers factored out of the per-corpus / per-source command modules.
 //!
-//! Everything here is intentionally output-preserving: these helpers were extracted
-//! from near-identical copies so the CLI emits byte-for-byte the same bytes. The
-//! frozen golden harness in `tasks/golden/` guards that invariant.
+//! Shared output contracts for per-corpus commands.
 //!
 //! NOTE: the JSON `_meta` builders rely on `serde_json` emitting object keys in
 //! sorted (BTreeMap) order — i.e. the `preserve_order` feature is OFF. Insertion
@@ -86,10 +84,7 @@ pub(crate) fn print_title_search(
 }
 
 pub(crate) struct FetchMetaParams<'a> {
-    pub total_length: usize,
-    pub returned_start: usize,
-    pub returned_end: usize,
-    pub truncated: bool,
+    pub pagination: serde_json::Map<String, serde_json::Value>,
     pub source_path: Cow<'a, str>,
     pub extraction_method: Cow<'a, str>,
     pub part_matched: Option<bool>,
@@ -103,14 +98,7 @@ pub(crate) struct FetchMetaParams<'a> {
 }
 
 pub(crate) fn build_fetch_meta(p: FetchMetaParams<'_>) -> serde_json::Value {
-    let mut meta = serde_json::Map::new();
-    meta.insert("totalLength".to_string(), serde_json::json!(p.total_length));
-    meta.insert(
-        "returnedStart".to_string(),
-        serde_json::json!(p.returned_start),
-    );
-    meta.insert("returnedEnd".to_string(), serde_json::json!(p.returned_end));
-    meta.insert("truncated".to_string(), serde_json::json!(p.truncated));
+    let mut meta = p.pagination;
     meta.insert(
         "sourcePath".to_string(),
         serde_json::Value::String(p.source_path.into_owned()),
@@ -159,6 +147,33 @@ pub(crate) fn build_fetch_meta(p: FetchMetaParams<'_>) -> serde_json::Value {
         );
     }
     serde_json::Value::Object(meta)
+}
+
+/// Character offsets in the selected text, measured before highlighting.
+pub(crate) fn pagination_meta(
+    text: &str,
+    returned: &str,
+    args: &crate::SliceArgs,
+    full: bool,
+) -> serde_json::Map<String, serde_json::Value> {
+    use serde_json::json;
+    let total = text.chars().count();
+    let start = if full {
+        0
+    } else {
+        args.start().unwrap_or(0).min(total)
+    };
+    let end = start + returned.chars().count();
+    let mut meta = serde_json::Map::from_iter([
+        ("totalLength".into(), json!(total)),
+        ("returnedStart".into(), json!(start)),
+        ("returnedEnd".into(), json!(end)),
+        ("truncated".into(), json!(start > 0 || end < total)),
+    ]);
+    if end > start && end < total {
+        meta.insert("nextStartChar".into(), json!(end));
+    }
+    meta
 }
 
 #[derive(Clone, Copy)]

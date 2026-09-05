@@ -290,7 +290,7 @@ enum Commands {
     )]
     GretilFetch {
         /// File stem id (e.g., Bhagavadgita)
-        #[arg(long)]
+        #[arg(long, required_unless_present = "query")]
         id: Option<String>,
         /// Alternative: search query to pick best match
         #[arg(long)]
@@ -393,7 +393,7 @@ enum Commands {
     #[command(after_help = "EXAMPLES:\n  buddha muktabodha-fetch --query \"tantra\" --json")]
     MuktabodhaFetch {
         /// File stem id
-        #[arg(long)]
+        #[arg(long, required_unless_present = "query")]
         id: Option<String>,
         /// Alternative: search query to pick best match
         #[arg(long)]
@@ -489,7 +489,7 @@ enum Commands {
     #[command(after_help = "EXAMPLES:\n  buddha sarit-fetch --id asvaghosa-buddhacarita --json")]
     SaritFetch {
         /// File stem id (e.g., asvaghosa-buddhacarita)
-        #[arg(long)]
+        #[arg(long, required_unless_present = "query")]
         id: Option<String>,
         /// Alternative: search query to pick best match
         #[arg(long)]
@@ -1148,7 +1148,7 @@ enum Commands {
     )]
     CbetaFetch {
         /// Canonical id (e.g., T0002)
-        #[arg(long)]
+        #[arg(long, required_unless_present = "query")]
         id: Option<String>,
         /// Alternative: search query to pick best match
         #[arg(long)]
@@ -1346,7 +1346,7 @@ enum Commands {
     )]
     TipitakaFetch {
         /// File stem id (e.g. abh01m.mul)
-        #[arg(long)]
+        #[arg(long, required_unless_present = "query")]
         id: Option<String>,
         /// Alternative: search query to pick best match
         #[arg(long)]
@@ -1655,7 +1655,19 @@ fn main() {
 }
 
 fn run_cli() -> i32 {
-    let cli = Cli::parse();
+    let cli = match Cli::try_parse() {
+        Ok(cli) => cli,
+        Err(error) => {
+            let code = error.exit_code();
+            if code == 0 {
+                let _ = error.print();
+            } else {
+                let json = should_output_json(env::args_os().any(|arg| arg == "--json"), false);
+                output_error(error.to_string().trim(), "INVALID_ARGUMENT", json);
+            }
+            return code;
+        }
+    };
 
     // Set global quiet flag
     if cli.quiet {
@@ -3637,20 +3649,20 @@ pub(crate) struct SliceArgs {
 impl SliceArgs {
     pub(crate) fn start(&self) -> Option<usize> {
         if let (Some(p), Some(ps)) = (self.page, self.page_size) {
-            Some(p * ps)
+            Some(p.saturating_mul(ps))
         } else {
             self.start_char
         }
     }
     pub(crate) fn end_bound(&self, total: usize, sliced_len: usize) -> usize {
         if let (Some(p), Some(ps)) = (self.page, self.page_size) {
-            std::cmp::min(p * ps + ps, total)
+            std::cmp::min(p.saturating_mul(ps).saturating_add(ps), total)
         } else if let Some(e) = self.end_char {
             std::cmp::min(e, total)
         } else if let Some(mc) = self.max_chars {
-            std::cmp::min(self.start().unwrap_or(0) + mc, total)
+            std::cmp::min(self.start().unwrap_or(0).saturating_add(mc), total)
         } else {
-            self.start().unwrap_or(0) + sliced_len
+            self.start().unwrap_or(0).saturating_add(sliced_len)
         }
     }
 }
@@ -3660,17 +3672,17 @@ pub(crate) fn slice_text_cli(text: &str, args: &SliceArgs) -> String {
     let total_chars = text.chars().count();
     let start_char = std::cmp::min(args.start().unwrap_or(0), total_chars);
     let end_char = if let (Some(p), Some(ps)) = (args.page, args.page_size) {
-        Some(p * ps + ps)
+        Some(p.saturating_mul(ps).saturating_add(ps))
     } else if let Some(e) = args.end_char {
         Some(e)
     } else if let Some(mc) = args.max_chars {
-        Some(start_char + mc)
+        Some(start_char.saturating_add(mc))
     } else {
         None
     };
     let end_char = end_char
         .map(|e| std::cmp::min(e, total_chars))
-        .unwrap_or_else(|| std::cmp::min(start_char + default_max, total_chars));
+        .unwrap_or_else(|| std::cmp::min(start_char.saturating_add(default_max), total_chars));
     if start_char >= end_char {
         return String::new();
     }

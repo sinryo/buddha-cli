@@ -38,9 +38,9 @@ pub fn muktabodha_fetch(args: &crate::Commands) -> anyhow::Result<()> {
     {
         let path = resolve_muktabodha_path_cli(id.as_deref(), query.as_deref());
         if path.as_os_str().is_empty() || !path.exists() {
-            return Ok(());
+            anyhow::bail!("muktabodha text not found; check --id or --query");
         }
-        let bytes = std::fs::read(&path).unwrap_or_default();
+        let bytes = std::fs::read(&path)?;
         let content = decode_xml_bytes(&bytes);
 
         let is_xml = path
@@ -79,8 +79,7 @@ pub fn muktabodha_fetch(args: &crate::Commands) -> anyhow::Result<()> {
         } else {
             slice_text_cli(&text, &slice)
         };
-        // Snapshot the real returned length before highlight markers inflate `sliced`.
-        let returned_len = sliced.len();
+        let pagination = super::common::pagination_meta(&text, &sliced, &slice, *full);
         let (decorated, highlighted, hl_positions) = apply_highlight(
             &sliced,
             highlight.as_deref(),
@@ -98,28 +97,26 @@ pub fn muktabodha_fetch(args: &crate::Commands) -> anyhow::Result<()> {
         };
 
         if *json {
-            let idx = load_or_build_muktabodha_index_cli();
-            let (matched_id, matched_title, matched_score) = if let Some(q) = query.as_deref() {
-                if let Some(hit) = super::super::best_match_gretil(&idx, q, 1)
-                    .into_iter()
-                    .next()
-                {
-                    (
-                        Some(hit.entry.id.clone()),
-                        Some(hit.entry.title.clone()),
-                        Some(hit.score),
-                    )
+            let (matched_id, matched_title, matched_score) =
+                if let Some(q) = query.as_deref().filter(|_| id.is_none()) {
+                    let idx = load_or_build_muktabodha_index_cli();
+                    if let Some(hit) = super::super::best_match_gretil(&idx, q, 1)
+                        .into_iter()
+                        .next()
+                    {
+                        (
+                            Some(hit.entry.id.clone()),
+                            Some(hit.entry.title.clone()),
+                            Some(hit.score),
+                        )
+                    } else {
+                        (id.clone(), None, None)
+                    }
                 } else {
                     (id.clone(), None, None)
-                }
-            } else {
-                (id.clone(), None, None)
-            };
+                };
             let meta = super::common::build_fetch_meta(super::common::FetchMetaParams {
-                total_length: text.len(),
-                returned_start: slice.start().unwrap_or(0),
-                returned_end: slice.end_bound(text.len(), returned_len),
-                truncated: (returned_len as u64) < (text.len() as u64),
+                pagination,
                 source_path: path.to_string_lossy(),
                 extraction_method: extraction_method.into(),
                 part_matched: None,

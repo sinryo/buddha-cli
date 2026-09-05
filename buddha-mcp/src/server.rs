@@ -2855,6 +2855,14 @@ fn fetch_not_found_response(
     })
 }
 
+fn metadata_only_work_search_action(tool: &str, title: &str) -> serde_json::Value {
+    json!({
+        "tool":tool,
+        "args":{"query":title,"maxResults":5,"maxMatchesPerFile":3},
+        "reason":"metadata-only"
+    })
+}
+
 fn handle_call(id: serde_json::Value, params: &serde_json::Value) -> serde_json::Value {
     let name_raw = params.get("name").and_then(|v| v.as_str()).unwrap_or("");
     let args_raw = params.get("arguments").cloned().unwrap_or(json!({}));
@@ -6414,6 +6422,7 @@ Flow: search({source:"jozen"}) -> fetch with lineno
                             let meta = json!({
                                 "workId": entry.id,
                                 "work": shinzen_work_agent_view(entry),
+                                "nextActions": [metadata_only_work_search_action("shinzen_search", &entry.title)],
                                 "hint": "This work has a verified bibliography but its page range is unresolved. Use shinzen_search with the title to locate passages.",
                                 "available": true,
                             });
@@ -6895,11 +6904,10 @@ Flow: search({source:"jozen"}) -> fetch with lineno
                                 "{} は頁範囲未確定の書誌エントリです。本文を探すには返却した nextAction を実行してください。",
                                 entry.id
                             );
-                            let next_actions = vec![json!({
-                                "tool":"shoku_shinzen_search",
-                                "args":{"query":entry.title,"maxResults":5,"maxMatchesPerFile":3},
-                                "reason":"metadata-only"
-                            })];
+                            let next_actions = vec![metadata_only_work_search_action(
+                                "shoku_shinzen_search",
+                                &entry.title,
+                            )];
                             let meta = json!({
                                 "workId":entry.id,
                                 "work":shinzen_work_agent_view(entry),
@@ -9595,6 +9603,24 @@ mod tests {
     };
     use serde_json::json;
     use std::path::Path;
+
+    #[test]
+    fn metadata_only_work_actions_are_executable_unified_searches() {
+        for source in ["shinzen", "shoku_shinzen"] {
+            let action =
+                super::metadata_only_work_search_action(&format!("{source}_search"), "即身成仏義");
+            let mut response = json!({"result":{"content":[],"_meta":{"nextActions":[action]}}});
+            crate::unified::rewrite_meta_suggestions(&mut response);
+            crate::unified::enrich_tool_response(&mut response, "fetch", &json!({"source":source}));
+            let next = &response["result"]["structuredContent"]["nextActions"][0];
+            assert_eq!(next["tool"], "search");
+            assert_eq!(next["args"]["source"], source);
+            assert_eq!(next["args"]["query"], "即身成仏義");
+            assert!(
+                crate::unified::validate_unified_call(&json!(1), "search", &next["args"]).is_none()
+            );
+        }
+    }
 
     #[test]
     fn initialize_negotiates_protocol_and_only_advertises_implemented_capabilities() {

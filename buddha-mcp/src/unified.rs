@@ -725,6 +725,9 @@ pub fn dispatch_unified(name: &str, args: &Value) -> (String, Value) {
 fn dispatch_search(source: &str, args: &Value) -> (String, Value) {
     let mut args = args.clone();
     remove_key(&mut args, "source");
+    if source == "sat" && args.get("rows").is_none() {
+        args["rows"] = args.get("maxResults").cloned().unwrap_or(json!(20));
+    }
     let legacy = match source {
         "cbeta" => "cbeta_search",
         "tipitaka" => "tipitaka_search",
@@ -812,7 +815,12 @@ fn dispatch_fetch(source: &str, args: &Value) -> (String, Value) {
     };
 
     match effective_source.as_str() {
-        "cbeta" => ("cbeta_fetch".to_string(), args_out),
+        "cbeta" => {
+            if args_out.get("format").is_none() {
+                args_out["format"] = json!("plain");
+            }
+            ("cbeta_fetch".to_string(), args_out)
+        }
         "tipitaka" => ("tipitaka_fetch".to_string(), args_out),
         "gretil" => ("gretil_fetch".to_string(), args_out),
         "sarit" => ("sarit_fetch".to_string(), args_out),
@@ -1013,6 +1021,12 @@ pub fn rewrite_meta_suggestions(response: &mut Value) {
 }
 
 fn collect_next_actions(meta: &Value) -> Vec<Value> {
+    // Explicit actions are the canonical plan; legacy hints are only a fallback.
+    if let Some(actions) = meta.get("nextActions").and_then(Value::as_array) {
+        if !actions.is_empty() {
+            return actions.iter().take(5).cloned().collect();
+        }
+    }
     let mut actions = Vec::new();
     for key in ["nextActions", "fetchSuggestions", "suggestions"] {
         if let Some(items) = meta.get(key).and_then(Value::as_array) {
@@ -1282,10 +1296,53 @@ mod tests {
     }
 
     #[test]
+    fn sat_search_respects_result_limit_and_explicit_rows() {
+        for (extra, expected) in [
+            (json!({}), 20),
+            (json!({"maxResults":1}), 1),
+            (json!({"maxResults":1,"rows":7}), 7),
+        ] {
+            let mut args = json!({"source":"sat","query":"般若"});
+            args.as_object_mut()
+                .unwrap()
+                .extend(extra.as_object().unwrap().clone());
+            let (name, dispatched) = dispatch_unified("search", &args);
+            assert_eq!(name, "sat_search");
+            assert_eq!(dispatched["rows"], expected);
+        }
+    }
+
+    #[test]
+    fn canonical_next_actions_replace_legacy_page_hints() {
+        let action = json!({"tool":"fetch","args":{"source":"shinzen","id":"SZW0001"}});
+        let legacy = json!({"tool":"fetch","args":{"source":"shinzen","id":"SZ01p0001"}});
+        assert_eq!(
+            collect_next_actions(
+                &json!({"nextActions":[action.clone()],"fetchSuggestions":[legacy.clone()]})
+            ),
+            vec![action]
+        );
+        for canonical in [Value::Null, json!([])] {
+            assert_eq!(
+                collect_next_actions(
+                    &json!({"nextActions":canonical,"fetchSuggestions":[legacy.clone()]})
+                ),
+                vec![legacy.clone()]
+            );
+        }
+    }
+
+    #[test]
     fn test_dispatch_fetch_auto_detect() {
         // CBETA auto-detect
-        let (name, _) = dispatch_unified("fetch", &json!({"id": "T0262"}));
+        let (name, args) = dispatch_unified("fetch", &json!({"id": "T0262"}));
         assert_eq!(name, "cbeta_fetch");
+        assert_eq!(args["format"], "plain");
+        let (_, args) = dispatch_unified(
+            "fetch",
+            &json!({"source":"cbeta", "id":"T0262", "format":"tei"}),
+        );
+        assert_eq!(args["format"], "tei");
 
         // Tipitaka auto-detect
         let (name, _) = dispatch_unified("fetch", &json!({"id": "DN1"}));

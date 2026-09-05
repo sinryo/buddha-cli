@@ -273,7 +273,7 @@ golden 輸出包含 CLI version，因此 release bump 時 `tasks/golden/*/versio
 
 ## 釋出
 
-目前釋出版本：`0.6.16`
+目前釋出版本：`0.6.17`
 
 版本號反映位置：
 
@@ -290,11 +290,11 @@ golden 輸出包含 CLI version，因此 release bump 時 `tasks/golden/*/versio
 # 不修改檔案，檢查下一個 patch release
 scripts/release.sh --patch --dry-run --no-fmt --no-test
 
-# 建立 commit、push branch、建立 v0.6.15 tag、push tag、建立 GitHub Release
-scripts/release.sh 0.6.16 --push --tag --release --auto-notes
+# 建立 commit、push branch、建立 v0.6.17 tag、push tag、建立 GitHub Release
+scripts/release.sh 0.6.17 --push --tag --release --auto-notes
 
 # 使用 CHANGELOG 而非 GitHub generated notes
-scripts/release.sh 0.6.16 --push --tag --release
+scripts/release.sh 0.6.17 --push --tag --release
 ```
 
 注意：`scripts/release.sh` 會執行 `git add -A` 並 commit。若工作區有無關變更，會被一起納入；執行前請務必檢查 worktree。
