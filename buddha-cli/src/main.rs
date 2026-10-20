@@ -37,9 +37,15 @@ const EXIT_DATA_UNAVAILABLE: i32 = 12;
 // Global quiet flag (set once, read from progress! macro)
 // ---------------------------------------------------------------------------
 static QUIET: AtomicBool = AtomicBool::new(false);
+// Global readable-text flag (--text / BUDDHA_TEXT=1): wins over auto/forced JSON.
+static TEXT: AtomicBool = AtomicBool::new(false);
 
 pub(crate) fn is_quiet() -> bool {
     QUIET.load(Ordering::Relaxed)
+}
+
+pub(crate) fn text_mode() -> bool {
+    TEXT.load(Ordering::Relaxed)
 }
 
 /// Print progress messages to stderr (suppressed by --quiet or non-TTY+JSON).
@@ -56,6 +62,9 @@ macro_rules! progress {
 // JSON-mode detection
 // ---------------------------------------------------------------------------
 fn should_output_json(cli_json: bool, subcmd_json: bool) -> bool {
+    if TEXT.load(Ordering::Relaxed) {
+        return false;
+    }
     cli_json
         || subcmd_json
         || !std::io::stdout().is_terminal()
@@ -148,6 +157,9 @@ fn long_version() -> &'static str {
         Each corpus has search/fetch/pipeline commands. Use --json for structured MCP output.\n\
         Also serves as an MCP (Model Context Protocol) server via 'buddha mcp'.",
     after_long_help = "COMMON PATTERNS:\n\
+        Verify a quote:    buddha --text cbeta-search \"応無所住而生其心\"   (phrase; crosses lines/variants)\n\
+        Read its context:  buddha --text cbeta-fetch T235 --lb 0749c22 --context-before 2 --context-after 5\n\
+        Fetch any ID:      buddha --text fetch SZ13p0006   (T…/X… → cbeta, SZ… → shinzen, SKZ… → shoku-shinzen, DN… → tipitaka)\n\
         Search by title:   buddha cbeta-title-search --query \"般若\" --json\n\
         Fetch by ID:       buddha cbeta-fetch --id T0235 --json\n\
         Full-text search:  buddha cbeta-search --query \"般若波羅蜜\" --json\n\
@@ -155,7 +167,9 @@ fn long_version() -> &'static str {
         Cross-corpus:      buddha resolve --query \"法華経\" --json\n\
         Tibetan:           buddha tibetan-search --query \"བདེ་བ\" --json\n\
         浄土宗全書:          buddha jozen-search --query \"念仏\" --json\n\n\
-        JSON output follows MCP envelope: {jsonrpc, result: {content, _meta}}",
+        JSON output follows MCP envelope: {jsonrpc, result: {content, _meta}}.\n\
+        Piped stdout defaults to JSON; add --text (or BUDDHA_TEXT=1) for readable output.\n\
+        A bare first argument is taken as --query (search/resolve/catalog) or --id (fetch).",
     version = env!("BUDDHA_VERSION"),
     long_version = long_version()
 )]
@@ -167,6 +181,12 @@ struct Cli {
     /// Suppress progress messages on stderr
     #[arg(long, short = 'q', global = true)]
     quiet: bool,
+
+    /// Readable text output even when stdout is piped (overrides --json; env BUDDHA_TEXT=1).
+    /// Search lists page-line/line numbers with a ready-to-run fetch command; fetch prints a
+    /// citation header, the text, and the continuation command.
+    #[arg(long, global = true)]
+    text: bool,
 
     #[command(subcommand)]
     command: Commands,
@@ -214,7 +234,7 @@ enum Commands {
         #[arg(long, default_value_t = 100)]
         context_after: usize,
         /// Auto-fetch top files
-        #[arg(long, default_value_t = false)]
+        #[arg(long, action = clap::ArgAction::Set, num_args = 0..=1, default_missing_value = "true", default_value_t = false)]
         autofetch: bool,
         /// Number of files to auto-fetch (default 1 when autofetch)
         #[arg(long)]
@@ -235,7 +255,7 @@ enum Commands {
         #[arg(long)]
         highlight: Option<String>,
         /// Interpret highlight as regex
-        #[arg(long, default_value_t = false)]
+        #[arg(long, action = clap::ArgAction::Set, num_args = 0..=1, default_missing_value = "true", default_value_t = false)]
         highlight_regex: bool,
         /// Highlight prefix (fallback: $BUDDHA_HL_PREFIX or ">>> ")
         #[arg(long)]
@@ -250,10 +270,10 @@ enum Commands {
         #[arg(long)]
         snippet_suffix: Option<String>,
         /// Fetch full text instead of contexts
-        #[arg(long, default_value_t = false)]
+        #[arg(long, action = clap::ArgAction::Set, num_args = 0..=1, default_missing_value = "true", default_value_t = false)]
         full: bool,
         /// Include <note> in full text
-        #[arg(long, default_value_t = false)]
+        #[arg(long, action = clap::ArgAction::Set, num_args = 0..=1, default_missing_value = "true", default_value_t = false)]
         include_notes: bool,
         /// Output JSON envelope
         #[arg(long, action = clap::ArgAction::Set, num_args = 0..=1, default_missing_value = "true", default_value_t = true)]
@@ -276,7 +296,7 @@ enum Commands {
         #[arg(long, default_value_t = 10)]
         limit: usize,
         /// Output JSON
-        #[arg(long, default_value_t = false)]
+        #[arg(long, action = clap::ArgAction::Set, num_args = 0..=1, default_missing_value = "true", default_value_t = false)]
         json: bool,
     },
     /// Fetch GRETIL text content by file ID or title query.
@@ -296,16 +316,16 @@ enum Commands {
         #[arg(long)]
         query: Option<String>,
         /// Include <note> text
-        #[arg(long, default_value_t = false)]
+        #[arg(long, action = clap::ArgAction::Set, num_args = 0..=1, default_missing_value = "true", default_value_t = false)]
         include_notes: bool,
         /// Return full text (no slicing)
-        #[arg(long, default_value_t = false)]
+        #[arg(long, action = clap::ArgAction::Set, num_args = 0..=1, default_missing_value = "true", default_value_t = false)]
         full: bool,
         /// Highlight string or regex (with --line-number)
         #[arg(long)]
         highlight: Option<String>,
         /// Interpret highlight as regex
-        #[arg(long, default_value_t = false)]
+        #[arg(long, action = clap::ArgAction::Set, num_args = 0..=1, default_missing_value = "true", default_value_t = false)]
         highlight_regex: bool,
         /// Highlight prefix (with --highlight)
         #[arg(long)]
@@ -344,7 +364,7 @@ enum Commands {
         #[arg(long)]
         context_lines: Option<usize>,
         /// Output JSON
-        #[arg(long, default_value_t = false)]
+        #[arg(long, action = clap::ArgAction::Set, num_args = 0..=1, default_missing_value = "true", default_value_t = false)]
         json: bool,
     },
     /// Search GRETIL corpus by regex content match (offline full-text search).
@@ -367,7 +387,7 @@ enum Commands {
         #[arg(long, default_value_t = 5)]
         max_matches_per_file: usize,
         /// Output JSON
-        #[arg(long, default_value_t = false)]
+        #[arg(long, action = clap::ArgAction::Set, num_args = 0..=1, default_missing_value = "true", default_value_t = false)]
         json: bool,
     },
     /// Search MUKTABODHA Sanskrit library titles (index-based, offline).
@@ -384,7 +404,7 @@ enum Commands {
         #[arg(long, default_value_t = 10)]
         limit: usize,
         /// Output JSON
-        #[arg(long, default_value_t = false)]
+        #[arg(long, action = clap::ArgAction::Set, num_args = 0..=1, default_missing_value = "true", default_value_t = false)]
         json: bool,
     },
     /// Fetch MUKTABODHA text by file ID or title query.
@@ -399,16 +419,16 @@ enum Commands {
         #[arg(long)]
         query: Option<String>,
         /// Include <note> text (XML only)
-        #[arg(long, default_value_t = false)]
+        #[arg(long, action = clap::ArgAction::Set, num_args = 0..=1, default_missing_value = "true", default_value_t = false)]
         include_notes: bool,
         /// Return full text (no slicing)
-        #[arg(long, default_value_t = false)]
+        #[arg(long, action = clap::ArgAction::Set, num_args = 0..=1, default_missing_value = "true", default_value_t = false)]
         full: bool,
         /// Highlight string/regex pattern
         #[arg(long)]
         highlight: Option<String>,
         /// Interpret highlight as regex
-        #[arg(long, default_value_t = false)]
+        #[arg(long, action = clap::ArgAction::Set, num_args = 0..=1, default_missing_value = "true", default_value_t = false)]
         highlight_regex: bool,
         /// Highlight prefix
         #[arg(long)]
@@ -447,7 +467,7 @@ enum Commands {
         #[arg(long)]
         context_lines: Option<usize>,
         /// Output JSON
-        #[arg(long, default_value_t = false)]
+        #[arg(long, action = clap::ArgAction::Set, num_args = 0..=1, default_missing_value = "true", default_value_t = false)]
         json: bool,
     },
     /// Search MUKTABODHA Sanskrit corpus by regex (offline full-text search).
@@ -465,7 +485,7 @@ enum Commands {
         #[arg(long, default_value_t = 5)]
         max_matches_per_file: usize,
         /// Output JSON
-        #[arg(long, default_value_t = false)]
+        #[arg(long, action = clap::ArgAction::Set, num_args = 0..=1, default_missing_value = "true", default_value_t = false)]
         json: bool,
     },
     /// Search SARIT (TEI P5) titles by fuzzy matching (index-based, offline).
@@ -480,7 +500,7 @@ enum Commands {
         #[arg(long, default_value_t = 10)]
         limit: usize,
         /// Output JSON
-        #[arg(long, default_value_t = false)]
+        #[arg(long, action = clap::ArgAction::Set, num_args = 0..=1, default_missing_value = "true", default_value_t = false)]
         json: bool,
     },
     /// Fetch SARIT text by file ID or title query.
@@ -495,16 +515,16 @@ enum Commands {
         #[arg(long)]
         query: Option<String>,
         /// Include <note> text
-        #[arg(long, default_value_t = false)]
+        #[arg(long, action = clap::ArgAction::Set, num_args = 0..=1, default_missing_value = "true", default_value_t = false)]
         include_notes: bool,
         /// Return full text (no slicing)
-        #[arg(long, default_value_t = false)]
+        #[arg(long, action = clap::ArgAction::Set, num_args = 0..=1, default_missing_value = "true", default_value_t = false)]
         full: bool,
         /// Highlight string/regex pattern
         #[arg(long)]
         highlight: Option<String>,
         /// Interpret highlight as regex
-        #[arg(long, default_value_t = false)]
+        #[arg(long, action = clap::ArgAction::Set, num_args = 0..=1, default_missing_value = "true", default_value_t = false)]
         highlight_regex: bool,
         /// Highlight prefix
         #[arg(long)]
@@ -543,7 +563,7 @@ enum Commands {
         #[arg(long)]
         context_lines: Option<usize>,
         /// Output JSON
-        #[arg(long, default_value_t = false)]
+        #[arg(long, action = clap::ArgAction::Set, num_args = 0..=1, default_missing_value = "true", default_value_t = false)]
         json: bool,
     },
     /// Search SARIT corpus by regex (offline full-text search).
@@ -561,7 +581,7 @@ enum Commands {
         #[arg(long, default_value_t = 5)]
         max_matches_per_file: usize,
         /// Output JSON
-        #[arg(long, default_value_t = false)]
+        #[arg(long, action = clap::ArgAction::Set, num_args = 0..=1, default_missing_value = "true", default_value_t = false)]
         json: bool,
     },
     /// Search 真言宗全書 SHINZEN page titles by fuzzy matching (index-based, offline).
@@ -576,7 +596,7 @@ enum Commands {
         #[arg(long, default_value_t = 10)]
         limit: usize,
         /// Output JSON
-        #[arg(long, default_value_t = false)]
+        #[arg(long, action = clap::ArgAction::Set, num_args = 0..=1, default_missing_value = "true", default_value_t = false)]
         json: bool,
     },
     /// Fetch SHINZEN text by page ID or title query.
@@ -596,13 +616,13 @@ enum Commands {
         #[arg(long)]
         format: Option<String>,
         /// Return full text (no slicing)
-        #[arg(long, default_value_t = false)]
+        #[arg(long, action = clap::ArgAction::Set, num_args = 0..=1, default_missing_value = "true", default_value_t = false)]
         full: bool,
         /// Highlight string/regex pattern
         #[arg(long)]
         highlight: Option<String>,
         /// Interpret highlight as regex
-        #[arg(long, default_value_t = false)]
+        #[arg(long, action = clap::ArgAction::Set, num_args = 0..=1, default_missing_value = "true", default_value_t = false)]
         highlight_regex: bool,
         /// Highlight prefix
         #[arg(long)]
@@ -638,7 +658,7 @@ enum Commands {
         #[arg(long)]
         context_lines: Option<usize>,
         /// Output JSON
-        #[arg(long, default_value_t = false)]
+        #[arg(long, action = clap::ArgAction::Set, num_args = 0..=1, default_missing_value = "true", default_value_t = false)]
         json: bool,
     },
     /// Search SHINZEN corpus by regex over extracted line text (offline full-text search).
@@ -646,7 +666,9 @@ enum Commands {
     /// Related: shinzen-title-search, shinzen-fetch
     #[command(after_help = "EXAMPLES:\n  buddha shinzen-search --query \"法身偈\" --json")]
     ShinzenSearch {
-        /// Query string (regular expression)
+        /// Query. Plain text (or `A|B`) is a phrase that ignores okurigana, return marks,
+        /// punctuation, line breaks and CJK variants (白文 such as 六大無礙常瑜伽 works);
+        /// text with other regex syntax is a regex over each extracted line.
         #[arg(long)]
         query: String,
         /// Maximum number of files to return
@@ -656,7 +678,7 @@ enum Commands {
         #[arg(long, default_value_t = 5)]
         max_matches_per_file: usize,
         /// Output JSON
-        #[arg(long, default_value_t = false)]
+        #[arg(long, action = clap::ArgAction::Set, num_args = 0..=1, default_missing_value = "true", default_value_t = false)]
         json: bool,
     },
     /// SHINZEN summarize/context pipeline.
@@ -672,7 +694,7 @@ enum Commands {
         #[arg(long, default_value_t = 3)]
         max_matches_per_file: usize,
         /// Output JSON
-        #[arg(long, default_value_t = false)]
+        #[arg(long, action = clap::ArgAction::Set, num_args = 0..=1, default_missing_value = "true", default_value_t = false)]
         json: bool,
     },
     /// Search precomputed SHINZEN work catalog (title/author/range).
@@ -692,7 +714,7 @@ enum Commands {
         #[arg(long, default_value_t = 20)]
         limit: usize,
         /// Output JSON
-        #[arg(long, default_value_t = false)]
+        #[arg(long, action = clap::ArgAction::Set, num_args = 0..=1, default_missing_value = "true", default_value_t = false)]
         json: bool,
     },
     /// Search 続真言宗全書 SHOKU_SHINZEN page titles by fuzzy matching (index-based, offline).
@@ -709,7 +731,7 @@ enum Commands {
         #[arg(long, default_value_t = 10)]
         limit: usize,
         /// Output JSON
-        #[arg(long, default_value_t = false)]
+        #[arg(long, action = clap::ArgAction::Set, num_args = 0..=1, default_missing_value = "true", default_value_t = false)]
         json: bool,
     },
     /// Fetch SHOKU_SHINZEN text by page ID or title query.
@@ -729,13 +751,13 @@ enum Commands {
         #[arg(long)]
         format: Option<String>,
         /// Return full text (no slicing)
-        #[arg(long, default_value_t = false)]
+        #[arg(long, action = clap::ArgAction::Set, num_args = 0..=1, default_missing_value = "true", default_value_t = false)]
         full: bool,
         /// Highlight string/regex pattern
         #[arg(long)]
         highlight: Option<String>,
         /// Interpret highlight as regex
-        #[arg(long, default_value_t = false)]
+        #[arg(long, action = clap::ArgAction::Set, num_args = 0..=1, default_missing_value = "true", default_value_t = false)]
         highlight_regex: bool,
         /// Highlight prefix
         #[arg(long)]
@@ -771,7 +793,7 @@ enum Commands {
         #[arg(long)]
         context_lines: Option<usize>,
         /// Output JSON
-        #[arg(long, default_value_t = false)]
+        #[arg(long, action = clap::ArgAction::Set, num_args = 0..=1, default_missing_value = "true", default_value_t = false)]
         json: bool,
     },
     /// Search SHOKU_SHINZEN corpus by regex over extracted line text.
@@ -779,7 +801,9 @@ enum Commands {
     /// Related: shoku-shinzen-title-search, shoku-shinzen-fetch
     #[command(after_help = "EXAMPLES:\n  buddha shoku-shinzen-search --query \"護摩\" --json")]
     ShokuShinzenSearch {
-        /// Query string (regular expression)
+        /// Query. Plain text (or `A|B`) is a phrase that ignores okurigana, return marks,
+        /// punctuation, line breaks and CJK variants (白文 such as 六大無礙常瑜伽 works);
+        /// text with other regex syntax is a regex over each extracted line.
         #[arg(long)]
         query: String,
         /// Maximum number of files to return
@@ -789,7 +813,7 @@ enum Commands {
         #[arg(long, default_value_t = 5)]
         max_matches_per_file: usize,
         /// Output JSON
-        #[arg(long, default_value_t = false)]
+        #[arg(long, action = clap::ArgAction::Set, num_args = 0..=1, default_missing_value = "true", default_value_t = false)]
         json: bool,
     },
     /// SHOKU_SHINZEN summarize/context pipeline.
@@ -805,7 +829,7 @@ enum Commands {
         #[arg(long, default_value_t = 3)]
         max_matches_per_file: usize,
         /// Output JSON
-        #[arg(long, default_value_t = false)]
+        #[arg(long, action = clap::ArgAction::Set, num_args = 0..=1, default_missing_value = "true", default_value_t = false)]
         json: bool,
     },
     /// Build SHOKU_SHINZEN index under ~/.buddha/cache/shoku-shinzen-index.json
@@ -832,13 +856,13 @@ enum Commands {
         #[arg(long, default_value_t = 20)]
         limit: usize,
         /// Output JSON
-        #[arg(long, default_value_t = false)]
+        #[arg(long, action = clap::ArgAction::Set, num_args = 0..=1, default_missing_value = "true", default_value_t = false)]
         json: bool,
     },
     /// List OCR corrections (校訂) for SHOKU_SHINZEN.
     ShokuShinzenCorrections {
         /// Output JSON
-        #[arg(long, default_value_t = false)]
+        #[arg(long, action = clap::ArgAction::Set, num_args = 0..=1, default_missing_value = "true", default_value_t = false)]
         json: bool,
     },
     /// Build SHOKU_SHINZEN work catalog under ~/.buddha/cache/shoku-shinzen-work-catalog.json
@@ -874,7 +898,7 @@ enum Commands {
         #[arg(long, default_value_t = 400)]
         max_snippet_chars: usize,
         /// Output JSON (MCP envelope)
-        #[arg(long, default_value_t = false)]
+        #[arg(long, action = clap::ArgAction::Set, num_args = 0..=1, default_missing_value = "true", default_value_t = false)]
         json: bool,
     },
     /// Fetch a 浄土宗全書 page by lineno identifier.
@@ -898,7 +922,7 @@ enum Commands {
         #[arg(long)]
         max_chars: Option<usize>,
         /// Output JSON (MCP envelope)
-        #[arg(long, default_value_t = false)]
+        #[arg(long, action = clap::ArgAction::Set, num_args = 0..=1, default_missing_value = "true", default_value_t = false)]
         json: bool,
     },
     /// Search Tibetan text corpora (Adarsha + BUDA).
@@ -928,10 +952,10 @@ enum Commands {
         #[arg(long, default_value_t = 400)]
         max_snippet_chars: usize,
         /// Enable wildcard search (Adarsha only)
-        #[arg(long, default_value_t = false)]
+        #[arg(long, action = clap::ArgAction::Set, num_args = 0..=1, default_missing_value = "true", default_value_t = false)]
         wildcard: bool,
         /// Output JSON (MCP envelope)
-        #[arg(long, default_value_t = false)]
+        #[arg(long, action = clap::ArgAction::Set, num_args = 0..=1, default_missing_value = "true", default_value_t = false)]
         json: bool,
     },
     /// Fetch Tibetan source text or fetchability metadata from Adarsha / BUDA.
@@ -985,7 +1009,7 @@ enum Commands {
         #[arg(long)]
         max_chars: Option<usize>,
         /// Output JSON (MCP envelope)
-        #[arg(long, default_value_t = false)]
+        #[arg(long, action = clap::ArgAction::Set, num_args = 0..=1, default_missing_value = "true", default_value_t = false)]
         json: bool,
     },
     /// Resolve a text identifier or title across all corpora.
@@ -1021,7 +1045,7 @@ enum Commands {
         #[arg(long, default_value_t = 0.1)]
         min_score: f32,
         /// Output JSON (MCP envelope)
-        #[arg(long, default_value_t = false)]
+        #[arg(long, action = clap::ArgAction::Set, num_args = 0..=1, default_missing_value = "true", default_value_t = false)]
         json: bool,
     },
     /// Print CLI version
@@ -1029,13 +1053,13 @@ enum Commands {
     /// Diagnose install and data directories
     Doctor {
         /// Verbose output
-        #[arg(long, default_value_t = false)]
+        #[arg(long, action = clap::ArgAction::Set, num_args = 0..=1, default_missing_value = "true", default_value_t = false)]
         verbose: bool,
     },
     /// Uninstall binaries from $BUDDHA_DIR/bin (and optionally data/cache)
     Uninstall {
         /// Also remove data (xml-p5, tipitaka-xml, SARIT-corpus, MUKTABODHA) and cache under $BUDDHA_DIR
-        #[arg(long, default_value_t = false)]
+        #[arg(long, action = clap::ArgAction::Set, num_args = 0..=1, default_missing_value = "true", default_value_t = false)]
         purge: bool,
     },
     /// Update this CLI via cargo-install
@@ -1044,7 +1068,7 @@ enum Commands {
         #[arg(long)]
         git: Option<String>,
         /// Execute the install instead of just printing the command
-        #[arg(long, default_value_t = false)]
+        #[arg(long, action = clap::ArgAction::Set, num_args = 0..=1, default_missing_value = "true", default_value_t = false)]
         yes: bool,
     },
     /// Search CBETA Chinese Buddhist texts and auto-fetch contexts (pipeline).
@@ -1073,7 +1097,7 @@ enum Commands {
         #[arg(long, default_value_t = 100)]
         context_after: usize,
         /// Auto-fetch top files
-        #[arg(long, default_value_t = false)]
+        #[arg(long, action = clap::ArgAction::Set, num_args = 0..=1, default_missing_value = "true", default_value_t = false)]
         autofetch: bool,
         /// Number of files to auto-fetch (default 1 when autofetch)
         #[arg(long)]
@@ -1094,7 +1118,7 @@ enum Commands {
         #[arg(long)]
         highlight: Option<String>,
         /// Interpret highlight as regex
-        #[arg(long, default_value_t = false)]
+        #[arg(long, action = clap::ArgAction::Set, num_args = 0..=1, default_missing_value = "true", default_value_t = false)]
         highlight_regex: bool,
         /// Highlight prefix (fallback: $BUDDHA_HL_PREFIX or ">>> ")
         #[arg(long)]
@@ -1109,10 +1133,10 @@ enum Commands {
         #[arg(long)]
         snippet_suffix: Option<String>,
         /// Fetch full text instead of contexts
-        #[arg(long, default_value_t = false)]
+        #[arg(long, action = clap::ArgAction::Set, num_args = 0..=1, default_missing_value = "true", default_value_t = false)]
         full: bool,
         /// Include <note> in full text
-        #[arg(long, default_value_t = false)]
+        #[arg(long, action = clap::ArgAction::Set, num_args = 0..=1, default_missing_value = "true", default_value_t = false)]
         include_notes: bool,
         /// Output JSON envelope
         #[arg(long, action = clap::ArgAction::Set, num_args = 0..=1, default_missing_value = "true", default_value_t = true)]
@@ -1134,7 +1158,7 @@ enum Commands {
         #[arg(long, default_value_t = 10)]
         limit: usize,
         /// Output JSON
-        #[arg(long, default_value_t = false)]
+        #[arg(long, action = clap::ArgAction::Set, num_args = 0..=1, default_missing_value = "true", default_value_t = false)]
         json: bool,
     },
     /// Fetch CBETA text content by canonical ID (e.g., T0235) or title query.
@@ -1157,16 +1181,16 @@ enum Commands {
         #[arg(long)]
         part: Option<String>,
         /// Include <note> text
-        #[arg(long, default_value_t = false)]
+        #[arg(long, action = clap::ArgAction::Set, num_args = 0..=1, default_missing_value = "true", default_value_t = false)]
         include_notes: bool,
         /// Return full text (no slicing)
-        #[arg(long, default_value_t = false)]
+        #[arg(long, action = clap::ArgAction::Set, num_args = 0..=1, default_missing_value = "true", default_value_t = false)]
         full: bool,
         /// Highlight string or regex (with --line-number)
         #[arg(long)]
         highlight: Option<String>,
         /// Interpret highlight as regex
-        #[arg(long, default_value_t = false)]
+        #[arg(long, action = clap::ArgAction::Set, num_args = 0..=1, default_missing_value = "true", default_value_t = false)]
         highlight_regex: bool,
         /// Highlight prefix (with --highlight)
         #[arg(long)]
@@ -1195,6 +1219,10 @@ enum Commands {
         /// Target line number for context extraction
         #[arg(long)]
         line_number: Option<usize>,
+        /// Target CBETA page-line marker (e.g. 0749a15, from search `lb`); stabler than
+        /// --line-number and used for citation. Takes precedence over --line-number.
+        #[arg(long)]
+        lb: Option<String>,
         /// Number of lines before target line (default: 10)
         #[arg(long, default_value_t = 10)]
         context_before: usize,
@@ -1205,7 +1233,7 @@ enum Commands {
         #[arg(long)]
         context_lines: Option<usize>,
         /// Output JSON
-        #[arg(long, default_value_t = false)]
+        #[arg(long, action = clap::ArgAction::Set, num_args = 0..=1, default_missing_value = "true", default_value_t = false)]
         json: bool,
     },
     /// Search SAT Daizōkyō Text Database (online via wrap7 API).
@@ -1231,7 +1259,7 @@ enum Commands {
         #[arg(long, action = clap::ArgAction::Set, num_args = 0..=1, default_missing_value = "true", default_value_t = true)]
         exact: bool,
         /// Titles only filter (client-side)
-        #[arg(long, default_value_t = false)]
+        #[arg(long, action = clap::ArgAction::Set, num_args = 0..=1, default_missing_value = "true", default_value_t = false)]
         titles_only: bool,
         /// Fields to return (wrap7 `fl`), comma-separated. `startid` is the SAT detail useid for the containing text/fascicle; not a match-level line anchor. Default excludes body.
         #[arg(long, default_value = "id,fascnm,fascnum,startid,endid")]
@@ -1240,7 +1268,7 @@ enum Commands {
         #[arg(long)]
         fq: Vec<String>,
         /// Auto run pipeline (pick best title and fetch detail)
-        #[arg(long, default_value_t = false)]
+        #[arg(long, action = clap::ArgAction::Set, num_args = 0..=1, default_missing_value = "true", default_value_t = false)]
         autofetch: bool,
         /// Slice offset in extracted SAT detail text for autofetch; not an offset into sat-search body and not a match offset.
         #[arg(long)]
@@ -1249,7 +1277,7 @@ enum Commands {
         #[arg(long)]
         max_chars: Option<usize>,
         /// Output JSON
-        #[arg(long, default_value_t = false)]
+        #[arg(long, action = clap::ArgAction::Set, num_args = 0..=1, default_missing_value = "true", default_value_t = false)]
         json: bool,
     },
     /// Fetch SAT text detail by URL or useid (online).
@@ -1268,7 +1296,7 @@ enum Commands {
         #[arg(long)]
         max_chars: Option<usize>,
         /// Output JSON
-        #[arg(long, default_value_t = false)]
+        #[arg(long, action = clap::ArgAction::Set, num_args = 0..=1, default_missing_value = "true", default_value_t = false)]
         json: bool,
     },
     /// Fetch SAT detail page by useid/key (online).
@@ -1285,7 +1313,7 @@ enum Commands {
         #[arg(long)]
         max_chars: Option<usize>,
         /// Output JSON
-        #[arg(long, default_value_t = false)]
+        #[arg(long, action = clap::ArgAction::Set, num_args = 0..=1, default_missing_value = "true", default_value_t = false)]
         json: bool,
     },
     /// Search SAT, select best title, then fetch full text (pipeline).
@@ -1332,7 +1360,7 @@ enum Commands {
         #[arg(long, default_value_t = 10)]
         limit: usize,
         /// Output JSON
-        #[arg(long, default_value_t = false)]
+        #[arg(long, action = clap::ArgAction::Set, num_args = 0..=1, default_missing_value = "true", default_value_t = false)]
         json: bool,
     },
     /// Fetch Tipitaka text by file stem ID or title query.
@@ -1364,7 +1392,7 @@ enum Commands {
         #[arg(long)]
         highlight: Option<String>,
         /// Interpret highlight as regex
-        #[arg(long, default_value_t = false)]
+        #[arg(long, action = clap::ArgAction::Set, num_args = 0..=1, default_missing_value = "true", default_value_t = false)]
         highlight_regex: bool,
         /// Highlight prefix (with --highlight)
         #[arg(long)]
@@ -1400,7 +1428,7 @@ enum Commands {
         #[arg(long)]
         context_lines: Option<usize>,
         /// Output JSON
-        #[arg(long, default_value_t = false)]
+        #[arg(long, action = clap::ArgAction::Set, num_args = 0..=1, default_missing_value = "true", default_value_t = false)]
         json: bool,
     },
     /// Build CBETA index under ~/.buddha/cache/cbeta-index.json
@@ -1473,7 +1501,9 @@ enum Commands {
     /// Related: cbeta-title-search, cbeta-fetch, cbeta-pipeline
     #[command(after_help = "EXAMPLES:\n  buddha cbeta-search --query \"般若波羅蜜\" --json")]
     CbetaSearch {
-        /// Query string (regular expression)
+        /// Query. Plain text (or `A|B` alternatives) is matched as a phrase that ignores
+        /// punctuation, line breaks, markup, inline notes and CJK variants (応=應, 説=說);
+        /// any other regex syntax is used as a raw regex over each XML line.
         #[arg(long)]
         query: String,
         /// Maximum number of files to return
@@ -1482,8 +1512,11 @@ enum Commands {
         /// Maximum matches per file
         #[arg(long, default_value_t = 5)]
         max_matches_per_file: usize,
+        /// File order/selection: canon (Taishō first, by text number) or matches (most hits first)
+        #[arg(long, default_value = "canon", value_parser = ["canon", "matches"])]
+        sort: String,
         /// Output JSON
-        #[arg(long, default_value_t = false)]
+        #[arg(long, action = clap::ArgAction::Set, num_args = 0..=1, default_missing_value = "true", default_value_t = false)]
         json: bool,
     },
     /// Search Tipitaka corpus by regex (offline full-text search).
@@ -1501,7 +1534,7 @@ enum Commands {
         #[arg(long, default_value_t = 5)]
         max_matches_per_file: usize,
         /// Output JSON
-        #[arg(long, default_value_t = false)]
+        #[arg(long, action = clap::ArgAction::Set, num_args = 0..=1, default_missing_value = "true", default_value_t = false)]
         json: bool,
     },
     /// Output command schema as JSON for AI agent discovery.
@@ -1654,8 +1687,116 @@ fn main() {
     std::process::exit(code);
 }
 
+/// Fetch subcommand for an ID by its prefix (used by `buddha fetch <ID>`).
+fn fetch_command_for_id(id: &str) -> Option<&'static str> {
+    let up = id.trim().to_ascii_uppercase();
+    let starts_digit = |p: &str| {
+        up.strip_prefix(p)
+            .and_then(|r| r.chars().next())
+            .is_some_and(|c| c.is_ascii_digit())
+    };
+    if starts_digit("SKZW") || starts_digit("SKZ") {
+        Some("shoku-shinzen-fetch")
+    } else if starts_digit("SZW") || starts_digit("SZ") {
+        Some("shinzen-fetch")
+    } else if ["DN", "MN", "SN", "AN", "KN"]
+        .iter()
+        .any(|p| starts_digit(p))
+        || up.ends_with(".MUL")
+        || up.ends_with(".ATT")
+        || up.ends_with(".TIK")
+    {
+        Some("tipitaka-fetch")
+    } else if regex::Regex::new(r"^[A-Z]{1,2}\d")
+        .map(|re| re.is_match(&up))
+        .unwrap_or(false)
+    {
+        Some("cbeta-fetch")
+    } else {
+        None
+    }
+}
+
+/// Accept the shapes agents naturally type and map them onto the strict subcommands:
+/// `buddha fetch <ID> …` → the corpus fetch for that ID prefix, `buddha search --source X …`
+/// → `X-search …`, and a bare first argument → `--query` (search/resolve/catalog/pipeline)
+/// or `--id` (fetch).
+fn normalize_argv(mut argv: Vec<std::ffi::OsString>) -> Vec<std::ffi::OsString> {
+    let Some(sub_ix) = argv
+        .iter()
+        .skip(1)
+        .position(|a| !a.to_string_lossy().starts_with('-'))
+        .map(|i| i + 1)
+    else {
+        return argv;
+    };
+    let bare_next = |argv: &Vec<std::ffi::OsString>| {
+        argv.get(sub_ix + 1)
+            .map(|a| a.to_string_lossy().to_string())
+            .filter(|a| !a.starts_with("--"))
+    };
+    let sub = argv[sub_ix].to_string_lossy().to_string();
+    if sub == "fetch" {
+        let id = bare_next(&argv).or_else(|| {
+            argv.iter()
+                .position(|a| a == "--id")
+                .and_then(|i| argv.get(i + 1))
+                .map(|a| a.to_string_lossy().to_string())
+        });
+        let cmd = id.as_deref().and_then(fetch_command_for_id);
+        // An ID we cannot route (a title, GRETIL/SARIT stem …) goes to cross-corpus resolve.
+        argv[sub_ix] = cmd.unwrap_or("resolve").into();
+        if bare_next(&argv).is_some() {
+            argv.insert(
+                sub_ix + 1,
+                if cmd.is_some() { "--id" } else { "--query" }.into(),
+            );
+        } else if cmd.is_none() {
+            if let Some(i) = argv.iter().position(|a| a == "--id") {
+                argv[i] = "--query".into();
+            }
+        }
+        return argv;
+    }
+    if sub == "search" {
+        if let Some(i) = argv.iter().position(|a| a == "--source") {
+            if let Some(src) = argv
+                .get(i + 1)
+                .map(|a| a.to_string_lossy().replace('_', "-"))
+            {
+                argv.drain(i..=i + 1);
+                argv[sub_ix] = format!("{}-search", src).into();
+            }
+        }
+    }
+    let sub = argv[sub_ix].to_string_lossy().to_string();
+    if bare_next(&argv).is_some() {
+        let takes_id = matches!(
+            sub.as_str(),
+            "cbeta-fetch"
+                | "gretil-fetch"
+                | "sarit-fetch"
+                | "muktabodha-fetch"
+                | "tipitaka-fetch"
+                | "shinzen-fetch"
+                | "shoku-shinzen-fetch"
+                | "tibetan-fetch"
+        );
+        let takes_query = sub.ends_with("-search")
+            || sub.ends_with("-pipeline")
+            || sub.ends_with("-work-catalog")
+            || sub == "resolve";
+        if takes_id {
+            argv.insert(sub_ix + 1, "--id".into());
+        } else if takes_query {
+            argv.insert(sub_ix + 1, "--query".into());
+        }
+    }
+    argv
+}
+
 fn run_cli() -> i32 {
-    let cli = match Cli::try_parse() {
+    let cli = match Cli::try_parse_from(normalize_argv(env::args_os().collect())) {
         Ok(cli) => cli,
         Err(error) => {
             let code = error.exit_code();
@@ -1672,6 +1813,13 @@ fn run_cli() -> i32 {
     // Set global quiet flag
     if cli.quiet {
         QUIET.store(true, Ordering::Relaxed);
+    }
+    if cli.text
+        || env::var("BUDDHA_TEXT")
+            .map(|v| v == "1" || v == "true")
+            .unwrap_or(false)
+    {
+        TEXT.store(true, Ordering::Relaxed);
     }
 
     // Determine effective JSON mode from global flag
@@ -1762,6 +1910,7 @@ fn run_cli() -> i32 {
                 page,
                 page_size,
                 line_number,
+                lb,
                 context_before,
                 context_after,
                 context_lines,
@@ -1784,6 +1933,7 @@ fn run_cli() -> i32 {
                     page,
                     page_size,
                     line_number,
+                    lb,
                     context_before,
                     context_after,
                     context_lines,
@@ -2653,12 +2803,17 @@ fn run_cli() -> i32 {
                 query,
                 max_results,
                 max_matches_per_file,
+                sort,
                 json,
             } => {
+                let order = sort
+                    .parse::<buddha_core::GrepOrder>()
+                    .map_err(anyhow::Error::msg)?;
                 cmd_cbeta::cbeta_search(
                     &query,
                     max_results,
                     max_matches_per_file,
+                    order,
                     should_output_json(global_json, json),
                 )?;
             }
@@ -3166,38 +3321,6 @@ fn scored_cmp(
     }
 }
 
-fn topk_insert<'a>(
-    top: &mut Vec<(f32, &'a buddha_core::IndexEntry)>,
-    cand: (f32, &'a buddha_core::IndexEntry),
-    limit: usize,
-) {
-    if limit == 0 {
-        return;
-    }
-    if top.len() == limit {
-        if let Some(worst) = top.last() {
-            if scored_cmp(&cand, worst) != std::cmp::Ordering::Less {
-                return;
-            }
-        }
-    }
-    let mut pos = top.len();
-    for i in 0..top.len() {
-        if scored_cmp(&cand, &top[i]) == std::cmp::Ordering::Less {
-            pos = i;
-            break;
-        }
-    }
-    if pos == top.len() {
-        top.push(cand);
-    } else {
-        top.insert(pos, cand);
-    }
-    if top.len() > limit {
-        top.truncate(limit);
-    }
-}
-
 pub(crate) fn best_match<'a>(
     entries: &'a [buddha_core::IndexEntry],
     q: &str,
@@ -3205,7 +3328,9 @@ pub(crate) fn best_match<'a>(
 ) -> Vec<ScoredHit<'a>> {
     let pq = PrecomputedQuery::new(q, false);
     let nq = pq.normalized();
-    let mut top: Vec<(f32, &buddha_core::IndexEntry)> = Vec::with_capacity(limit.min(32));
+    // Score everything, then order by the full key below: a top-k cut on score alone
+    // would let id order decide which of many 1.0 ties survive.
+    let mut top: Vec<(f32, &buddha_core::IndexEntry)> = Vec::with_capacity(entries.len());
     for e in entries.iter() {
         let mut s = compute_match_score_precomputed(e, &pq);
         if let Some(meta) = &e.meta {
@@ -3218,8 +3343,38 @@ pub(crate) fn best_match<'a>(
                 }
             }
         }
-        topk_insert(&mut top, (s, e), limit);
+        if s > 0.0 {
+            top.push((s, e));
+        }
     }
+    // Many entries reach the 1.0 ceiling (a heading or note merely contains the query).
+    // Break ties by how the *title* matches, then Taishō first, then text number (sūtras
+    // before commentaries), so 金剛般若 → T08n0235 金剛般若波羅蜜經 rather than a commentary.
+    let key = |e: &buddha_core::IndexEntry| {
+        let nt = normalized(&e.title);
+        let rank = if nq.is_empty() {
+            0
+        } else if nt == nq {
+            4
+        } else if nt.starts_with(nq) {
+            3
+        } else if nt.contains(nq) {
+            2
+        } else if buddha_core::text_utils::is_subsequence(&nt, nq) {
+            1
+        } else {
+            0
+        };
+        let taisho = e.id.starts_with('T') && e.id[1..].starts_with(|c: char| c.is_ascii_digit());
+        (std::cmp::Reverse(rank), !taisho)
+    };
+    top.sort_by(|a, b| {
+        b.0.partial_cmp(&a.0)
+            .unwrap_or(std::cmp::Ordering::Equal)
+            .then_with(|| key(a.1).cmp(&key(b.1)))
+            .then_with(|| a.1.id.cmp(&b.1.id))
+    });
+    top.truncate(limit);
     top.into_iter()
         .map(|(s, e)| ScoredHit { entry: e, score: s })
         .collect()
@@ -3792,6 +3947,77 @@ use cmd::{
     cbeta as cmd_cbeta, gretil as cmd_gretil, muktabodha as cmd_muktabodha, sarit as cmd_sarit,
     shinzen as cmd_shinzen, shoku_shinzen as cmd_shoku_shinzen, tipitaka as cmd_tipitaka,
 };
+
+#[cfg(test)]
+mod argv_tests {
+    use super::*;
+
+    fn norm(args: &[&str]) -> Vec<String> {
+        normalize_argv(args.iter().map(|a| a.into()).collect())
+            .into_iter()
+            .map(|a| a.to_string_lossy().to_string())
+            .collect()
+    }
+
+    #[test]
+    fn bare_arguments_become_query_or_id() {
+        assert_eq!(
+            norm(&[
+                "buddha",
+                "--text",
+                "cbeta-search",
+                "布施",
+                "--max-results",
+                "3"
+            ]),
+            [
+                "buddha",
+                "--text",
+                "cbeta-search",
+                "--query",
+                "布施",
+                "--max-results",
+                "3"
+            ]
+        );
+        assert_eq!(
+            norm(&["buddha", "cbeta-fetch", "T235", "--lb", "0749a15"]),
+            ["buddha", "cbeta-fetch", "--id", "T235", "--lb", "0749a15"]
+        );
+        assert_eq!(
+            norm(&["buddha", "cbeta-search", "--query", "x"]),
+            ["buddha", "cbeta-search", "--query", "x"]
+        );
+    }
+
+    #[test]
+    fn fetch_and_search_aliases_route_by_id_and_source() {
+        assert_eq!(
+            norm(&["buddha", "fetch", "SZ13p0006"]),
+            ["buddha", "shinzen-fetch", "--id", "SZ13p0006"]
+        );
+        assert_eq!(
+            norm(&["buddha", "fetch", "SKZW0001"]),
+            ["buddha", "shoku-shinzen-fetch", "--id", "SKZW0001"]
+        );
+        assert_eq!(
+            norm(&["buddha", "fetch", "--id", "T0235"]),
+            ["buddha", "cbeta-fetch", "--id", "T0235"]
+        );
+        assert_eq!(
+            norm(&["buddha", "fetch", "DN1"]),
+            ["buddha", "tipitaka-fetch", "--id", "DN1"]
+        );
+        assert_eq!(
+            norm(&["buddha", "fetch", "般若心経"]),
+            ["buddha", "resolve", "--query", "般若心経"]
+        );
+        assert_eq!(
+            norm(&["buddha", "search", "--source", "shoku_shinzen", "護摩"]),
+            ["buddha", "shoku-shinzen-search", "--query", "護摩"]
+        );
+    }
+}
 
 #[cfg(test)]
 mod tests {

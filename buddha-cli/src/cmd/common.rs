@@ -184,6 +184,8 @@ pub(crate) enum SearchExtra {
 }
 
 pub(crate) fn corpus_grep_summary(
+    fetch_cmd: &str,
+    total_matched: Option<usize>,
     pattern: &str,
     results: &[buddha_core::GrepResult],
     hint: &str,
@@ -191,12 +193,16 @@ pub(crate) fn corpus_grep_summary(
     extra: SearchExtra,
 ) -> anyhow::Result<()> {
     if json {
-        let meta = serde_json::json!({
+        let mut meta = serde_json::json!({
             "searchPattern": pattern,
             "totalFiles": results.len(),
             "results": results,
             "hint": hint
         });
+        if let Some(total) = total_matched {
+            // Files that matched before --max-results truncation.
+            meta["totalFilesMatched"] = serde_json::json!(total);
+        }
         let summary = format!(
             "Found {} files with matches for '{}'",
             results.len(),
@@ -208,55 +214,161 @@ pub(crate) fn corpus_grep_summary(
         });
         println!("{}", serde_json::to_string(&envelope)?);
     } else {
-        println!(
-            "Found {} files with matches for '{}':\n",
-            results.len(),
-            pattern
+        print!(
+            "{}",
+            render_grep_text(fetch_cmd, total_matched, results, extra)
         );
-        for (i, result) in results.iter().enumerate() {
-            println!("{}. {} ({})", i + 1, result.title, result.file_id);
-            println!(
-                "   {} matches, {}",
-                result.total_matches,
-                result
-                    .fetch_hints
-                    .total_content_size
-                    .as_deref()
-                    .unwrap_or("unknown size")
-            );
-            for (j, m) in result.matches.iter().enumerate().take(2) {
-                println!(
-                    "   Match {}: ...{}...",
-                    j + 1,
-                    m.context.chars().take(100).collect::<String>()
-                );
-            }
-            if result.matches.len() > 2 {
-                println!("   ... and {} more matches", result.matches.len() - 2);
-            }
-            match extra {
-                SearchExtra::RecommendedParts => {
-                    if !result.fetch_hints.recommended_parts.is_empty() {
-                        println!(
-                            "   Recommended parts: {}",
-                            result.fetch_hints.recommended_parts.join(", ")
-                        );
-                    }
-                }
-                SearchExtra::Structure => {
-                    if !result.fetch_hints.structure_info.is_empty() {
-                        println!(
-                            "   Structure: {}",
-                            result.fetch_hints.structure_info.join(", ")
-                        );
-                    }
-                }
-                SearchExtra::None => {}
-            }
-            println!();
-        }
     }
     Ok(())
+}
+
+/// Text-mode rendering of a fetch whose `_meta` carries `matchedId` / `preferredCitation`
+/// (SHINZEN, SHOKU_SHINZEN): citation header, body, continuation hint.
+pub(crate) fn print_text_fetch(meta: &serde_json::Value, body: &str) {
+    let id = meta.get("matchedId").and_then(|v| v.as_str()).unwrap_or("");
+    let cite = meta
+        .get("preferredCitation")
+        .and_then(|v| v.as_str())
+        .unwrap_or("");
+    let mut head = id.to_string();
+    if !cite.is_empty() {
+        head.push_str("  ");
+        head.push_str(cite);
+    }
+    if let Some(work) = meta
+        .get("work")
+        .and_then(|w| w.get("id"))
+        .and_then(|v| v.as_str())
+    {
+        let conf = meta["work"]["confidence"].as_str().unwrap_or("");
+        head.push_str(&format!("  [{} {}]", work, conf));
+    }
+    println!("# {}", head.trim());
+    println!("{}", body);
+    if let Some(obj) = meta.as_object() {
+        print_text_continuation(obj);
+    }
+}
+
+/// Text-mode footer for a sliced fetch: where the slice ends and how to continue.
+pub(crate) fn print_text_continuation(pagination: &serde_json::Map<String, serde_json::Value>) {
+    if let Some(next) = pagination.get("nextStartChar") {
+        println!(
+            "# truncated: chars {}-{} of {}; continue with --start-char {}",
+            pagination["returnedStart"], pagination["returnedEnd"], pagination["totalLength"], next
+        );
+    }
+}
+
+/// One readable line of matched text: tags and whitespace dropped, length capped.
+pub(crate) fn plain_snippet(raw: &str, max_chars: usize) -> String {
+    let plain = buddha_core::strip_xml_tags(raw);
+    if plain.chars().count() <= max_chars {
+        plain
+    } else {
+        let mut s: String = plain.chars().take(max_chars).collect();
+        s.push('…');
+        s
+    }
+}
+
+/// Text rendering of search hits for humans and agents: every match carries its
+/// location (page-line `lb` when known, XML/TEI line number otherwise) and the exact
+/// fetch command that returns its context.
+pub(crate) fn render_grep_text(
+    fetch_cmd: &str,
+    total_matched: Option<usize>,
+    results: &[buddha_core::GrepResult],
+    extra: SearchExtra,
+) -> String {
+    use std::fmt::Write as _;
+    let mut out = String::new();
+    let shown: usize = results.iter().map(|r| r.total_matches).sum();
+    match total_matched {
+        Some(total) if total > results.len() => {
+            let _ = writeln!(
+                out,
+                "{} of {} matching files shown ({} hits listed, capped per file by --max-matches-per-file); raise --max-results for the rest",
+                results.len(),
+                total,
+                shown
+            );
+        }
+        _ => {
+            let _ = writeln!(
+                out,
+                "{} files, {} hits listed (capped per file by --max-matches-per-file)",
+                results.len(),
+                shown
+            );
+        }
+    }
+    for (i, r) in results.iter().enumerate() {
+        let title = if r.title == r.file_id {
+            String::new()
+        } else {
+            format!("  {}", r.title)
+        };
+        let _ = writeln!(out, "\n{}. {}{}", i + 1, r.file_id, title);
+        for m in &r.matches {
+            let mut loc = String::new();
+            if let Some(lb) = &m.lb {
+                loc.push_str(lb);
+                if let Some(end) = &m.lb_end {
+                    let _ = write!(loc, "-{}", end);
+                }
+                loc.push(' ');
+            }
+            if let Some(ln) = m.line_number {
+                let _ = write!(loc, "L{}", ln);
+            }
+            if let Some(sec) = m.section.as_deref().filter(|s| *s == "apparatus") {
+                let _ = write!(loc, " [{}]", sec);
+            }
+            let _ = writeln!(
+                out,
+                "   {} | {}",
+                loc.trim(),
+                plain_snippet(&m.context, 160)
+            );
+        }
+        if let Some(m) = r
+            .matches
+            .iter()
+            .find(|m| m.section.as_deref() != Some("apparatus"))
+        {
+            let target = match (&m.lb, m.line_number) {
+                (Some(lb), _) => Some(format!("--lb {}", lb)),
+                (None, Some(ln)) => Some(format!("--line-number {}", ln)),
+                _ => None,
+            };
+            if let Some(target) = target {
+                let _ = writeln!(
+                    out,
+                    "   fetch: buddha {} --id {} {} --context-before 2 --context-after 5 --text",
+                    fetch_cmd, r.file_id, target
+                );
+            }
+        }
+        match extra {
+            SearchExtra::RecommendedParts if !r.fetch_hints.recommended_parts.is_empty() => {
+                let _ = writeln!(
+                    out,
+                    "   parts: {}",
+                    r.fetch_hints.recommended_parts.join(", ")
+                );
+            }
+            SearchExtra::Structure if !r.fetch_hints.structure_info.is_empty() => {
+                let _ = writeln!(
+                    out,
+                    "   structure: {}",
+                    r.fetch_hints.structure_info.join(", ")
+                );
+            }
+            _ => {}
+        }
+    }
+    out
 }
 
 pub(crate) fn send_with_retry<T>(

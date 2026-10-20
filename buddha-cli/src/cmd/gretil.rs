@@ -339,6 +339,8 @@ pub fn gretil_search(
     let q = compile_query(query, FuzzyMode::Whitespace, false, true).0;
     let results = gretil_grep(&gretil_root(), &q, max_results, max_matches_per_file);
     super::common::corpus_grep_summary(
+        "gretil-fetch",
+        None,
         &q,
         &results,
         "Use gretil-fetch with the file_id to get full content",

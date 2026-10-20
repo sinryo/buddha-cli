@@ -64,8 +64,18 @@ pub fn shoku_shinzen_search(
     if !shoku_shinzen_library_available() {
         return print_shoku_shinzen_missing(json);
     }
-    let results = shoku_shinzen_grep(&shoku_root(), query, max_results, max_matches_per_file);
+    let mut results = shoku_shinzen_grep(&shoku_root(), query, usize::MAX, max_matches_per_file);
+    // Search every page, then cut, so the text view can say how many matched.
+    let total = results.len();
+    results.truncate(max_results);
+    buddha_core::apply_shinzen_work_titles(
+        &mut results,
+        &load_or_build_shoku_work_catalog_cli(),
+        true,
+    );
     super::common::corpus_grep_summary(
+        "shoku-shinzen-fetch",
+        Some(total),
         query,
         &results,
         "Use shoku-shinzen-fetch with id + lineNumber for context",
@@ -265,7 +275,7 @@ pub fn shoku_shinzen_fetch(args: &crate::Commands) -> anyhow::Result<()> {
         );
         sliced = decorated;
 
-        if *json {
+        if *json || crate::text_mode() {
             let idx = load_or_build_shoku_shinzen_index_cli();
             let matched = resolved_id_or_path(&idx, resolved_id.as_deref(), &path);
             let work =
@@ -311,6 +321,10 @@ pub fn shoku_shinzen_fetch(args: &crate::Commands) -> anyhow::Result<()> {
             });
             if returned_end < total_chars {
                 meta["nextStartChar"] = serde_json::json!(returned_end);
+            }
+            if !*json {
+                super::common::print_text_fetch(&meta, &sliced);
+                return Ok(());
             }
             let envelope = serde_json::json!({
                 "jsonrpc":"2.0","id": serde_json::Value::Null,

@@ -1,4 +1,6 @@
-use buddha_core::text_utils::{highlight_text, ws_cjk_variant_fuzzy_regex_literal};
+use buddha_core::text_utils::{
+    highlight_text, phrase_regex_literal, ws_cjk_variant_fuzzy_regex_literal, TEXT_PHRASE_GAP,
+};
 
 pub fn ws_fuzzy_regex(s: &str) -> String {
     let mut out = String::new();
@@ -75,7 +77,13 @@ pub fn apply_highlight(
         FuzzyMode::CjkVariant => false,
         FuzzyMode::Whitespace => true,
     };
-    let (hpat, hl_is_regex) = compile_query(hpat0, fuzzy, highlight_regex, require_whitespace);
+    let (mut hpat, hl_is_regex) = compile_query(hpat0, fuzzy, highlight_regex, require_whitespace);
+    if matches!(fuzzy, FuzzyMode::CjkVariant) && !highlight_regex {
+        // Literal CJK highlights may cross the line breaks/punctuation of extracted text.
+        if let Some(p) = phrase_regex_literal(hpat0, TEXT_PHRASE_GAP) {
+            hpat = p;
+        }
+    }
     let hpre = prefix.unwrap_or(">>> ");
     let hsuf = suffix.unwrap_or(" <<<");
     let (decorated, count, positions) = highlight_text(text, &hpat, hl_is_regex, hpre, hsuf);

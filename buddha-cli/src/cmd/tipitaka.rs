@@ -173,6 +173,8 @@ pub fn tipitaka_search(
     let q = compile_query(query, FuzzyMode::Whitespace, false, true).0;
     let results = tipitaka_grep(&tipitaka_root(), &q, max_results, max_matches_per_file);
     super::common::corpus_grep_summary(
+        "tipitaka-fetch",
+        None,
         &q,
         &results,
         "Use tipitaka-fetch with the file_id to get full content",

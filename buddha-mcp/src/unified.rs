@@ -475,9 +475,10 @@ pub fn unified_tools_list() -> Vec<Value> {
                         "enum": ["cbeta", "tipitaka", "gretil", "sarit", "muktabodha", "shinzen", "shoku_shinzen", "sat", "jozen"],
                         "description": "Corpus to search. Required."
                     },
-                    "query": {"type": "string", "minLength": 1, "description": "Search query or regex pattern."},
+                    "query": {"type": "string", "minLength": 1, "description": "Phrase or regex. Plain text crosses lines/markup/variants."},
                     "maxResults": {"type": "integer", "minimum": 1, "maximum": 200, "default": 20, "description": "Max files/results to return."},
                     "maxMatchesPerFile": {"type": "integer", "minimum": 1, "maximum": 50, "default": 5, "description": "Max matches per file. Local corpora only."},
+                    "sort": {"type": "string", "enum": ["canon", "matches"], "description": "cbeta only."},
                     // SAT-specific
                     "exact": {"type": "boolean", "description": "SAT/Jozen only (ignored for other sources): phrase search (default true)."},
                     "rows": {"type": "integer", "minimum": 1, "maximum": 200, "description": "SAT only: number of rows."},

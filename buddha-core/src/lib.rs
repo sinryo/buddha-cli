@@ -19,6 +19,7 @@ use grep_searcher::{BinaryDetection, SearcherBuilder};
 use ignore::WalkBuilder;
 use serde::Deserialize;
 
+pub mod common_titles;
 pub mod path_resolver;
 pub mod repo;
 pub mod text_utils;
@@ -514,7 +515,13 @@ fn find_shinzen_work_title(
     let start = page_num.saturating_sub(40).max(1);
     let end = page_num.saturating_add(8);
 
-    for p in std::iter::once(page_num).chain((start..=end).rev().filter(move |p| *p != page_num)) {
+    // A work's title precedes its pages: look at this page, then backwards. Later pages
+    // only as a last resort — their title usually opens the *next* work (e.g. vol. 13
+    // p. 6 is 即身成佛義 even though 即身成佛義顯得鈔卷上 heads p. 11).
+    let pages = std::iter::once(page_num)
+        .chain((start..page_num).rev())
+        .chain(page_num + 1..=end);
+    for p in pages {
         let Some(lines) = read_shinzen_page_lines(root, volume, p) else {
             continue;
         };
@@ -1809,10 +1816,43 @@ pub fn shoku_shinzen_preferred_citation(
     }
 }
 
+/// Re-title SHINZEN / SHOKU_SHINZEN search hits from the curated work catalog
+/// (page range → author『title』、volume page), replacing the body-text heuristic.
+pub fn apply_shinzen_work_titles(
+    results: &mut [GrepResult],
+    catalog: &ShinzenWorkCatalog,
+    shoku: bool,
+) {
+    if catalog.entries.is_empty() {
+        return;
+    }
+    for r in results.iter_mut() {
+        let Some(b) = r.biblio.as_ref() else {
+            continue;
+        };
+        let Some(work) = find_shinzen_work_for_page(catalog, &b.volume, &b.page) else {
+            // Outside every catalog range: the body-text title guess is too unreliable to
+            // show as an attribution, so fall back to volume and page only.
+            r.title = b.page_citation.clone();
+            continue;
+        };
+        r.title = if shoku {
+            shoku_shinzen_preferred_citation(&b.volume, &b.page, Some(&work))
+        } else {
+            shinzen_preferred_citation(b, Some(&work))
+        };
+    }
+}
+
 pub fn find_shinzen_work_for_bibliography(
     catalog: &ShinzenWorkCatalog,
     biblio: &ShinzenBibliography,
 ) -> Option<ShinzenWorkEntry> {
+    // The catalog's page range is curated (目録・巻頭題・尾題); the body-text title is a
+    // heuristic, so it only decides when no catalog range covers the page.
+    if let Some(entry) = find_shinzen_work_for_page(catalog, &biblio.volume, &biblio.page) {
+        return Some(entry);
+    }
     if let Some(work_title) = biblio.work_title.as_deref() {
         if let Some(entry) = catalog
             .entries
@@ -1831,7 +1871,7 @@ pub fn find_shinzen_work_for_bibliography(
             return Some(entry);
         }
     }
-    find_shinzen_work_for_page(catalog, &biblio.volume, &biblio.page)
+    None
 }
 
 pub fn extract_shinzen_graphic_url(xml: &str) -> Option<String> {
@@ -4699,13 +4739,19 @@ pub struct GrepResult {
     pub fetch_hints: FetchHints,
 }
 
-#[derive(Serialize, Debug, Clone)]
+#[derive(Serialize, Debug, Clone, Default)]
 pub struct GrepMatch {
     pub context: String,
     pub highlight: String,
     pub juan_number: Option<String>, // CBETA用
     pub section: Option<String>,     // 構造情報
     pub line_number: Option<usize>,  // マッチした行番号
+    /// CBETA page-line (`<lb n>`) where the match starts, e.g. `0749a15`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub lb: Option<String>,
+    /// Page-line where the match ends, when it spans more than one line.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub lb_end: Option<String>,
 }
 
 #[derive(Serialize, Debug, Clone)]
@@ -4731,20 +4777,34 @@ pub fn cbeta_grep(
         Err(_) => return Vec::new(),
     };
 
+    // Phrase patterns (text_utils::phrase_regex_literal) may span line breaks.
+    let multi_line = query.contains(text_utils::XML_PHRASE_GAP);
+
     // 1. まずTフォルダから優先的に検索
     let t_folder = root.join("T");
     let mut all_results = Vec::new();
 
     if t_folder.exists() {
-        let t_results = cbeta_grep_internal(&t_folder, &matcher, max_results, max_matches_per_file);
+        let t_results = cbeta_grep_internal(
+            &t_folder,
+            &matcher,
+            max_results,
+            max_matches_per_file,
+            multi_line,
+        );
         all_results.extend(t_results);
     }
 
     // 2. まだ結果が不足している場合は、他のフォルダも検索
     if all_results.len() < max_results {
         let remaining_limit = max_results - all_results.len();
-        let other_results =
-            cbeta_grep_internal_exclude_t(root, &matcher, remaining_limit, max_matches_per_file);
+        let other_results = cbeta_grep_internal_exclude_t(
+            root,
+            &matcher,
+            remaining_limit,
+            max_matches_per_file,
+            multi_line,
+        );
         all_results.extend(other_results);
     }
 
@@ -4765,6 +4825,78 @@ pub fn cbeta_grep(
 
     all_results.truncate(max_results);
     all_results
+}
+
+/// How `cbeta_grep_ordered` picks and orders files when more match than `max_results`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum GrepOrder {
+    /// Collection order: Taishō first, then the other canons, each by text number
+    /// (sūtras before commentaries and later works) — keeps a phrase's source text in view.
+    Canon,
+    /// Files with the most matches first (texts that dwell on the query).
+    Matches,
+}
+
+impl std::str::FromStr for GrepOrder {
+    type Err = String;
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s.trim().to_ascii_lowercase().as_str() {
+            "canon" => Ok(Self::Canon),
+            "matches" => Ok(Self::Matches),
+            other => Err(format!("unknown sort '{other}' (use canon or matches)")),
+        }
+    }
+}
+
+/// Like [`cbeta_grep`] but searches the whole corpus, orders by `order`, and also
+/// returns how many files matched before truncation to `max_results`.
+pub fn cbeta_grep_ordered(
+    root: &Path,
+    query: &str,
+    max_results: usize,
+    max_matches_per_file: usize,
+    order: GrepOrder,
+) -> (Vec<GrepResult>, usize) {
+    let matcher = match RegexMatcherBuilder::new()
+        .case_insensitive(true)
+        .multi_line(true)
+        .build(query)
+    {
+        Ok(m) => m,
+        Err(_) => return (Vec::new(), 0),
+    };
+    let multi_line = query.contains(text_utils::XML_PHRASE_GAP);
+    let mut all = Vec::new();
+    let t_folder = root.join("T");
+    if t_folder.exists() {
+        all.extend(cbeta_grep_internal(
+            &t_folder,
+            &matcher,
+            usize::MAX,
+            max_matches_per_file,
+            multi_line,
+        ));
+    }
+    all.extend(cbeta_grep_internal_exclude_t(
+        root,
+        &matcher,
+        usize::MAX,
+        max_matches_per_file,
+        multi_line,
+    ));
+    let total = all.len();
+    let taisho = |r: &GrepResult| r.file_path.contains("/T/");
+    all.sort_by(|a, b| {
+        taisho(b).cmp(&taisho(a)).then_with(|| match order {
+            GrepOrder::Canon => a.file_id.cmp(&b.file_id),
+            GrepOrder::Matches => b
+                .total_matches
+                .cmp(&a.total_matches)
+                .then_with(|| a.file_id.cmp(&b.file_id)),
+        })
+    });
+    all.truncate(max_results);
+    (all, total)
 }
 
 fn grep_sort_best_first(results: &mut Vec<GrepResult>, max_results: usize) {
@@ -4800,12 +4932,24 @@ fn ripgrep_search_file(
     matcher: &grep_regex::RegexMatcher,
     max_matches: usize,
 ) -> Option<Vec<RgMatch>> {
+    ripgrep_search_file_opts(path, matcher, max_matches, false)
+}
+
+/// `multi_line` lets a match span several lines (used by phrase patterns built with
+/// [`text_utils::XML_PHRASE_GAP`]); `line_content` then holds every spanned line.
+fn ripgrep_search_file_opts(
+    path: &Path,
+    matcher: &grep_regex::RegexMatcher,
+    max_matches: usize,
+    multi_line: bool,
+) -> Option<Vec<RgMatch>> {
     let mut matches: Vec<RgMatch> = Vec::new();
 
     // Use memory-mapped I/O for faster file access
     let mut searcher = SearcherBuilder::new()
         .binary_detection(BinaryDetection::quit(b'\x00'))
         .line_number(true)
+        .multi_line(multi_line)
         .memory_map(unsafe { grep_searcher::MmapChoice::auto() })
         .build();
 
@@ -4832,11 +4976,135 @@ fn ripgrep_search_file(
     }
 }
 
+/// Drop XML tags and whitespace from a raw chunk (keeps element text such as okurigana).
+pub fn strip_xml_tags(raw: &str) -> String {
+    let mut out = String::with_capacity(raw.len());
+    let mut in_tag = false;
+    for c in raw.chars() {
+        match c {
+            '<' => in_tag = true,
+            '>' if in_tag => in_tag = false,
+            _ if in_tag || c.is_whitespace() => {}
+            _ => out.push(c),
+        }
+    }
+    out
+}
+
+/// `<lb n="...">` markers in a raw XML chunk, with their byte offsets.
+pub fn lb_markers(raw: &str) -> Vec<(usize, String)> {
+    static LB_RE: OnceLock<regex::Regex> = OnceLock::new();
+    let re =
+        LB_RE.get_or_init(|| regex::Regex::new(r#"<lb\b[^>]*\bn\s*=\s*["']([^"']+)["']"#).unwrap());
+    re.captures_iter(raw)
+        .filter_map(|c| Some((c.get(0)?.start(), c.get(1)?.as_str().to_string())))
+        .collect()
+}
+
+/// Page-line range `(start, end)` of a match inside `raw` (the matched lines).
+/// `end` is `None` when the match stays on one line.
+fn lb_span(raw: &str, match_start: usize, match_end: usize) -> (Option<String>, Option<String>) {
+    let lbs = lb_markers(raw);
+    let start = lbs
+        .iter()
+        .rev()
+        .find(|(pos, _)| *pos <= match_start)
+        .or_else(|| lbs.first())
+        .map(|(_, n)| n.clone());
+    let end = lbs
+        .iter()
+        .rev()
+        .find(|(pos, _)| *pos < match_end)
+        .map(|(_, n)| n.clone())
+        .filter(|n| Some(n) != start.as_ref());
+    (start, end)
+}
+
+/// Main title (`<title level="m">`) from the head of a CBETA TEI file.
+pub fn cbeta_title_from_header(path: &Path) -> Option<String> {
+    use std::io::Read as _;
+    static TITLE_RE: OnceLock<regex::Regex> = OnceLock::new();
+    let re = TITLE_RE.get_or_init(|| {
+        regex::Regex::new(r#"<title\b[^>]*\blevel="m"[^>]*>([^<]+)</title>"#).unwrap()
+    });
+    let mut buf = vec![0u8; 8192];
+    let n = std::fs::File::open(path).ok()?.read(&mut buf).ok()?;
+    let head = String::from_utf8_lossy(&buf[..n]);
+    re.captures(&head)
+        .map(|c| c[1].trim().to_string())
+        .filter(|t| !t.is_empty())
+}
+
+fn cbeta_grep_file(
+    p: &Path,
+    matcher: &grep_regex::RegexMatcher,
+    max_matches_per_file: usize,
+    multi_line: bool,
+) -> Option<GrepResult> {
+    let rg_matches = ripgrep_search_file_opts(p, matcher, max_matches_per_file, multi_line)?;
+
+    // Get file size without reading entire content (faster)
+    let file_size = std::fs::metadata(p).ok().map(|m| m.len()).unwrap_or(0);
+
+    // Convert ripgrep matches to GrepMatch
+    let grep_matches: Vec<GrepMatch> = rg_matches
+        .iter()
+        .map(|m| {
+            // Find the actual matched text in the line(s)
+            let found = matcher.find(m.line_content.as_bytes()).ok().flatten();
+            let highlight = found
+                .and_then(|mat| m.line_content.get(mat.start()..mat.end()))
+                .unwrap_or("")
+                .to_string();
+            let (lb, lb_end) = found
+                .map(|mat| lb_span(&m.line_content, mat.start(), mat.end()))
+                .unwrap_or_default();
+
+            // Lines without a page-line marker that open with apparatus markup belong to
+            // the <back> critical notes (校勘), not to the canonical text.
+            let apparatus = lb.is_none()
+                && ["<app", "<note", "<lem", "<rdg", "<choice"]
+                    .iter()
+                    .any(|t| m.line_content.trim_start().starts_with(t));
+            GrepMatch {
+                context: m.line_content.clone(),
+                highlight,
+                juan_number: None, // Skip expensive XML parsing for search
+                section: apparatus.then(|| "apparatus".to_string()),
+                line_number: Some(m.line_number as usize),
+                lb,
+                lb_end,
+            }
+        })
+        .collect();
+
+    let file_id = stem_from(p);
+    let title = cbeta_title_from_header(p).unwrap_or_else(|| file_id.clone());
+    let total_matches = grep_matches.len();
+
+    let fetch_hints = FetchHints {
+        recommended_parts: vec![], // Populated on fetch, not search
+        total_content_size: Some(format!("{}KB", file_size / 1024)),
+        structure_info: vec![],
+    };
+
+    Some(GrepResult {
+        file_path: p.to_string_lossy().to_string(),
+        file_id,
+        title,
+        biblio: None,
+        matches: grep_matches,
+        total_matches,
+        fetch_hints,
+    })
+}
+
 fn cbeta_grep_internal(
     root: &Path,
     matcher: &grep_regex::RegexMatcher,
     max_results: usize,
     max_matches_per_file: usize,
+    multi_line: bool,
 ) -> Vec<GrepResult> {
     // Collect XML file paths using ignore crate
     let paths =
@@ -4845,59 +5113,7 @@ fn cbeta_grep_internal(
     // Search files in parallel using ripgrep
     let mut results: Vec<GrepResult> = paths
         .par_iter()
-        .filter_map(|p| {
-            let rg_matches = ripgrep_search_file(p, &matcher, max_matches_per_file)?;
-
-            // Get file size without reading entire content (faster)
-            let file_size = std::fs::metadata(p).ok().map(|m| m.len()).unwrap_or(0);
-
-            // Convert ripgrep matches to GrepMatch
-            let grep_matches: Vec<GrepMatch> = rg_matches
-                .iter()
-                .map(|m| {
-                    // Find the actual matched text in the line
-                    let highlight = matcher
-                        .find(m.line_content.as_bytes())
-                        .ok()
-                        .flatten()
-                        .map(|mat| {
-                            m.line_content
-                                .get(mat.start()..mat.end())
-                                .unwrap_or("")
-                                .to_string()
-                        })
-                        .unwrap_or_default();
-
-                    GrepMatch {
-                        context: m.line_content.clone(),
-                        highlight,
-                        juan_number: None, // Skip expensive XML parsing for search
-                        section: None,
-                        line_number: Some(m.line_number as usize),
-                    }
-                })
-                .collect();
-
-            let file_id = stem_from(p);
-            let title = file_id.clone();
-            let total_matches = grep_matches.len();
-
-            let fetch_hints = FetchHints {
-                recommended_parts: vec![], // Populated on fetch, not search
-                total_content_size: Some(format!("{}KB", file_size / 1024)),
-                structure_info: vec![],
-            };
-
-            Some(GrepResult {
-                file_path: p.to_string_lossy().to_string(),
-                file_id,
-                title,
-                biblio: None,
-                matches: grep_matches,
-                total_matches,
-                fetch_hints,
-            })
-        })
+        .filter_map(|p| cbeta_grep_file(p, matcher, max_matches_per_file, multi_line))
         .collect();
 
     // Make selection deterministic; otherwise parallel walk + take(N) yields unstable sets.
@@ -4910,67 +5126,16 @@ fn cbeta_grep_internal_exclude_t(
     matcher: &grep_regex::RegexMatcher,
     max_results: usize,
     max_matches_per_file: usize,
+    multi_line: bool,
 ) -> Vec<GrepResult> {
     // Collect XML file paths excluding /T/ folder using ignore crate
     let paths = collect_xml_paths_cached(&CBETA_XML_PATHS_EXCLUDE_T_CACHE, root, |path, name| {
         name.ends_with(".xml") && !path.to_string_lossy().contains("/T/")
     });
 
-    // Search files in parallel using ripgrep
     let mut results: Vec<GrepResult> = paths
         .par_iter()
-        .filter_map(|p| {
-            let rg_matches = ripgrep_search_file(p, &matcher, max_matches_per_file)?;
-
-            // Get file size without reading entire content (faster)
-            let file_size = std::fs::metadata(p).ok().map(|m| m.len()).unwrap_or(0);
-
-            // Convert ripgrep matches to GrepMatch
-            let grep_matches: Vec<GrepMatch> = rg_matches
-                .iter()
-                .map(|m| {
-                    let highlight = matcher
-                        .find(m.line_content.as_bytes())
-                        .ok()
-                        .flatten()
-                        .map(|mat| {
-                            m.line_content
-                                .get(mat.start()..mat.end())
-                                .unwrap_or("")
-                                .to_string()
-                        })
-                        .unwrap_or_default();
-
-                    GrepMatch {
-                        context: m.line_content.clone(),
-                        highlight,
-                        juan_number: None, // Skip expensive XML parsing for search
-                        section: None,
-                        line_number: Some(m.line_number as usize),
-                    }
-                })
-                .collect();
-
-            let file_id = stem_from(p);
-            let title = file_id.clone();
-            let total_matches = grep_matches.len();
-
-            let fetch_hints = FetchHints {
-                recommended_parts: vec![], // Populated on fetch, not search
-                total_content_size: Some(format!("{}KB", file_size / 1024)),
-                structure_info: vec![],
-            };
-
-            Some(GrepResult {
-                file_path: p.to_string_lossy().to_string(),
-                file_id,
-                title,
-                biblio: None,
-                matches: grep_matches,
-                total_matches,
-                fetch_hints,
-            })
-        })
+        .filter_map(|p| cbeta_grep_file(p, matcher, max_matches_per_file, multi_line))
         .collect();
 
     grep_sort_best_first(&mut results, max_results);
@@ -5132,6 +5297,7 @@ pub fn tipitaka_grep(
                         juan_number: None,
                         section: structure_info.first().cloned(),
                         line_number: Some(m.line_number as usize),
+                        ..Default::default()
                     }
                 })
                 .collect();
@@ -5223,6 +5389,7 @@ pub fn gretil_grep(
                         juan_number: None,
                         section: None,
                         line_number: Some(m.line_number as usize),
+                        ..Default::default()
                     }
                 })
                 .collect();
@@ -5299,6 +5466,7 @@ pub fn sarit_grep(
                         juan_number: None,
                         section: None,
                         line_number: Some(m.line_number as usize),
+                        ..Default::default()
                     }
                 })
                 .collect();
@@ -5353,6 +5521,16 @@ fn shinzen_grep_for_collection(
     max_matches_per_file: usize,
     shoku: bool,
 ) -> Vec<GrepResult> {
+    // A literal query (no regex syntax) is matched as a phrase against the raw page XML,
+    // so okurigana, return marks, punctuation, OCR corrections and line breaks between
+    // kanji do not hide it (白文 queries such as 六大者五大及識).
+    let phrase =
+        text_utils::phrase_regex_literal(query, text_utils::XML_PHRASE_GAP).and_then(|pat| {
+            regex::RegexBuilder::new(&pat)
+                .case_insensitive(true)
+                .build()
+                .ok()
+        });
     let matcher = match regex::RegexBuilder::new(query)
         .case_insensitive(true)
         .build()
@@ -5372,8 +5550,9 @@ fn shinzen_grep_for_collection(
             let xml = std::fs::read_to_string(p).ok()?;
             let lines = extract_shinzen_lines(&xml);
             let mut matches = Vec::new();
+            let section = format!("第{}巻 p.{}", volume, page);
 
-            for line in lines {
+            for line in &lines {
                 if matches.len() >= max_matches_per_file {
                     break;
                 }
@@ -5384,13 +5563,56 @@ fn shinzen_grep_for_collection(
                         .unwrap_or("")
                         .to_string();
                     matches.push(GrepMatch {
-                        context: line.text,
+                        context: line.text.clone(),
                         highlight,
                         juan_number: None,
-                        section: Some(format!("第{}巻 p.{}", volume, page)),
+                        section: Some(section.clone()),
                         line_number: Some(line.number),
+                        ..Default::default()
                     });
                 }
+            }
+
+            if let Some(phrase) = phrase.as_ref() {
+                let body_start = xml.find("<text").unwrap_or(0);
+                let body = &xml[body_start..];
+                let lbs = lb_markers(body);
+                for mat in phrase.find_iter(body) {
+                    if matches.len() >= max_matches_per_file {
+                        break;
+                    }
+                    let line_at = |pos: usize| {
+                        lbs.iter()
+                            .rev()
+                            .find(|(lp, _)| *lp <= pos)
+                            .and_then(|(_, n)| n.parse::<usize>().ok())
+                    };
+                    let Some(first) = line_at(mat.start()) else {
+                        continue;
+                    };
+                    let last = line_at(mat.end().saturating_sub(1)).unwrap_or(first);
+                    if matches
+                        .iter()
+                        .any(|m: &GrepMatch| m.line_number == Some(first))
+                    {
+                        continue;
+                    }
+                    let context = lines
+                        .iter()
+                        .filter(|l| l.number >= first && l.number <= last)
+                        .map(|l| l.text.as_str())
+                        .collect::<Vec<_>>()
+                        .join("\n");
+                    matches.push(GrepMatch {
+                        context,
+                        highlight: strip_xml_tags(mat.as_str()),
+                        juan_number: None,
+                        section: Some(section.clone()),
+                        line_number: Some(first),
+                        ..Default::default()
+                    });
+                }
+                matches.sort_by_key(|m| m.line_number);
             }
 
             if matches.is_empty() {
@@ -5494,6 +5716,7 @@ pub fn muktabodha_grep(
                         juan_number: None,
                         section: None,
                         line_number: Some(m.line_number as usize),
+                        ..Default::default()
                     }
                 })
                 .collect();
@@ -6037,6 +6260,68 @@ mod tests_cbeta_index_and_plain {
         let xml = r#"<lb n="0336a01"/>前段。</p><p>布施空無所有，眾生須故施與。</p>"#;
         let out = extract_cbeta_plain_from_snippet(xml, &HashMap::new(), false);
         assert_eq!(out, "前段。布施空無所有，眾生須故施與。");
+    }
+
+    #[test]
+    fn cbeta_phrase_search_crosses_lines_and_reports_lb_title_and_total() {
+        let dir = tempfile::tempdir().unwrap();
+        let t08 = dir.path().join("T").join("T08");
+        let t33 = dir.path().join("T").join("T33");
+        fs::create_dir_all(&t08).unwrap();
+        fs::create_dir_all(&t33).unwrap();
+        let sutra = "<TEI><teiHeader><titleStmt><title level=\"m\" xml:lang=\"zh-Hant\">金剛般若波羅蜜經</title></titleStmt></teiHeader>\n<text><body>\n<lb n=\"0749c22\" ed=\"T\"/>生心，應無所住而生其\n<lb ed=\"T\" n=\"0749c23\"/>心。</p>\n</body><back>\n<app><lem>語</lem><rdg>云應無所住而生其心</rdg></app>\n</back></TEI>\n";
+        fs::write(t08.join("T08n0235.xml"), sutra).unwrap();
+        // A commentary quoting it twice: ranks first by matches, after the sūtra by canon.
+        let comm = "<TEI>\n<lb n=\"0138a10\"/>應無所住而生其心。\n<lb n=\"0138a11\"/>述曰\n<lb n=\"0138a12\"/>應無所住而生\n<lb n=\"0138a13\"/>其心\n<lb n=\"0138a14\"/>述曰\n<lb n=\"0138a15\"/>應無所住而生其心\n</TEI>\n";
+        fs::write(t33.join("T33n1700.xml"), comm).unwrap();
+
+        let pat = text_utils::phrase_regex_literal("応無所住而生其心", text_utils::XML_PHRASE_GAP)
+            .unwrap();
+        let (r, total) = cbeta_grep_ordered(dir.path(), &pat, 1, 5, GrepOrder::Canon);
+        assert_eq!(total, 2);
+        assert_eq!(r[0].file_id, "T08n0235");
+        assert_eq!(r[0].title, "金剛般若波羅蜜經");
+        let m = &r[0].matches[0];
+        assert_eq!(m.lb.as_deref(), Some("0749c22"));
+        assert_eq!(m.lb_end.as_deref(), Some("0749c23"));
+        assert_eq!(m.line_number, Some(3));
+        // the <back> variant reading is found but flagged as apparatus
+        let app = &r[0].matches[1];
+        assert_eq!(app.section.as_deref(), Some("apparatus"));
+        assert_eq!(app.lb, None);
+
+        let (r, _) = cbeta_grep_ordered(dir.path(), &pat, 1, 5, GrepOrder::Matches);
+        assert_eq!(r[0].file_id, "T33n1700");
+        assert_eq!(r[0].matches.len(), 3);
+        // plain line regexes keep the old single-line behaviour
+        let (r, _) = cbeta_grep_ordered(dir.path(), "應無所住而生其心", 5, 5, GrepOrder::Canon);
+        assert_eq!(
+            r.iter().map(|x| x.file_id.as_str()).collect::<Vec<_>>(),
+            ["T08n0235", "T33n1700"]
+        );
+        assert_eq!(r[0].matches.len(), 1); // only the apparatus line holds it unbroken
+    }
+
+    #[test]
+    fn shinzen_phrase_search_skips_okurigana_and_return_marks() {
+        let dir = tempfile::tempdir().unwrap();
+        let xml = r##"<TEI><teiHeader></teiHeader><text><body><p>
+<lb n="3" facs="#p0c3" />六大<add type="okurigana" place="right">ト</add>者五大<add type="okurigana" place="right">ト</add>及<add type="okurigana" place="right">ヒ</add>
+<lb n="4" facs="#p0c4" />識<add type="okurigana" place="right">トナリ</add><metamark function="transposition">㆑</metamark>大日經<pc>。</pc>
+</p></body></text></TEI>"##;
+        fs::write(dir.path().join("volume_13_page_006.xml"), xml).unwrap();
+        let r = shinzen_grep(dir.path(), "六大者五大及識", 10, 3);
+        assert_eq!(r.len(), 1);
+        let m = &r[0].matches[0];
+        assert_eq!(m.line_number, Some(3));
+        assert!(
+            m.context.contains("六大ト者五大ト及ヒ\n識"),
+            "{}",
+            m.context
+        );
+        // kundoku text with okurigana still matches line-wise
+        let r = shinzen_grep(dir.path(), "六大ト者", 10, 3);
+        assert_eq!(r[0].matches[0].line_number, Some(3));
     }
 
     #[test]

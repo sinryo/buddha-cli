@@ -309,6 +309,11 @@ pub fn sat_search(
                 return Ok(());
             }
         }
+        if wrap.is_none()
+            && sat_search_results_cli_opt(query, rows, offs, exact, titles_only).is_none()
+        {
+            anyhow::bail!(SAT_UNREACHABLE);
+        }
         let text = "no results".to_string();
         if json {
             println!(
@@ -326,10 +331,14 @@ pub fn sat_search(
         }
         return Ok(());
     }
-    let wrap = wrap.unwrap_or_else(|| {
-        let hits = sat_search_results_cli(query, rows, offs, exact, titles_only);
-        serde_json::json!({"response": {"numFound": hits.len(), "start": offs, "docs": hits }})
-    });
+    let wrap = match wrap {
+        Some(w) => w,
+        None => {
+            let hits = sat_search_results_cli_opt(query, rows, offs, exact, titles_only)
+                .ok_or_else(|| anyhow::anyhow!(SAT_UNREACHABLE))?;
+            serde_json::json!({"response": {"numFound": hits.len(), "start": offs, "docs": hits }})
+        }
+    };
     let count = wrap
         .get("response")
         .and_then(|r| r.get("numFound"))
@@ -732,13 +741,15 @@ pub(crate) fn parse_sat_search_html(
     }
 }
 
-pub(crate) fn sat_search_results_cli(
+/// `None` when SAT could not be reached at all (network error, timeout, non-2xx), so
+/// callers can tell an outage from a genuine zero-hit search.
+pub(crate) fn sat_search_results_cli_opt(
     q: &str,
     rows: usize,
     offs: usize,
     exact: bool,
     titles_only: bool,
-) -> Vec<SatHit> {
+) -> Option<Vec<SatHit>> {
     let base = "https://21dzk.l.u-tokyo.ac.jp/SAT2018/sat/satdb2018.php";
     let url = format!("{}?use=func&ui_lang=ja&form=0&smode=1&dpnum=10&db_num=100&tbl=SAT&jtype=AND&wk=&line=0&part=0&eps=&keyword={}&o8=1&l8=&o9=1&l9=&o4=2&l4=rb&spage={}&perpage={}",
         base, urlencoding::encode(q), offs, rows);
@@ -761,5 +772,6 @@ pub(crate) fn sat_search_results_cli(
         500,
         |_| true,
     )
-    .unwrap_or_default()
 }
+
+const SAT_UNREACHABLE: &str = "SAT unreachable: network error or timeout contacting 21dzk.l.u-tokyo.ac.jp (wrap7 and HTML search both failed); this is not a zero-hit result";

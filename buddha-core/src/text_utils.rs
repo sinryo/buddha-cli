@@ -45,33 +45,462 @@ pub fn normalized(s: &str) -> String {
     out
 }
 
+/// CJK variant groups for Buddhist corpora: CBETA (Taiwan standard) forms, Japanese
+/// kyūjitai/shinjitai and common simplified forms. Each group lists characters that a
+/// literal query should treat as the same character. A character must appear in only one
+/// group (enforced by a unit test).
+const CJK_VARIANT_GROUPS: &[&str] = &[
+    "經経经",
+    "觀観观",
+    "佛仏",
+    "譯訳译",
+    "藏蔵",
+    "禪禅",
+    "淨浄净",
+    "證証证",
+    "覺覚觉",
+    "聖圣",
+    "會会",
+    "後后",
+    "國国囯",
+    "靈霊灵",
+    "廣広广",
+    "龍竜龙",
+    "臺台",
+    "體体躰",
+    "彌弥",
+    "俱倶",
+    "舍舎",
+    "說説说",
+    "應応应",
+    "發発发",
+    "聲声",
+    "實実实",
+    "盡尽",
+    "樂楽乐",
+    "惡悪恶",
+    "惠恵",
+    "德徳",
+    "與与",
+    "為爲为",
+    "無无",
+    "眾衆众",
+    "即卽",
+    "教敎",
+    "真眞",
+    "緣縁缘",
+    "變変变",
+    "斷断",
+    "繼継继",
+    "續続续",
+    "歸帰归",
+    "戲戯戏",
+    "濟済济",
+    "齋斎斋",
+    "讀読读",
+    "圓円圆",
+    "稱称",
+    "傳伝传",
+    "轉転转",
+    "錢銭钱",
+    "鐵鉄铁",
+    "學学",
+    "舉擧挙举",
+    "號号",
+    "處処处",
+    "劍剣剑",
+    "險険险",
+    "驗験验",
+    "檢検检",
+    "儉倹俭",
+    "權権权",
+    "歡歓欢",
+    "勸勧劝",
+    "觸触",
+    "獨独",
+    "燈灯",
+    "當当",
+    "黨党",
+    "對対对",
+    "單単单",
+    "彈弾弹",
+    "戰戦战",
+    "獸獣兽",
+    "數数",
+    "樓楼",
+    "壞壊坏",
+    "懷懐怀",
+    "惱悩恼",
+    "腦脳脑",
+    "亂乱",
+    "辭辞",
+    "辯辨弁",
+    "氣気气",
+    "圍囲围",
+    "醫医",
+    "鹽塩盐",
+    "營営营",
+    "榮栄荣",
+    "衛衞卫",
+    "豐豊",
+    "萬万",
+    "禮礼",
+    "來来",
+    "參参",
+    "慘惨",
+    "擇択择",
+    "澤沢泽",
+    "驛駅驿",
+    "釋釈释",
+    "晝昼",
+    "並竝并",
+    "寶宝",
+    "寢寝",
+    "稻稲",
+    "碎砕",
+    "拜拝",
+    "拔抜",
+    "髮髪",
+    "拂払",
+    "恆恒",
+    "亞亜亚",
+    "壓圧压",
+    "隱隠隐",
+    "奧奥",
+    "櫻桜",
+    "溫温",
+    "價価价",
+    "假仮",
+    "畫画",
+    "繪絵绘",
+    "擴拡扩",
+    "殼殻",
+    "嶽岳",
+    "渴渇",
+    "卷巻",
+    "陷陥",
+    "寬寛",
+    "關関关",
+    "偽僞伪",
+    "犧犠",
+    "舊旧",
+    "據拠据",
+    "峽峡",
+    "挾挟",
+    "狹狭",
+    "曉暁",
+    "勳勲",
+    "薰薫",
+    "徑径",
+    "莖茎",
+    "揭掲",
+    "溪渓",
+    "螢蛍",
+    "輕軽轻",
+    "鷄鶏鸡",
+    "擊撃击",
+    "圈圏",
+    "獻献",
+    "顯顕显",
+    "嚴厳严",
+    "效効",
+    "黃黄",
+    "鑛鉱",
+    "黑黒",
+    "劑剤",
+    "雜雑杂",
+    "棧桟",
+    "蠶蚕",
+    "贊賛赞",
+    "殘残",
+    "齒歯齿",
+    "兒児儿",
+    "濕湿",
+    "寫写",
+    "壽寿",
+    "收収",
+    "從従从",
+    "澁渋",
+    "縱縦",
+    "肅粛",
+    "緖緒",
+    "敍叙",
+    "將将",
+    "涉渉",
+    "燒焼烧",
+    "乘乗",
+    "剩剰",
+    "壤壌",
+    "孃嬢",
+    "條条",
+    "狀状",
+    "疊畳",
+    "讓譲让",
+    "釀醸",
+    "囑嘱",
+    "愼慎",
+    "粹粋",
+    "醉酔",
+    "穗穂",
+    "隨随",
+    "髓髄",
+    "樞枢",
+    "瀨瀬",
+    "靜静",
+    "齊斉齐",
+    "攝摂摄",
+    "竊窃",
+    "專専专",
+    "淺浅",
+    "踐践",
+    "潛潜",
+    "纖繊",
+    "雙双",
+    "壯壮",
+    "爭争",
+    "莊荘庄",
+    "搜捜",
+    "插挿",
+    "巢巣",
+    "曾曽",
+    "裝装",
+    "總総总",
+    "騷騒",
+    "增増",
+    "臟臓",
+    "屬属",
+    "墮堕",
+    "帶帯带",
+    "滯滞",
+    "瀧滝",
+    "擔担",
+    "膽胆",
+    "團団团",
+    "癡痴",
+    "遲遅",
+    "鑄鋳",
+    "廳庁",
+    "聽聴听",
+    "敕勅",
+    "鎭鎮",
+    "遞逓",
+    "點点",
+    "盜盗",
+    "鬭鬪闘",
+    "屆届",
+    "繩縄",
+    "貳弐",
+    "霸覇",
+    "廢廃",
+    "賣売卖",
+    "麥麦",
+    "晚晩",
+    "蠻蛮",
+    "祕秘",
+    "甁瓶",
+    "倂併",
+    "餠餅",
+    "邊辺边",
+    "舖舗",
+    "步歩",
+    "襃褒",
+    "默黙",
+    "沒没",
+    "飜翻",
+    "每毎",
+    "滿満满",
+    "藥薬药",
+    "譽誉",
+    "搖揺",
+    "樣様",
+    "謠謡",
+    "賴頼",
+    "覽覧",
+    "兩両两",
+    "獵猟",
+    "綠緑",
+    "壘塁",
+    "淚涙",
+    "勵励",
+    "隸隷",
+    "齡齢",
+    "曆暦",
+    "歷歴",
+    "戀恋",
+    "爐炉",
+    "勞労劳",
+    "郞郎",
+    "祿禄",
+    "錄録录",
+    "灣湾",
+    "內内",
+    "戶户戸",
+    "吳呉",
+    "青靑",
+    "清淸",
+    "稅税",
+    "脫脱",
+    "悅悦",
+    "銳鋭",
+    "閱閲",
+    "尚尙",
+    "晉晋",
+    "冊册",
+    "卻却",
+    "迴回廻",
+    "遍徧",
+    "礙碍",
+    "焰燄",
+    "咒呪",
+    "鉢缽",
+    "菴庵",
+    "修脩",
+    "鄰隣",
+    "讚讃",
+    "歎嘆",
+    "慚慙",
+    "塡填",
+    "顚顛",
+    "姬姫",
+    "研硏",
+    "惣揔",
+    "叡睿",
+    "峯峰",
+    "島嶋",
+    "嶮崄",
+    "裏裡",
+];
+
 fn cjk_variant_group(ch: char) -> Option<&'static str> {
-    // Minimal CJK variant groups useful for Buddhist corpora.
-    // Use in regex character classes to match both forms.
-    match ch {
-        '経' | '經' | '经' => Some("經経经"),
-        '観' | '觀' | '观' => Some("觀観观"),
-        '仏' | '佛' => Some("佛仏"),
-        '訳' | '譯' | '译' => Some("譯訳译"),
-        '蔵' | '藏' => Some("藏蔵"),
-        '禅' | '禪' => Some("禪禅"),
-        '浄' | '淨' | '净' => Some("淨浄净"),
-        '証' | '證' | '证' => Some("證証证"),
-        '覚' | '覺' | '觉' => Some("覺覚觉"),
-        '圣' | '聖' => Some("聖圣"),
-        '会' | '會' => Some("會会"),
-        '后' | '後' => Some("後后"),
-        '国' | '國' => Some("國国"),
-        '灵' | '靈' => Some("靈灵"),
-        '广' | '廣' => Some("廣广"),
-        '龙' | '龍' => Some("龍龙"),
-        '台' | '臺' => Some("臺台"),
-        '体' | '體' => Some("體体"),
-        // Common Buddhist variants
-        '弥' | '彌' => Some("彌弥"),
-        '倶' | '俱' => Some("俱倶"),
-        '舎' | '舍' => Some("舍舎"),
-        _ => None,
+    static MAP: std::sync::OnceLock<std::collections::HashMap<char, &'static str>> =
+        std::sync::OnceLock::new();
+    MAP.get_or_init(|| {
+        let mut m = std::collections::HashMap::new();
+        for g in CJK_VARIANT_GROUPS {
+            if g.chars().count() < 2 {
+                continue;
+            }
+            for c in g.chars() {
+                m.insert(c, *g);
+            }
+        }
+        m
+    })
+    .get(&ch)
+    .copied()
+}
+
+/// Map every character to the first member of its variant group and keep only
+/// alphanumerics, for exact name comparison across 新字体/旧字体/簡体字.
+pub fn fold_cjk_variants(s: &str) -> String {
+    s.chars()
+        .filter(|c| c.is_alphanumeric())
+        .map(|c| {
+            cjk_variant_group(c)
+                .and_then(|g| g.chars().next())
+                .unwrap_or(c)
+        })
+        .collect()
+}
+
+fn push_char_class(out: &mut String, ch: char) {
+    if let Some(vs) = cjk_variant_group(ch) {
+        out.push('[');
+        for vch in vs.chars() {
+            if vch == '\\' || vch == ']' || vch == '-' || vch == '^' {
+                out.push('\\');
+            }
+            out.push(vch);
+        }
+        out.push(']');
+    } else {
+        out.push_str(&regex::escape(&ch.to_string()));
+    }
+}
+
+/// What a literal phrase query may skip between two of its characters when matched
+/// against raw TEI XML: markup (`<lb/>`, `<anchor/>`, `<g>` …), inline notes (割注),
+/// variant readings, OCR `sic`, okurigana / return marks (SHINZEN kunten), punctuation
+/// and line breaks. Real text characters never fall inside the gap.
+pub const XML_PHRASE_GAP: &str = r"(?:<(?:note|rdg|sic|add|metamark)\b[^>]*>[^<]*</(?:note|rdg|sic|add|metamark)>|<[^>]*>|[\s\p{P}])*";
+
+/// What a literal phrase may skip between characters in already extracted plain text.
+pub const TEXT_PHRASE_GAP: &str = r"[\s\p{P}]*";
+
+fn is_query_punct(c: char) -> bool {
+    c.is_ascii_punctuation()
+        || matches!(
+            c,
+            '，' | '。'
+                | '、'
+                | '；'
+                | '：'
+                | '「'
+                | '」'
+                | '『'
+                | '』'
+                | '？'
+                | '！'
+                | '（'
+                | '）'
+                | '《'
+                | '》'
+                | '〈'
+                | '〉'
+                | '・'
+                | '．'
+                | '…'
+                | '—'
+                | '〔'
+                | '〕'
+                | '【'
+                | '】'
+                | '“'
+                | '”'
+                | '‘'
+                | '’'
+                | '｜'
+                | '　'
+        )
+}
+
+/// True when the input should be compiled as a user regex rather than a literal phrase.
+/// `|` alone is treated as an alternation of literal phrases.
+pub fn looks_like_user_regex(s: &str) -> bool {
+    s.chars().any(|c| ".+*?[](){}\\^$".contains(c))
+}
+
+/// Build a regex for a literal phrase (or `|`-separated phrases) that ignores whitespace,
+/// punctuation, CJK variant differences and whatever `gap` allows between characters.
+/// Returns `None` for regex-looking input or a query with no searchable characters.
+pub fn phrase_regex_literal(input: &str, gap: &str) -> Option<String> {
+    if looks_like_user_regex(input) {
+        return None;
+    }
+    let mut alts: Vec<String> = input
+        .split('|')
+        .filter_map(|alt| {
+            let chars: Vec<char> = alt
+                .chars()
+                .filter(|c| !c.is_whitespace() && !is_query_punct(*c))
+                .collect();
+            if chars.is_empty() {
+                return None;
+            }
+            let mut out = String::new();
+            for (i, ch) in chars.into_iter().enumerate() {
+                if i > 0 {
+                    out.push_str(gap);
+                }
+                push_char_class(&mut out, ch);
+            }
+            Some(out)
+        })
+        .collect();
+    match alts.len() {
+        0 => None,
+        1 => alts.pop(),
+        _ => Some(format!("(?:{})", alts.join("|"))),
     }
 }
 
@@ -99,18 +528,7 @@ pub fn ws_cjk_variant_fuzzy_regex_literal(s: &str) -> String {
             continue;
         }
         in_ws = false;
-        if let Some(vs) = cjk_variant_group(ch) {
-            out.push('[');
-            for vch in vs.chars() {
-                if vch == '\\' || vch == ']' || vch == '-' {
-                    out.push('\\');
-                }
-                out.push(vch);
-            }
-            out.push(']');
-        } else {
-            out.push_str(&regex::escape(&ch.to_string()));
-        }
+        push_char_class(&mut out, ch);
     }
     out
 }
@@ -786,6 +1204,51 @@ mod tests {
         let re = regex::Regex::new(&pat).unwrap();
         assert!(re.is_match("須彌山"));
         assert!(re.is_match("須弥山"));
+    }
+
+    #[test]
+    fn cjk_variant_groups_are_disjoint() {
+        let mut seen = std::collections::HashMap::new();
+        for g in CJK_VARIANT_GROUPS {
+            assert!(g.chars().count() >= 2, "group {g} has a single char");
+            for c in g.chars() {
+                if let Some(prev) = seen.insert(c, *g) {
+                    panic!("{c} appears in both {prev} and {g}");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn phrase_regex_crosses_markup_lines_and_variants() {
+        let pat = phrase_regex_literal("応無所住、而生其心", XML_PHRASE_GAP).unwrap();
+        let re = regex::Regex::new(&pat).unwrap();
+        let xml =
+            "<lb n=\"0749c22\"/>應無所住<anchor xml:id=\"a\"/>而生\n<lb n=\"0749c23\"/>其心。";
+        assert!(re.is_match(xml));
+        // okurigana / return marks / punctuation between kanji (SHINZEN kunten)
+        let pat = phrase_regex_literal("六大者五大", XML_PHRASE_GAP).unwrap();
+        let re = regex::Regex::new(&pat).unwrap();
+        assert!(re.is_match("六大<add type=\"okurigana\">ト</add>者五大"));
+        // a real text character in between must not be skipped
+        assert!(!re.is_match("六大ト者五大"));
+        // inline note content is skipped, but can also be matched explicitly
+        let re =
+            regex::Regex::new(&phrase_regex_literal("鉢囉底", XML_PHRASE_GAP).unwrap()).unwrap();
+        assert!(re.is_match("鉢囉<note place=\"inline\">二合</note>底"));
+        let re = regex::Regex::new(&phrase_regex_literal("鉢囉二合底", XML_PHRASE_GAP).unwrap())
+            .unwrap();
+        assert!(re.is_match("鉢囉<note place=\"inline\">二合</note>底"));
+    }
+
+    #[test]
+    fn phrase_regex_alternation_and_regex_passthrough() {
+        let pat = phrase_regex_literal("布施|檀波羅蜜", TEXT_PHRASE_GAP).unwrap();
+        let re = regex::Regex::new(&pat).unwrap();
+        assert!(re.is_match("行檀\n波羅蜜"));
+        assert!(re.is_match("布、施"));
+        assert!(phrase_regex_literal("布施.{0,3}持戒", TEXT_PHRASE_GAP).is_none());
+        assert!(phrase_regex_literal("，。", TEXT_PHRASE_GAP).is_none());
     }
 
     #[test]

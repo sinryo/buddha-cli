@@ -190,6 +190,32 @@ fn resolve_title_candidates(
     out
 }
 
+/// Resolve candidate for a curated common name; non-local Taishō works point to SAT.
+pub(crate) fn common_title_candidate(
+    c: &buddha_core::common_titles::CommonTitle,
+) -> serde_json::Value {
+    if c.local {
+        json!({
+            "source": "cbeta",
+            "id": c.id,
+            "title": c.title,
+            "score": 1.0,
+            "fetch": {"tool": "cbeta_fetch", "args": {"id": c.id}},
+            "resolvedBy": "common-name"
+        })
+    } else {
+        json!({
+            "source": "sat",
+            "id": c.id,
+            "title": c.title,
+            "score": 1.0,
+            "fetch": {"tool": "sat_search", "args": {"query": c.title}},
+            "note": "Taishō vols. 56–84 are not in local CBETA: read via SAT, or SHINZEN for Shingon works",
+            "resolvedBy": "common-name"
+        })
+    }
+}
+
 pub(crate) fn resolve(
     query: &str,
     sources: &[String],
@@ -441,6 +467,13 @@ pub(crate) fn resolve(
         });
         cands_scored.push((1.20 + bias, cand));
         direct_id_mode = true;
+    }
+
+    // Common scripture names (法華経, 大日経, 十住心論 …) that title indexes miss.
+    if !direct_id_mode {
+        for c in buddha_core::common_titles::common_title_matches(q) {
+            cands_scored.push((1.15, common_title_candidate(c)));
+        }
     }
 
     // Title index resolution (parallelize across corpora)

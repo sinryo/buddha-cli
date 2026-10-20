@@ -3,7 +3,7 @@ use glob::glob;
 use ignore::WalkBuilder;
 use regex::Regex;
 use std::path::{Path, PathBuf};
-use std::sync::Mutex;
+use std::sync::{Mutex, OnceLock};
 
 pub fn buddha_home() -> PathBuf {
     // BUDDHA_DIR takes priority
@@ -187,47 +187,86 @@ pub fn find_exact_file_by_name(root: &Path, filename: &str) -> Option<PathBuf> {
 /// Fast direct path resolution for CBETA using glob patterns.
 /// This avoids expensive directory traversal when the ID format is known.
 pub fn resolve_cbeta_path_direct(id: &str) -> Option<PathBuf> {
-    let re = Regex::new(r"^([A-Za-z]+)(\d+)$").ok()?;
-    let root = cbeta_root();
+    resolve_cbeta_path_direct_at(&cbeta_root(), id)
+}
 
-    if let Some(c) = re.captures(id) {
-        let canon = c[1].to_uppercase();
-        let num = &c[2];
+/// Accepts the usual ways people write a CBETA number and maps them to the file:
+/// `T0235`, `T235`, `T8n235`, `T08n0235`, `T0924A` / `T924A` (lettered sub-texts),
+/// `T0924` (falls back to the first lettered part when no plain file exists),
+/// `J19nB044`, `GA021n0019`.
+fn resolve_cbeta_path_direct_at(root: &Path, id: &str) -> Option<PathBuf> {
+    static ID_RE: OnceLock<Regex> = OnceLock::new();
+    let re = ID_RE.get_or_init(|| {
+        Regex::new(r"^([A-Za-z]{1,2})(?:(\d{1,3})[nN])?([A-Za-z]?)(\d{1,4})([A-Za-z]?)$").unwrap()
+    });
+    let c = re.captures(id.trim())?;
+    let canon = c[1].to_uppercase();
+    let vol: Option<u32> = c.get(2).and_then(|m| m.as_str().parse().ok());
+    let pre = c
+        .get(3)
+        .map(|m| m.as_str().to_uppercase())
+        .unwrap_or_default();
+    let digits = &c[4];
+    let suf = c.get(5).map(|m| m.as_str()).unwrap_or("");
+    let width = 4usize.saturating_sub(pre.len());
+    let num = format!("{}{:0>width$}", pre, digits, width = width);
 
-        // Pattern: xml-p5/{CANON}/{CANON}*/T*n{NUM}.xml
-        // e.g., T0001 -> xml-p5/T/T*/T*n0001.xml
-        let pattern = format!(
-            "{}/{}/{}*/{}*n{}.xml",
-            root.display(),
-            canon,
-            canon,
-            canon,
-            num
-        );
-
-        if let Ok(paths) = glob(&pattern) {
-            if let Some(entry) = paths.filter_map(|e| e.ok()).next() {
-                return Some(entry);
-            }
+    let pattern = format!(
+        "{}/{}/{}*/{}*n{}*.xml",
+        root.display(),
+        canon,
+        canon,
+        canon,
+        num
+    );
+    let mut exact: Vec<PathBuf> = Vec::new();
+    let mut lettered: Vec<PathBuf> = Vec::new();
+    for path in glob(&pattern).ok()?.filter_map(|e| e.ok()) {
+        let stem = path.file_stem().and_then(|s| s.to_str()).unwrap_or("");
+        let Some((head, tail)) = stem.split_once('n') else {
+            continue;
+        };
+        let file_vol: Option<u32> = head[canon.len().min(head.len())..].parse().ok();
+        if vol.is_some() && file_vol != vol {
+            continue;
         }
-
-        // Fallback: try with lowercase canon
-        let pattern_lower = format!(
-            "{}/{}/{}*/{}*n{}.xml",
-            root.display(),
-            canon.to_lowercase(),
-            canon.to_lowercase(),
-            canon.to_lowercase(),
-            num
-        );
-        if let Ok(paths) = glob(&pattern_lower) {
-            if let Some(entry) = paths.filter_map(|e| e.ok()).next() {
-                return Some(entry);
-            }
+        let Some(rest) = tail.strip_prefix(num.as_str()) else {
+            continue;
+        };
+        // No suffix asked: a lettered part (T0924 → T19n0924A) is the fallback.
+        // Suffix asked: tolerate case (T0236A → T08n0236a).
+        let lettered_part = if suf.is_empty() {
+            rest.len() == 1 && rest.chars().all(|c| c.is_ascii_alphabetic())
+        } else {
+            rest.eq_ignore_ascii_case(suf)
+        };
+        if rest == suf {
+            exact.push(path);
+        } else if lettered_part {
+            lettered.push(path);
         }
     }
+    exact.sort();
+    lettered.sort();
+    exact
+        .into_iter()
+        .next()
+        .or_else(|| lettered.into_iter().next())
+}
 
-    None
+/// Why a CBETA id may be missing locally, for the not-found message. The bundled
+/// CBETA XML has Taishō vols. 1–55 and 85; vols. 56–84 (nos. 2185–2731, Japanese
+/// works such as Kūkai's) must be read through SAT, or SHINZEN for Shingon works.
+pub fn cbeta_missing_hint(id: &str) -> Option<String> {
+    let re = Regex::new(r"^[Tt](?:\d{1,3}[nN])?0*(\d{1,4})[A-Za-z]?$").ok()?;
+    let no: u32 = re.captures(id.trim())?[1].parse().ok()?;
+    (2185..=2731).contains(&no).then(|| {
+        format!(
+            "T{:04} is in Taishō vols. 56–84 (Japanese works), which local CBETA does not include; \
+             use sat-search/sat-fetch, or shinzen-work-catalog for Shingon works",
+            no
+        )
+    })
 }
 
 /// Resolve CBETA path by canonical id, trying fast glob first, then fallback scan.
@@ -237,43 +276,7 @@ pub fn resolve_cbeta_path_by_id(id: &str) -> Option<PathBuf> {
         return Some(path);
     }
 
-    // Fallback: slower scan for non-standard IDs using ignore crate
-    let m = Regex::new(r"^([A-Za-z]+)(\d+)$").ok()?;
     let root = cbeta_root();
-    if let Some(c) = m.captures(id) {
-        let canon = c[1].to_string();
-        let num = c[2].to_string();
-        let search_pattern = format!("n{}", num);
-        let result: Mutex<Option<PathBuf>> = Mutex::new(None);
-
-        WalkBuilder::new(root.join(&canon))
-            .hidden(false)
-            .git_ignore(false)
-            .build_parallel()
-            .run(|| {
-                let search_pattern = search_pattern.clone();
-                let result = &result;
-                Box::new(move |entry| {
-                    if result.lock().unwrap().is_some() {
-                        return ignore::WalkState::Quit;
-                    }
-                    if let Ok(e) = entry {
-                        if e.file_type().is_some_and(|ft| ft.is_file()) {
-                            let name = e.file_name().to_string_lossy().to_lowercase();
-                            if name.contains(&search_pattern) && name.ends_with(".xml") {
-                                *result.lock().unwrap() = Some(e.path().to_path_buf());
-                                return ignore::WalkState::Quit;
-                            }
-                        }
-                    }
-                    ignore::WalkState::Continue
-                })
-            });
-
-        if let Some(path) = result.into_inner().unwrap() {
-            return Some(path);
-        }
-    }
 
     // fallback: anywhere *id*.xml
     let id_lower = id.to_lowercase();
@@ -852,6 +855,44 @@ pub fn resolve_gretil_by_id(index: &[IndexEntry], id: &str) -> Option<PathBuf> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn cbeta_ids_resolve_in_every_common_spelling() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        for f in [
+            "T/T01/T01n0001.xml",
+            "T/T08/T08n0235.xml",
+            "T/T08/T08n0236a.xml",
+            "T/T08/T08n0236b.xml",
+            "T/T19/T19n0924A.xml",
+            "T/T19/T19n0924B.xml",
+            "T/T39/T39n1789.xml",
+            "J/J19/J19nB044.xml",
+            "GA/GA021/GA021n0019.xml",
+        ] {
+            let p = root.join(f);
+            std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+            std::fs::write(p, "<TEI/>").unwrap();
+        }
+        let stem = |id: &str| {
+            resolve_cbeta_path_direct_at(root, id)
+                .map(|p| p.file_stem().unwrap().to_string_lossy().to_string())
+        };
+        for id in ["T235", "T0235", "T8n235", "T08n0235", "t0235"] {
+            assert_eq!(stem(id).as_deref(), Some("T08n0235"), "{id}");
+        }
+        assert_eq!(stem("T1").as_deref(), Some("T01n0001"));
+        assert_eq!(stem("T0924A").as_deref(), Some("T19n0924A"));
+        assert_eq!(stem("T924B").as_deref(), Some("T19n0924B"));
+        assert_eq!(stem("T0924").as_deref(), Some("T19n0924A"));
+        assert_eq!(stem("T0236").as_deref(), Some("T08n0236a"));
+        assert_eq!(stem("J19nB044").as_deref(), Some("J19nB044"));
+        assert_eq!(stem("GA21n19").as_deref(), Some("GA021n0019"));
+        assert_eq!(stem("T9n235"), None);
+        assert!(cbeta_missing_hint("T2425").unwrap().contains("sat-fetch"));
+        assert!(cbeta_missing_hint("T0235").is_none());
+    }
+
     use super::*;
     use crate::IndexEntry;
     use std::collections::BTreeMap;

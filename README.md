@@ -294,7 +294,7 @@ Golden output includes the CLI version, so a release bump can intentionally chan
 
 ## Release
 
-Current release version: `0.6.17`.
+Current release version: `0.6.18`.
 
 Version numbers live in:
 
@@ -311,11 +311,11 @@ Release helper:
 # Inspect the next patch release without modifying files
 scripts/release.sh --patch --dry-run --no-fmt --no-test
 
-# Create commit, push branch, create v0.6.17 tag, push tag, create GitHub Release with generated notes
-scripts/release.sh 0.6.17 --push --tag --release --auto-notes
+# Create commit, push branch, create v0.6.18 tag, push tag, create GitHub Release with generated notes
+scripts/release.sh 0.6.18 --push --tag --release --auto-notes
 
 # Use CHANGELOG notes instead of GitHub generated notes
-scripts/release.sh 0.6.17 --push --tag --release
+scripts/release.sh 0.6.18 --push --tag --release
 ```
 
 Important: `scripts/release.sh` runs `git add -A` and commits. Review the working tree before using it, especially when unrelated changes are present.

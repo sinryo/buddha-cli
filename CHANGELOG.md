@@ -4,6 +4,31 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [0.6.18] - 2026-10-20
+
+### Fixed
+- CBETA and SHINZEN/SHOKU_SHINZEN full-text search found a phrase only when it sat unbroken on one XML line. Plain-text queries (and `A|B` alternatives) now match as phrases across line breaks, `<lb/>`/`<anchor/>`/`<g>` markup, inline notes (割注), punctuation, okurigana and return marks; e.g. 應無所住而生其心 now finds T08n0235, and 白文 queries such as 六大者五大及識 find kunten pages. Regex queries keep line-wise matching.
+- CBETA ID resolution accepts `T235`, `T8n235`, `T0924A`/`T924A`, `T0924` (first lettered part) and `GA21n19`; `T1` no longer resolves to an unrelated file by substring.
+- SHINZEN fetch/search attributions prefer the curated work-catalog page range over the body-text title heuristic, which also no longer takes its title from later pages (vol. 13 p. 6 is 弘法大師『即身成佛義』, not 頼瑜『即身成佛義顯得鈔』).
+- SAT search reports `NETWORK_ERROR` (CLI exit 11; MCP `isError` with `retryable: true`) when SAT is unreachable instead of an empty result.
+
+### Added
+- CJK variant folding for literal queries and highlights grew from 21 to ~330 groups (CBETA standard forms, Japanese 旧字体/新字体, simplified): 応=應, 説=說, 内=內, 衆=眾, 徧=遍 ….
+- Search hits carry `lb`/`lb_end` page-line markers, real CBETA titles, and `section: "apparatus"` for critical-apparatus lines; `cbeta-search --sort canon|matches` (default canon: Taishō first by text number) with `totalFilesMatched` (also in MCP `cbeta_search`/`search`).
+- `cbeta-fetch --lb 0749a15`; line-context fetches return `title`, `lbStart`, `lbEnd` and a Taishō `citation` (`No. 235, T08p749a12-17`). Not-found Taishō vols. 56–84 point to SAT/SHINZEN.
+- Global `--text` (or `BUDDHA_TEXT=1`) gives readable output when piped: search lists location + snippet + a ready-to-run fetch command and `N of M matching files` (CBETA, SHINZEN, SHOKU_SHINZEN); fetch prints a citation header (SHINZEN: catalog `preferredCitation` + work id), page-line labels on each CBETA line, and a continuation hint.
+- `buddha fetch <ID>` routes by prefix (T…/X… → CBETA, SZ… → SHINZEN, SKZ… → SHOKU_SHINZEN, DN… → Tipitaka; anything else → resolve); `buddha search --source X`; a bare first argument becomes `--query`/`--id`; boolean flags accept `true`/`false`.
+- `resolve` knows common scripture names (法華経, 大日経, 理趣経, 十住心論 …; local IDs verified against CBETA headers) and title-search ties prefer title matches and Taishō texts.
+
+### Changed
+- Version bumped: `buddha-core` 0.6.18, `buddha` 0.6.18, `buddha-mcp` 0.6.18.
+
+### Verification
+- 108 workspace tests passed, including phrase search across lines/markup/okurigana, CBETA ID spellings, citation ranges, argv aliases and common-name resolution.
+- Format and Clippy checks passed (no new warnings); golden CLI outputs differ only in the intended additions and ordering.
+- End-to-end check: an agent following the buddhism-research skill traced 一切衆生悉有仏性, 応無所住而生其心 and 六大無礙常瑜伽 to their sources with the CLI.
+
+
 ## [0.6.17] - 2026-09-05
 
 ### Fixed

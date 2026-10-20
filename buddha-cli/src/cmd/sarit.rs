@@ -137,6 +137,8 @@ pub fn sarit_search(
     let q = compile_query(query, FuzzyMode::Whitespace, false, true).0;
     let results = sarit_grep(&sarit_root(), &q, max_results, max_matches_per_file);
     super::common::corpus_grep_summary(
+        "sarit-fetch",
+        None,
         &q,
         &results,
         "Use sarit-fetch with the file_id to get full content",
