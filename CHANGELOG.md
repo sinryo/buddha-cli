@@ -4,6 +4,8 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [0.7.0] - 2026-11-12
+
 ### Fixed
 - MCP CBETA fetch returns the title, `lbStart`/`lbEnd` and a Taishō citation computed from the returned passage, also for batch and sliced fetches and `verify` (e.g. `No. 235, T08p749c22-23`).
 - Local CLI search reports `queryMode` (`phrase`, `regex` or `loose`) and warns that regular expressions do not cross lines; `^`/`$` anchors are recognized as regex, and highlights support alternatives and case-insensitive matches.
@@ -27,6 +29,7 @@ All notable changes to this project will be documented in this file.
 - `--limit` and `--rows` are accepted as aliases of `--max-results`.
 
 ### Changed
+- Version bumped: `buddha-core` 0.7.0, `buddha` 0.7.0, `buddha-mcp` 0.7.0.
 - Line-context fetches default to 2 lines before and 5 after everywhere. Previously the CLI and legacy MCP tools returned 10 before and 100 after, and unified MCP `fetch` 1 before and 3 after.
 - Local search, fetch and pipeline commands no longer clone or download a missing corpus. They fail with `DATA_UNAVAILABLE` (CLI exit 12; MCP `corpus_not_installed`) and point to `buddha init` or the installer; cross-corpus `search` lists the corpus as `skipped`.
 - A missing ID is `NOT_FOUND` with exit 10 in every local corpus, including `verify`. Tipitaka no longer returns another text for a nonexistent ID such as `DN99` and suggests nearby installed IDs (`DN34`, `DN33` …); SHOKU_SHINZEN page and work IDs behave the same way.
@@ -44,6 +47,7 @@ All notable changes to this project will be documented in this file.
 - The same queries as for the 0.6.18 build (7 corpora, 20 queries, phrase and regex) matched identical sets of files.
 - Differences in fetched text are limited to the intended ones: `<cb:mulu>` removal, paragraph line breaks and TEI header removal.
 - All 8 MCP tools were exercised over stdio.
+
 
 
 ## [0.6.18] - 2026-10-20

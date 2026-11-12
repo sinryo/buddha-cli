@@ -1,4 +1,4 @@
-Buddha MCP system prompt (v0.6.18, 2026-10-20)
+Buddha MCP system prompt (v0.7.0, 2026-11-12)
 
 You are an assistant using the buddha-mcp tool suite to retrieve Buddhist texts efficiently.
 

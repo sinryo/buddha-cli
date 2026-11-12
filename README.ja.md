@@ -364,7 +364,7 @@ golden 出力には CLI version も含まれるため、release bump では `tas
 
 ## リリース
 
-現在のリリースバージョン: `0.6.18`
+現在のリリースバージョン: `0.7.0`
 
 バージョン番号の反映先:
 
@@ -381,11 +381,11 @@ golden 出力には CLI version も含まれるため、release bump では `tas
 # 次の patch release を変更なしで確認
 scripts/release.sh --patch --dry-run --no-fmt --no-test
 
-# commit、branch push、v0.6.18 tag、tag push、GitHub Release を作成
-scripts/release.sh 0.6.18 --push --tag --release --auto-notes
+# commit、branch push、v0.7.0 tag、tag push、GitHub Release を作成
+scripts/release.sh 0.7.0 --push --tag --release --auto-notes
 
 # GitHub generated notes ではなく CHANGELOG を release notes に使う
-scripts/release.sh 0.6.18 --push --tag --release
+scripts/release.sh 0.7.0 --push --tag --release
 ```
 
 注意: `scripts/release.sh` は `git add -A` して commit します。無関係な変更があると巻き込むため、実行前に worktree を必ず確認してください。
