@@ -9,7 +9,7 @@ set -euo pipefail
 # - Updates README release examples version strings
 # - Moves CHANGELOG [Unreleased] contents into a new version section
 # - Runs cargo fmt + cargo test (unless disabled)
-# - Commits, and optionally pushes / tags / creates GitHub release
+# - Commits only the files above (never `git add -A`), and optionally pushes / tags / creates GitHub release
 #
 # Usage:
 #   scripts/release.sh <version> [--push] [--tag] [--release] [--auto-notes] [--dry-run] [--no-fmt] [--no-test] [--no-bump]
@@ -244,12 +244,29 @@ if [[ "$bump_flag" -eq 1 ]]; then
   fi
 fi
 
-# Commit
+# Commit only the files this script maintains. Never stage the whole tree:
+# untracked work in progress (docs/, scripts/) must not leak into a release.
+release_files=()
+for f in buddha-core/Cargo.toml buddha-cli/Cargo.toml buddha-mcp/Cargo.toml Cargo.lock \
+  docs/buddha_system_prompt.txt README.md README.ja.md README.zh-TW.md CHANGELOG.md; do
+  if git ls-files --error-unmatch -- "$f" >/dev/null 2>&1; then
+    release_files+=("$f")
+  fi
+done
+
 if [[ "$dry_run" -eq 1 ]]; then
-  echo "[dry-run] git add -A && git commit -m 'chore(release): ${tag}'"
+  echo "[dry-run] git add -- ${release_files[*]}"
+  echo "[dry-run] git commit -m 'chore(release): ${tag}' -- ${release_files[*]}"
 else
-  git add -A
-  git commit -m "chore(release): ${tag}" || echo "Nothing to commit; continuing"
+  git add -- "${release_files[@]}"
+  git commit -m "chore(release): ${tag}" -- "${release_files[@]}" || echo "Nothing to commit; continuing"
+fi
+
+# Anything else that changed (e.g. cargo fmt output) stays out of the release commit.
+other_changes="$(git status --porcelain --untracked-files=no | grep -v -F -f <(printf ' %s\n' "${release_files[@]}") || true)"
+if [[ -n "$other_changes" ]]; then
+  echo "Warning: these tracked changes are not part of the release commit:" >&2
+  echo "$other_changes" >&2
 fi
 
 # Push (branch only)
