@@ -1,4 +1,4 @@
-use crate::regex_utils::{apply_highlight, compile_query, FuzzyMode};
+use crate::regex_utils::{apply_highlight, FuzzyMode};
 use crate::{
     decode_xml_bytes, load_or_build_tipitaka_index_cli, resolve_tipitaka_path, slice_text_cli,
     SliceArgs,
@@ -41,6 +41,7 @@ pub fn tipitaka_fetch(args: &crate::Commands) -> anyhow::Result<()> {
         }
         let xml = decode_xml_bytes(&std::fs::read(&path)?);
         let mut text = if let Some(line_num) = line_number {
+            super::common::validate_line_number(&xml, *line_num)?;
             let before = context_lines.unwrap_or(*context_before);
             let after = context_lines.unwrap_or(*context_after);
             buddha_core::extract_xml_around_line_asymmetric(&xml, *line_num, before, after)
@@ -53,6 +54,9 @@ pub fn tipitaka_fetch(args: &crate::Commands) -> anyhow::Result<()> {
         } else {
             extract_text(&xml)
         };
+        if let Some(line_num) = line_number {
+            super::common::validate_line_text(&xml, *line_num, &text)?;
+        }
         if text.trim().is_empty() {
             if let Some(stem) = path.file_stem().and_then(|s| s.to_str()) {
                 if let Some(cand) = super::super::find_tipitaka_content_for_base(&stem) {
@@ -156,7 +160,7 @@ pub fn tipitaka_fetch(args: &crate::Commands) -> anyhow::Result<()> {
                 "jsonrpc":"2.0","id": serde_json::Value::Null,
                 "result": { "content": [{"type":"text","text": sliced}], "_meta": meta }
             });
-            println!("{}", serde_json::to_string(&envelope)?);
+            println!("{}", super::common::cli_json(&envelope)?);
         } else {
             println!("{}", sliced);
         }
@@ -166,19 +170,26 @@ pub fn tipitaka_fetch(args: &crate::Commands) -> anyhow::Result<()> {
 
 pub fn tipitaka_search(
     query: &str,
+    loose: bool,
     max_results: usize,
+    offset: usize,
     max_matches_per_file: usize,
     json: bool,
 ) -> anyhow::Result<()> {
-    let q = compile_query(query, FuzzyMode::Whitespace, false, true).0;
-    let results = tipitaka_grep(&tipitaka_root(), &q, max_results, max_matches_per_file);
-    super::common::corpus_grep_summary(
+    let q = buddha_core::text_utils::indic_query_pattern(query, loose);
+    let results = tipitaka_grep(&tipitaka_root(), &q, usize::MAX, max_matches_per_file);
+    let (results, total) = buddha_core::paginate_grep_results(results, offset, max_results);
+    super::common::indic_grep_summary(
         "tipitaka-fetch",
-        None,
+        Some(total),
         &q,
+        query,
+        loose,
         &results,
         "Use tipitaka-fetch with the file_id to get full content",
         json,
         super::common::SearchExtra::Structure,
+        offset,
+        serde_json::json!({"query":query,"maxResults":max_results,"maxMatchesPerFile":max_matches_per_file,"loose":loose}),
     )
 }

@@ -1,4 +1,4 @@
-use crate::regex_utils::{apply_highlight, compile_query, FuzzyMode};
+use crate::regex_utils::{apply_highlight, FuzzyMode};
 use crate::{
     decode_xml_bytes, load_or_build_sarit_index_cli, resolve_sarit_path_cli, slice_text_cli,
     SliceArgs,
@@ -42,6 +42,7 @@ pub fn sarit_fetch(args: &crate::Commands) -> anyhow::Result<()> {
         }
         let xml = decode_xml_bytes(&std::fs::read(&path)?);
         let (text, extraction_method) = if let Some(line_num) = line_number {
+            super::common::validate_line_number(&xml, *line_num)?;
             let before = context_lines.unwrap_or(*context_before);
             let after = context_lines.unwrap_or(*context_after);
             let context_text =
@@ -53,6 +54,9 @@ pub fn sarit_fetch(args: &crate::Commands) -> anyhow::Result<()> {
         } else {
             (extract_text_opts(&xml, *include_notes), "full".to_string())
         };
+        if let Some(line_num) = line_number {
+            super::common::validate_line_text(&xml, *line_num, &text)?;
+        }
         let slice = SliceArgs {
             page: *page,
             page_size: *page_size,
@@ -120,7 +124,7 @@ pub fn sarit_fetch(args: &crate::Commands) -> anyhow::Result<()> {
                 "jsonrpc":"2.0","id": serde_json::Value::Null,
                 "result": { "content": [{"type":"text","text": sliced}], "_meta": meta }
             });
-            println!("{}", serde_json::to_string(&envelope)?);
+            println!("{}", super::common::cli_json(&envelope)?);
         } else {
             println!("{}", sliced);
         }
@@ -130,19 +134,26 @@ pub fn sarit_fetch(args: &crate::Commands) -> anyhow::Result<()> {
 
 pub fn sarit_search(
     query: &str,
+    loose: bool,
     max_results: usize,
+    offset: usize,
     max_matches_per_file: usize,
     json: bool,
 ) -> anyhow::Result<()> {
-    let q = compile_query(query, FuzzyMode::Whitespace, false, true).0;
-    let results = sarit_grep(&sarit_root(), &q, max_results, max_matches_per_file);
-    super::common::corpus_grep_summary(
+    let q = buddha_core::text_utils::indic_query_pattern(query, loose);
+    let results = sarit_grep(&sarit_root(), &q, usize::MAX, max_matches_per_file);
+    let (results, total) = buddha_core::paginate_grep_results(results, offset, max_results);
+    super::common::indic_grep_summary(
         "sarit-fetch",
-        None,
+        Some(total),
         &q,
+        query,
+        loose,
         &results,
         "Use sarit-fetch with the file_id to get full content",
         json,
         super::common::SearchExtra::None,
+        offset,
+        serde_json::json!({"query":query,"maxResults":max_results,"maxMatchesPerFile":max_matches_per_file,"loose":loose}),
     )
 }

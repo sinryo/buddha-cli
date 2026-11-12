@@ -239,7 +239,8 @@ pub fn sat_search(
         qt.to_string()
     };
 
-    let wrap = sat_wrap7_search_json(&q_sent, rows, offs, fields, fq);
+    let fields_used = format!("{},body,fascnum,startid,fascnm", fields);
+    let wrap = sat_wrap7_search_json(&q_sent, rows, offs, &fields_used, fq);
     if autofetch {
         if let Some(w) = wrap.clone() {
             let docs = w
@@ -387,31 +388,8 @@ pub fn sat_search(
         return Ok(());
     }
 
-    let shown_start = if count == 0 { 0 } else { offs + 1 };
-    let shown_end = std::cmp::min(offs + rows, count as usize);
-    let mut summary = format!(
-        "{} results (showing {}-{}):\n\n",
-        count, shown_start, shown_end
-    );
-    for (i, d) in docs.iter().enumerate() {
-        let title = d.get("fascnm").and_then(|v| v.as_str()).unwrap_or("");
-        let useid = d.get("startid").and_then(|v| v.as_str()).unwrap_or("");
-        let tnum = useid
-            .split(',')
-            .next()
-            .map(|s| s.trim())
-            .filter(|s| !s.is_empty())
-            .map(|s| format!("T{}", s))
-            .unwrap_or_else(|| "?".to_string());
-        summary.push_str(&format!(
-            "{}. {} {} [useid: {}]\n",
-            shown_start + i,
-            tnum,
-            title,
-            useid
-        ));
-    }
-    summary.push_str("\n[hint] use sat-detail --useid <startid> (or sat-fetch --useid <startid>) to fetch full text.\n");
+    let summary =
+        buddha_core::operations::online_search_text("sat", &docs, count as usize, offs, 0);
 
     if json {
         let meta = serde_json::json!({

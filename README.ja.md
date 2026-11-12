@@ -77,15 +77,20 @@ unified MCP tools は既定で有効です（`BUDDHA_UNIFIED_TOOLS=0` で無効�
 
 | ツール | 用途 |
 |--------|------|
-| `fetch` | ID、`useid`、`lineno`、query、行番号、章節、文字範囲で本文取得 |
-| `search` | `cbeta`, `tipitaka`, `gretil`, `sarit`, `muktabodha`, `shinzen`, `shoku_shinzen`, `sat`, `jozen` の全文検索 |
+| `fetch` | 単独 ID またはローカルの `ids` を最大10件取得。`ID@lb` / `ID:行` で個別位置指定。一括時は既定で1件2000字 |
+| `verify` | 校訂後の本文で引用を検証し、exact/variant/partial/not_found・位置・出典を返す |
+| `search` | source 省略で字種に応じたローカル横断検索、明示的な `all` で導入済み全 corpus。個別 corpus と SAT/Jozen の検索も可能 |
 | `work_catalog` | `shinzen` / `shoku_shinzen` で書名・著者から作品を探し、`SZW` / `SKZW` と実行可能な次アクションを返す |
 | `title_search` | ローカル indexed corpus のタイトル検索 |
 | `pipeline` | `cbeta`, `gretil`, `sarit`, `muktabodha`, `shinzen`, `shoku_shinzen`, `sat` の検索 + 任意の自動取得 |
 | `resolve` | 人間の経典名/別名/ID を候補IDと次の fetch 呼び出しへ橋渡し |
 | `tibetan_search` | チベット語オンライン全文検索。単独ツールとして維持 |
 
-`info` / `profile` は互換性のため呼び出せますが、schema token 削減と誤ベンチマーク防止のため既定の一覧からは隠します。一覧に出す場合は `BUDDHA_MCP_DIAGNOSTIC_TOOLS=1` を設定します。応答は本文を `content`に保ち、状態・継続位置・引用・エラー・次の呼び出しを compact な `structuredContent` に返します。
+CLI の横断検索は `--source` 省略または `--source local` で字種を判定します。漢字・かなは CBETA / SHINZEN / SHOKU_SHINZEN、ラテン文字（ダイアクリティカル付きも含む）は Tipitaka / GRETIL / SARIT / MUKTABODHA が対象です。混在時は両方、明示的な `--source all` では全 corpus を検索します。各 corpus の一致ファイル総数と上位3件を返し、`--max-results` で全体件数を制限します。未導入は `skipped`、オンライン検索は別の nextAction で案内します。MCP では `source` 省略または `"all"` を使います。
+
+`verify` は fetch と同じ校訂後の本文を使い、句読点・訓点などを飛ばして照合します。異体字の対、本文どおりの表記、位置と出典を返し、指定位置と異なる場合は `locationMismatch` を付けます。最長一致部分が2文字以上かつ引用の半分以上なら `partial`、それ未満なら `not_found` と検索案内を返します。対象はローカルのみです。一括 fetch は一部の ID が見つからなくても他の結果を返し、`maxChars` は1件ごとに適用します。CLI の JSON 案内は実行可能な `command`、MCP は `tool` と `args` です。
+
+`info` / `profile` は互換性のため呼び出せますが、schema token 削減と誤ベンチマーク防止のため既定の一覧からは隠します。一覧に出す場合は `BUDDHA_MCP_DIAGNOSTIC_TOOLS=1` を設定します。応答は本文を `content` と `structuredContent.text` の両方に入れ、状態・継続位置・引用・エラー・次の呼び出しを `structuredContent` に返します。
 
 unified mode を無効にした場合、または古いクライアントが個別名を保持している場合でも、`cbeta_fetch`, `cbeta_search`, `gretil_pipeline`, `sat_detail`, `jozen_fetch`, `buddha_version` などの legacy tools は利用できます。
 
@@ -95,9 +100,16 @@ CBETA の CLI fetch と unified MCP fetch の既定出力は、TEIヘッダー�
 
 `buddha doctor --json` は、導入済みバイナリと全ローカルコーパスのパス・利用可否を機械可読JSONで返します。
 
+ローカルの検索・取得・インデックス作成はコーパスを自動取得しません。対応するコーパスは `buddha init` またはインストーラーで取得し、SHINZEN・SHOKU_SHINZEN は別途用意してください。`doctor` は整理が必要な可能性を警告しますが、ファイルは削除しません。`buddha update --yes` は `$BUDDHA_DIR/bin` に導入したバイナリでインデックスを再構築します。
+
 ID が分かっている場合は直接取得します。
 
 ```bash
+buddha --text search 六大無礙 --max-results 6
+buddha search dharma --source all --json
+buddha verify --id T08n0235 --quote 応無所住而生其心 --json
+buddha verify --id T08n0235 --quote 應無所住而生其心 --lb 0750a01 --json
+buddha --text fetch T08n0235@0749c22 SZ13p0006:12 T9999
 buddha cbeta-fetch --id T0262 --max-chars 4000 --json
 buddha tipitaka-fetch --id DN1 --max-chars 2000 --json
 buddha gretil-fetch --id saddharmapuNDarIka --max-chars 4000 --json
@@ -118,7 +130,7 @@ buddha gretil-title-search --query "vajracchedika" --json
 
 ```bash
 buddha cbeta-search --query "阿弥陀" --max-results 10 --json
-buddha cbeta-fetch --id T0858 --line-number 342 --context-before 2 --context-after 6 --highlight "阿弥陀" --json
+buddha cbeta-fetch --id T235 --line-number 111 --context-before 2 --context-after 6 --highlight "須菩提" --json
 buddha tipitaka-search --query "nibbana|vipassana" --max-results 15 --json
 buddha gretil-search --query "dharma" --max-results 10 --json
 buddha shinzen-search --query "法身偈" --max-results 10 --json
@@ -128,6 +140,10 @@ buddha shinzen-fetch --id SZW0001 --json
 buddha shoku-shinzen-work-catalog --query "<作品名または著者>" --json
 buddha shoku-shinzen-fetch --id SKZW0001 --max-chars 2000 --json
 ```
+
+ローカル corpus の検索・pipeline は `--offset N`（既定 0、MCP は `offset`、ローカルでは `offs` も同義）で並び順の先頭 N 件を飛ばし、`totalFilesMatched` と、続きがある場合は `nextOffset`・次の検索アクションを返します。総数以上の offset は警告付きの空ページになります。
+
+ローカル本文検索の CLI 応答は `_meta.queryMode` に `phrase` または `regex` を返します。正規表現は行をまたがないため、句として探す場合は正規表現の記号を外してください。行番号が範囲外、または指定範囲の本文が空の場合、取得はエラーとなり、有効な XML 行番号の範囲を示します。
 
 `shinzen-work-catalog` が返す `SZW` 作品IDをそのまま fetch すると、作品の冒頭ページへ自動解決されます（`_meta.resolvedFromWork`）。SHINZEN の JSON 応答では、検索ヒットと fetch 結果に best-effort の `biblio` metadata を含めます。書名・著者は TEI header ではなく、CiNii/佛學數位圖書館などの公開目録、ローカル総目次、巻頭題、柱、奥書、周辺頁から推定します。fetch 結果には、事前生成した `shinzen-work-catalog.json` に基づく `work` metadata と、そのまま引用に使える `_meta.preferredCitation`（例: 頼瑜『即身成佛義顯得鈔』、真言宗全書 第13巻 047頁）も含めます。生成された `citation` を採用できるかは `confidence` を見て判断してください。カタログ entry の値は `medium`・`range-only`・`metadata-only` のいずれかで、`metadata-only` は書誌としては引用可能（書名・著者は確認済み）だが頁範囲が未確定という意味です。この場合は作品IDの fetch ではなく SHINZEN 内の検索を使ってください。未確定の場合はページ単位の引用と warning を返します。
 
@@ -213,6 +229,8 @@ JSON mode のエラーは stderr に出ます。
 
 CBETA・Tipitaka・GRETIL・SARIT・MUKTABODHAのfetchには `--id` または `--query` が必要で、併用時はIDを優先します。本文未発見は終了10、不正引数は終了2となり、JSONモードでは `INVALID_ARGUMENT` を返します。取得範囲はハイライト前のUnicode文字数で表し、続きは `result._meta.nextStartChar` から取得します。対応するコマンドの `--full` は部分取得の指定を無視します。
 
+Tipitaka・GRETIL・SARIT・MUKTABODHA の通常検索は合成形・分解形と `ṃ`/`ṁ` を同一視します。`--loose`（`gretil-pipeline` も対応、MCP は `loose:true`）ではダイアクリティカルと大小文字を無視し、Harvard-Kyoto も照合して `queryMode:"loose"` を返します。正規表現との併用は不正引数になり、ASCII の通常検索が0件なら loose での再検索を案内します。
+
 MCP のツール失敗は `result.isError: true` と、`structuredContent.error` / `_meta.error` の `category`, `code`, `field`, `retryable` を返します。安全に修正できる場合は実行可能な `nextActions` も返します。`retryable: false` の呼び出しを同じ引数で繰り返さないでください。`retryable: true` は短い待機後に最大1回だけ再試行し、再失敗したら停止して報告してください。
 
 終了コード:
@@ -256,6 +274,7 @@ $BUDDHA_DIR/
 | `BUDDHA_MCP_AUTO_FILES` | 自動取得する既定ファイル数 |
 | `BUDDHA_MCP_AUTO_MATCHES` | 自動取得する既定 match 数 |
 | `BUDDHA_MCP_INLINE_MAX_CHARS` | MCP inline text の上限。超過時は `cache/mcp-spill/` へ退避。`0` で無効 |
+| `BUDDHA_MCP_STRUCTURED_TEXT` | `0` で `structuredContent.text` を省略（既定は含める） |
 | `BUDDHA_HL_PREFIX`, `BUDDHA_HL_SUFFIX` | highlight marker |
 | `BUDDHA_SNIPPET_PREFIX`, `BUDDHA_SNIPPET_SUFFIX` | pipeline snippet marker |
 | `BUDDHA_REPO_MIN_DELAY_MS`, `BUDDHA_REPO_USER_AGENT`, `BUDDHA_REPO_RESPECT_ROBOTS` | データ取得時の rate/robots 配慮 |

@@ -461,20 +461,51 @@ fn ensure_dir(p: &Path) {
     let _ = fs::create_dir_all(p);
 }
 
-fn ensure_cbeta_data() {
-    let _ = buddha_core::repo::ensure_cbeta_data_at(&cbeta_root());
+fn search_snippet(context: &str) -> String {
+    static TAGS: OnceLock<Regex> = OnceLock::new();
+    TAGS.get_or_init(|| Regex::new(r"<[^>]*>").unwrap())
+        .replace_all(context, "")
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
 }
 
-fn ensure_tipitaka_data() {
-    let _ = buddha_core::repo::ensure_tipitaka_data_at(&buddha_home().join("tipitaka-xml"));
-}
-
-fn ensure_sarit_data() {
-    let _ = buddha_core::repo::ensure_sarit_data_at(&sarit_root());
-}
-
-fn ensure_muktabodha_dir() {
-    buddha_core::repo::ensure_muktabodha_dir(&muktabodha_root());
+fn cbeta_context_lb_range(xml: &str, args: &serde_json::Value) -> Option<(String, String)> {
+    if args.get("full").and_then(|v| v.as_bool()).unwrap_or(false)
+        || args.get("startChar").is_some()
+    {
+        return None;
+    }
+    let (line, default_before, default_after) = if let Some(lb) = args
+        .get("lb")
+        .and_then(|v| v.as_str())
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+    {
+        let pattern = format!(r#"<lb\b[^>]*\bn\s*=\s*["']{}["']"#, regex::escape(lb));
+        let found = Regex::new(&pattern).ok()?.find(xml)?;
+        (xml[..found.start()].lines().count() + 1, 1, 3)
+    } else {
+        (
+            args.get("lineNumber").and_then(|v| v.as_u64())? as usize,
+            10,
+            100,
+        )
+    };
+    let common = args.get("contextLines").and_then(|v| v.as_u64());
+    let before = args
+        .get("contextBefore")
+        .and_then(|v| v.as_u64())
+        .or(common)
+        .unwrap_or(default_before) as usize;
+    let after = args
+        .get("contextAfter")
+        .and_then(|v| v.as_u64())
+        .or(common)
+        .unwrap_or(default_after) as usize;
+    let raw = extract_text_around_line_asymmetric(xml, line, before, after);
+    let markers = buddha_core::lb_markers(&raw);
+    Some((markers.first()?.1.clone(), markers.last()?.1.clone()))
 }
 
 fn load_index(path: &Path) -> Option<Vec<IndexEntry>> {
@@ -515,7 +546,7 @@ fn handle_initialize(id: serde_json::Value, params: &serde_json::Value) -> serde
                 "tools": {}
             },
             "serverInfo": { "name": "buddha-mcp", "title": "Buddha Text Research", "version": VERSION },
-            "instructions": "Use fetch directly for recognized IDs (T/DN/SZ/SZW/SKZ/SKZW). If corpus or ID is unknown, call resolve. Otherwise call search with an explicit source, then execute only the most relevant returned nextAction with lineNumber+highlight. Prefer format=plain and bounded maxChars; continue from structuredContent.page.nextStartChar. Treat result.isError=true as failure, follow nextActions once, and never retry unchanged validation arguments. When retryable=true, retry at most once after a short delay, then stop and report. Use work_catalog first for a work title or author in shinzen/shoku_shinzen."
+            "instructions": "Use fetch directly for recognized IDs (T/DN/SZ/SZW/SKZ/SKZW). Use verify to confirm quotations. If the corpus is unknown, omit source in search. For title lookup call resolve. Otherwise call search, then execute only the most relevant returned nextAction with lineNumber+highlight. Read structuredContent.text when present, otherwise content. Prefer format=plain and bounded maxChars; continue from structuredContent.page.nextStartChar. Treat result.isError=true as failure, follow nextActions once, and never retry unchanged validation arguments. When retryable=true, retry at most once after a short delay, then stop and report. Use work_catalog first for a work title or author in shinzen/shoku_shinzen."
         }
     })
 }
@@ -566,8 +597,8 @@ fn legacy_tools_list() -> Vec<serde_json::Value> {
             "startChar":{"type":"number"},"endChar":{"type":"number"},"maxChars":{"type":"number"},
             "page":{"type":"number"},"pageSize":{"type":"number"},
             "lineNumber":{"type":"number","description":"Target XML line number for context extraction (from *_search). Prefer lb when available."},
-            "contextBefore":{"type":"number","description":"Number of lines before target line (default: 10)"},
-            "contextAfter":{"type":"number","description":"Number of lines after target line (default: 100)"},
+            "contextBefore":{"type":"number","description":"Number of lines before target line (default: 2)"},
+            "contextAfter":{"type":"number","description":"Number of lines after target line (default: 5)"},
             "contextLines":{"type":"number","description":"Number of lines before/after target line (deprecated, use contextBefore/contextAfter)"}
         }})),
         tool("cbeta_search", "Fast regex search over CBETA; returns _meta.fetchSuggestions (use cbeta_fetch with id+lineNumber+highlight). IMPORTANT: When fetching, always include highlight param with search term!", json!({"type":"object","properties":{
@@ -669,11 +700,12 @@ fn legacy_tools_list() -> Vec<serde_json::Value> {
             "page":{"type":"number"},
             "pageSize":{"type":"number"},
             "lineNumber":{"type":"number","description":"Target line number for context extraction"},
-            "contextBefore":{"type":"number","description":"Number of lines before target line (default: 10)"},
-            "contextAfter":{"type":"number","description":"Number of lines after target line (default: 100)"},
+            "contextBefore":{"type":"number","description":"Number of lines before target line (default: 2)"},
+            "contextAfter":{"type":"number","description":"Number of lines after target line (default: 5)"},
             "contextLines":{"type":"number","description":"Number of lines before/after target line (deprecated, use contextBefore/contextAfter)"}
         }})),
         tool("tipitaka_search", "Fast regex search over Tipitaka; returns _meta.fetchSuggestions (use tipitaka_fetch with id+lineNumber+highlight). Always include highlight param when fetching!", json!({"type":"object","properties":{
+            "loose":{"type":"boolean","description":"Ignore Latin diacritics and case; literal Pali/Sanskrit queries only."},
             "query":{"type":"string","description":"Regular expression pattern to search for"},
             "maxResults":{"type":"number","description":"Maximum number of files to return (default: 20)"},
             "maxMatchesPerFile":{"type":"number","description":"Maximum matches per file (default: 5)"}
@@ -682,6 +714,7 @@ fn legacy_tools_list() -> Vec<serde_json::Value> {
         // GRETIL (Sanskrit TEI)
         tool("gretil_title_search", "Title-based search in GRETIL corpus. Note: If text name is known, skip search and use gretil_fetch directly with id!", json!({"type":"object","properties":{"query":{"type":"string","description":"Title to search. If you know the file stem (e.g., 'saddharmapuNDarIka'), use gretil_fetch with id instead."},"limit":{"type":"number"}},"required":["query"]})),
         tool("gretil_search", "Fast regex search over GRETIL; returns _meta.fetchSuggestions (use gretil_fetch with id+lineNumber+highlight). Always include highlight param when fetching!", json!({"type":"object","properties":{
+            "loose":{"type":"boolean","description":"Ignore Latin diacritics and case; literal Pali/Sanskrit queries only."},
             "query":{"type":"string","description":"Regular expression pattern to search for"},
             "maxResults":{"type":"number","description":"Maximum number of files to return (default: 20)"},
             "maxMatchesPerFile":{"type":"number","description":"Maximum matches per file (default: 5)"}
@@ -701,11 +734,12 @@ fn legacy_tools_list() -> Vec<serde_json::Value> {
             "startChar":{"type":"number"},"endChar":{"type":"number"},"maxChars":{"type":"number"},
             "page":{"type":"number"},"pageSize":{"type":"number"},
             "lineNumber":{"type":"number","description":"Target line number for context extraction"},
-            "contextBefore":{"type":"number","description":"Number of lines before target line (default: 10)"},
-            "contextAfter":{"type":"number","description":"Number of lines after target line (default: 100)"},
+            "contextBefore":{"type":"number","description":"Number of lines before target line (default: 2)"},
+            "contextAfter":{"type":"number","description":"Number of lines after target line (default: 5)"},
             "contextLines":{"type":"number","description":"Number of lines before/after target line (deprecated, use contextBefore/contextAfter)"}
         }})),
         tool("gretil_pipeline", "GRETIL summarize/context pipeline; set autoFetch=false for summary-only (see gretil_search _meta.pipelineHint)", json!({"type":"object","properties":{
+            "loose":{"type":"boolean","description":"Ignore Latin diacritics and case; literal Pali/Sanskrit queries only."},
             "query":{"type":"string"},
             "maxResults":{"type":"number"},
             "maxMatchesPerFile":{"type":"number"},
@@ -727,6 +761,7 @@ fn legacy_tools_list() -> Vec<serde_json::Value> {
         // SARIT (TEI P5)
         tool("sarit_title_search", "Title-based search in SARIT corpus. Note: If file stem is known, skip search and use sarit_fetch directly with id!", json!({"type":"object","properties":{"query":{"type":"string","description":"Title to search. If you know the file stem (e.g., 'asvaghosa-buddhacarita'), use sarit_fetch with id instead."},"limit":{"type":"number"}},"required":["query"]})),
         tool("sarit_search", "Fast regex search over SARIT; returns _meta.fetchSuggestions (use sarit_fetch with id+lineNumber+highlight). Always include highlight param when fetching!", json!({"type":"object","properties":{
+            "loose":{"type":"boolean","description":"Ignore Latin diacritics and case; literal Pali/Sanskrit queries only."},
             "query":{"type":"string","description":"Regular expression pattern to search for"},
             "maxResults":{"type":"number","description":"Maximum number of files to return (default: 20)"},
             "maxMatchesPerFile":{"type":"number","description":"Maximum matches per file (default: 5)"}
@@ -746,11 +781,12 @@ fn legacy_tools_list() -> Vec<serde_json::Value> {
             "startChar":{"type":"number"},"endChar":{"type":"number"},"maxChars":{"type":"number"},
             "page":{"type":"number"},"pageSize":{"type":"number"},
             "lineNumber":{"type":"number","description":"Target line number for context extraction"},
-            "contextBefore":{"type":"number","description":"Number of lines before target line (default: 10)"},
-            "contextAfter":{"type":"number","description":"Number of lines after target line (default: 100)"},
+            "contextBefore":{"type":"number","description":"Number of lines before target line (default: 2)"},
+            "contextAfter":{"type":"number","description":"Number of lines after target line (default: 5)"},
             "contextLines":{"type":"number","description":"Number of lines before/after target line (deprecated, use contextBefore/contextAfter)"}
         }})),
         tool("sarit_pipeline", "SARIT summarize/context pipeline; set autoFetch=false for summary-only (see sarit_search _meta.pipelineHint)", json!({"type":"object","properties":{
+            "loose":{"type":"boolean","description":"Ignore Latin diacritics and case; literal Pali/Sanskrit queries only."},
             "query":{"type":"string"},
             "maxResults":{"type":"number"},
             "maxMatchesPerFile":{"type":"number"},
@@ -841,6 +877,7 @@ fn legacy_tools_list() -> Vec<serde_json::Value> {
         // MUKTABODHA
         tool("muktabodha_title_search", "Title-based search in MUKTABODHA Sanskrit library (IAST). If file stem is known, use muktabodha_fetch with id.", json!({"type":"object","properties":{"query":{"type":"string"},"limit":{"type":"number"}},"required":["query"]})),
         tool("muktabodha_search", "Fast regex search over MUKTABODHA; returns _meta.fetchSuggestions (use muktabodha_fetch with id+lineNumber+highlight).", json!({"type":"object","properties":{
+            "loose":{"type":"boolean","description":"Ignore Latin diacritics and case; literal Pali/Sanskrit queries only."},
             "query":{"type":"string","description":"Regular expression pattern to search for"},
             "maxResults":{"type":"number","description":"Maximum number of files to return (default: 20)"},
             "maxMatchesPerFile":{"type":"number","description":"Maximum matches per file (default: 5)"}
@@ -863,6 +900,7 @@ fn legacy_tools_list() -> Vec<serde_json::Value> {
             "contextLines":{"type":"number"}
         }})),
         tool("muktabodha_pipeline", "MUKTABODHA summarize/context pipeline; set autoFetch=false for summary-only.", json!({"type":"object","properties":{
+            "loose":{"type":"boolean","description":"Ignore Latin diacritics and case; literal Pali/Sanskrit queries only."},
             "query":{"type":"string"},
             "maxResults":{"type":"number"},
             "maxMatchesPerFile":{"type":"number"},
@@ -884,7 +922,17 @@ fn legacy_tools_list() -> Vec<serde_json::Value> {
     ]
 }
 
-fn tool(name: &str, description: &str, input_schema: serde_json::Value) -> serde_json::Value {
+fn tool(name: &str, description: &str, mut input_schema: serde_json::Value) -> serde_json::Value {
+    if let Some((source, kind)) = name.rsplit_once('_') {
+        if matches!(
+            source,
+            "cbeta" | "tipitaka" | "gretil" | "sarit" | "muktabodha" | "shinzen" | "shoku_shinzen"
+        ) && matches!(kind, "search" | "pipeline")
+        {
+            input_schema["properties"]["offset"] = json!({"type":"integer","minimum":0,"default":0,"description":"Skip this many sorted matching files."});
+            input_schema["properties"]["offs"] = json!({"type":"integer","minimum":0,"description":"Alias for offset for local corpora."});
+        }
+    }
     json!({"name": name, "description": description, "inputSchema": input_schema })
 }
 
@@ -920,8 +968,7 @@ fn load_or_build_cbeta_index() -> &'static Vec<IndexEntry> {
                 return v;
             }
         }
-        // Ensure data exists (clone if needed)
-        ensure_cbeta_data();
+
         let entries = build_cbeta_index(&cbeta_root());
         let _ = save_index(&out, &entries);
         entries
@@ -1019,7 +1066,7 @@ fn load_or_build_tipitaka_index() -> &'static Vec<IndexEntry> {
                 return v;
             }
         }
-        ensure_tipitaka_data();
+
         let mut entries = build_tipitaka_index(&tipitaka_root());
         entries.retain(|e| !e.path.ends_with(".toc.xml"));
         let _ = save_index(&out, &entries);
@@ -1065,7 +1112,7 @@ fn load_or_build_sarit_index() -> &'static Vec<IndexEntry> {
                 return v;
             }
         }
-        ensure_sarit_data();
+
         let entries = build_sarit_index(&sarit_root());
         let _ = save_index(&out, &entries);
         entries
@@ -1104,6 +1151,23 @@ fn load_or_build_shinzen_index() -> &'static Vec<IndexEntry> {
     })
 }
 
+fn catalog_empty_result(source: &str, query: Option<&str>) -> (String, Vec<serde_json::Value>) {
+    let text = format!("0 件。題の一部や著者で検索するか、search {{source: {source}, query: …}} で本文を検索してください。");
+    let actions = query.filter(|q| !q.trim().is_empty()).map(|q| vec![json!({"tool":format!("{source}_search"),"args":{"query":q},"reason":"catalog-empty"})]).unwrap_or_default();
+    (text, actions)
+}
+
+#[cfg(test)]
+#[test]
+fn empty_catalog_suggests_body_search_for_each_source() {
+    for source in ["shinzen", "shoku_shinzen"] {
+        let (text, actions) = catalog_empty_result(source, Some("護摩"));
+        assert!(text.contains("0 件") && text.contains("本文"));
+        assert_eq!(actions[0]["tool"], format!("{source}_search"));
+        assert_eq!(actions[0]["args"]["query"], "護摩");
+    }
+}
+
 fn load_or_build_shinzen_work_catalog() -> &'static ShinzenWorkCatalog {
     SHINZEN_WORK_CATALOG_CACHE.get_or_init(|| {
         if !shinzen_library_available() {
@@ -1133,8 +1197,10 @@ fn load_or_build_shinzen_work_catalog() -> &'static ShinzenWorkCatalog {
     })
 }
 
-const SHINZEN_MISSING_MESSAGE: &str = "SHINZENライブラリがありません";
-const SHOKU_SHINZEN_MISSING_MESSAGE: &str = "SHOKU_SHINZENライブラリがありません";
+const SHINZEN_MISSING_MESSAGE: &str =
+    "SHINZENライブラリがありません。buddha init または手動インストールを確認してください。";
+const SHOKU_SHINZEN_MISSING_MESSAGE: &str =
+    "SHOKU_SHINZENライブラリがありません。buddha init または手動インストールを確認してください。";
 
 static SHOKU_SHINZEN_INDEX_CACHE: OnceLock<Vec<IndexEntry>> = OnceLock::new();
 static SHOKU_SHINZEN_WORK_CATALOG_CACHE: OnceLock<ShinzenWorkCatalog> = OnceLock::new();
@@ -1280,7 +1346,7 @@ fn load_or_build_muktabodha_index() -> &'static Vec<IndexEntry> {
                 return v;
             }
         }
-        ensure_muktabodha_dir();
+
         let entries = build_muktabodha_index(&muktabodha_root());
         let _ = save_index(&out, &entries);
         entries
@@ -2076,7 +2142,7 @@ static RESOLVE_CROSSWALK: &[ResolveCrosswalk] = &[
     },
 ];
 
-fn resolve_crosswalk_candidates(
+pub fn resolve_crosswalk_candidates(
     q: &str,
     sources: &[String],
     prefer_source: Option<&str>,
@@ -2173,6 +2239,65 @@ fn resolve_crosswalk_candidates(
     out
 }
 
+fn resolve_best_match<'a>(
+    entries: &'a [buddha_core::IndexEntry],
+    q: &str,
+    limit: usize,
+) -> Vec<ScoredHit<'a>> {
+    let pq = buddha_core::text_utils::PrecomputedQuery::new(q, false);
+    let nq = pq.normalized();
+    // Score everything, then order by the full key below: a top-k cut on score alone
+    // would let id order decide which of many 1.0 ties survive.
+    let mut top: Vec<(f32, &buddha_core::IndexEntry)> = Vec::with_capacity(entries.len());
+    for e in entries.iter() {
+        let mut s = buddha_core::text_utils::compute_match_score_precomputed(e, &pq);
+        if let Some(meta) = &e.meta {
+            for k in ["author", "editor", "translator", "publisher"].iter() {
+                if let Some(v) = meta.get(*k) {
+                    let nv = normalized(v);
+                    if !nv.is_empty() && (nv.contains(nq) || nq.contains(&nv)) {
+                        s = s.max(0.93);
+                    }
+                }
+            }
+        }
+        if s > 0.0 {
+            top.push((s, e));
+        }
+    }
+    // Many entries reach the 1.0 ceiling (a heading or note merely contains the query).
+    // Break ties by how the *title* matches, then Taishō first, then text number (sūtras
+    // before commentaries), so 金剛般若 → T08n0235 金剛般若波羅蜜經 rather than a commentary.
+    let key = |e: &buddha_core::IndexEntry| {
+        let nt = normalized(&e.title);
+        let rank = if nq.is_empty() {
+            0
+        } else if nt == nq {
+            4
+        } else if nt.starts_with(nq) {
+            3
+        } else if nt.contains(nq) {
+            2
+        } else if buddha_core::text_utils::is_subsequence(&nt, nq) {
+            1
+        } else {
+            0
+        };
+        let taisho = e.id.starts_with('T') && e.id[1..].starts_with(|c: char| c.is_ascii_digit());
+        (std::cmp::Reverse(rank), !taisho)
+    };
+    top.sort_by(|a, b| {
+        b.0.partial_cmp(&a.0)
+            .unwrap_or(std::cmp::Ordering::Equal)
+            .then_with(|| key(a.1).cmp(&key(b.1)))
+            .then_with(|| a.1.id.cmp(&b.1.id))
+    });
+    top.truncate(limit);
+    top.into_iter()
+        .map(|(s, e)| ScoredHit { entry: e, score: s })
+        .collect()
+}
+
 fn resolve_title_candidates_cbeta(
     q: &str,
     limit_per_source: usize,
@@ -2181,7 +2306,7 @@ fn resolve_title_candidates_cbeta(
 ) -> Vec<(f32, serde_json::Value)> {
     let idx = load_or_build_cbeta_index();
     let mut out: Vec<(f32, serde_json::Value)> = Vec::new();
-    for h in best_match(idx, q, limit_per_source) {
+    for h in resolve_best_match(idx, q, limit_per_source) {
         if h.score < min_score {
             continue;
         }
@@ -2840,8 +2965,11 @@ fn fetch_candidates_from_hits(
 fn fetch_not_found_response(
     source: &str,
     query: &str,
-    candidates: Vec<serde_json::Value>,
+    mut candidates: Vec<serde_json::Value>,
 ) -> serde_json::Value {
+    if buddha_core::detect_source(query).is_some() {
+        candidates.clear();
+    }
     let mut lines = vec![format!("not found: '{}' in {}.", query, source)];
     if !candidates.is_empty() {
         lines.push("Nearest candidates:".to_string());
@@ -2851,9 +2979,14 @@ fn fetch_not_found_response(
             lines.push(format!("- {}  {}", cid, ctitle));
         }
     }
+    let candidate_hint = if candidates.is_empty() {
+        ""
+    } else {
+        "Run one of _meta.candidates[].fetch, or "
+    };
     lines.push(format!(
-        "Run one of _meta.candidates[].fetch, or retry with resolve({{query:\"{}\"}}) / title_search({{source:\"{}\", query:\"{}\"}}).",
-        query, source, query
+        "{}retry with resolve({{query:\"{}\"}}) / title_search({{source:\"{}\", query:\"{}\"}}).",
+        candidate_hint, query, source, query
     ));
     json!({
         "content": [{"type": "text", "text": lines.join("\n")}],
@@ -2878,9 +3011,193 @@ fn metadata_only_work_search_action(tool: &str, title: &str) -> serde_json::Valu
     })
 }
 
+fn line_context_error(
+    xml: &str,
+    args: &serde_json::Value,
+    numbered: bool,
+) -> Option<serde_json::Value> {
+    let line = args.get("lineNumber")?.as_u64()? as usize;
+    let (valid, range) = if numbered {
+        let lines = buddha_core::extract_shinzen_lines(xml);
+        if lines.is_empty() {
+            return Some(
+                json!({"category":"not_found", "code":"NOT_FOUND", "field":"lineNumber", "retryable":false, "message":"No numbered lines found"}),
+            );
+        }
+        let min = lines.iter().map(|item| item.number).min().unwrap();
+        let max = lines.iter().map(|item| item.number).max().unwrap();
+        (
+            lines.iter().any(|item| item.number == line),
+            format!("{min}..={max}"),
+        )
+    } else {
+        let total = xml.lines().count();
+        (line > 0 && line <= total, format!("1..={total}"))
+    };
+    if valid {
+        None
+    } else {
+        Some(
+            json!({"category":"invalid_argument", "code":"INVALID_ARGUMENT", "field":"lineNumber", "retryable":false, "message":format!("Line {line} is outside valid range {range} or absent")}),
+        )
+    }
+}
+
+fn empty_line_context_error(
+    text: &str,
+    extraction_method: &str,
+    numbered: bool,
+) -> Option<serde_json::Value> {
+    if !extraction_method.contains("line-context") {
+        return None;
+    }
+    let has_text = if numbered {
+        text.lines().any(|line| {
+            line.split_once(']')
+                .map(|(_, body)| !body.trim().is_empty())
+                .unwrap_or(false)
+        })
+    } else {
+        !text.trim().is_empty()
+    };
+    if has_text {
+        None
+    } else {
+        Some(
+            json!({"category":"not_found", "code":"NOT_FOUND", "field":"lineNumber", "retryable":false, "message":"Line context not found"}),
+        )
+    }
+}
+
+fn line_error_response(id: serde_json::Value, error: serde_json::Value) -> serde_json::Value {
+    json!({"jsonrpc":"2.0", "id":id, "result":{"isError":true, "content":[{"type":"text", "text":error["message"]}], "_meta":{"error":error}}})
+}
+
 fn handle_call(id: serde_json::Value, params: &serde_json::Value) -> serde_json::Value {
+    let name = params.get("name").and_then(|v| v.as_str()).unwrap_or("");
+    let args = params.get("arguments").cloned().unwrap_or(json!({}));
+    let source = if matches!(name, "search" | "pipeline") {
+        args.get("source").and_then(|v| v.as_str()).unwrap_or("")
+    } else {
+        name.strip_suffix("_search")
+            .or_else(|| name.strip_suffix("_pipeline"))
+            .unwrap_or("")
+    };
+    let indic = matches!(source, "tipitaka" | "gretil" | "sarit" | "muktabodha");
+    let loose = args.get("loose").and_then(|v| v.as_bool()).unwrap_or(false);
+    if indic
+        && loose
+        && args
+            .get("query")
+            .and_then(|v| v.as_str())
+            .is_some_and(buddha_core::text_utils::indic_query_is_regex)
+    {
+        let error = json!({"category":"invalid_argument", "code":"INVALID_ARGUMENT", "field":"loose", "retryable":false, "message":"loose cannot be combined with a regex query"});
+        return line_error_response(id, error);
+    }
+    let mut response = handle_call_inner(id, params);
+    if matches!(
+        source,
+        "cbeta" | "tipitaka" | "gretil" | "sarit" | "muktabodha" | "shinzen" | "shoku_shinzen"
+    ) && response
+        .pointer("/result/isError")
+        .and_then(|v| v.as_bool())
+        != Some(true)
+    {
+        if let Some(query) = args.get("query").and_then(|v| v.as_str()) {
+            let is_regex = buddha_core::text_utils::looks_like_user_regex(query)
+                || (query.contains('|')
+                    && !matches!(source, "cbeta" | "shinzen" | "shoku_shinzen"));
+            if let Some(result) = response.get_mut("result").and_then(|v| v.as_object_mut()) {
+                let meta = result.entry("_meta").or_insert_with(|| json!({}));
+                meta["queryMode"] = json!(if indic && loose {
+                    "loose"
+                } else if is_regex {
+                    "regex"
+                } else {
+                    "phrase"
+                });
+                if indic
+                    && !loose
+                    && !is_regex
+                    && query.is_ascii()
+                    && meta
+                        .get("totalFilesMatched")
+                        .or_else(|| meta.get("totalFiles"))
+                        .and_then(|v| v.as_u64())
+                        == Some(0)
+                {
+                    let mut retry_args = args.clone();
+                    retry_args["loose"] = json!(true);
+                    meta["hint"] =
+                        json!("No matches. Retry with loose:true to ignore diacritics and case.");
+                    meta["nextActions"] = json!([{"tool":name, "args":retry_args}]);
+                }
+                if is_regex {
+                    if meta.get("warnings").is_none() {
+                        meta["warnings"] = json!([]);
+                    }
+                    if let Some(warnings) = meta.get_mut("warnings").and_then(|v| v.as_array_mut())
+                    {
+                        warnings.push(json!("Regex matches do not cross lines. Remove regex symbols to search as a phrase."));
+                    }
+                }
+                if is_regex {
+                    let warning = "Regex matches do not cross lines. Remove regex symbols to search as a phrase.";
+                    if let Some(text) = result
+                        .get_mut("content")
+                        .and_then(|v| v.get_mut(0))
+                        .and_then(|v| v.get_mut("text"))
+                    {
+                        if let Some(original) = text.as_str() {
+                            *text = json!(format!("Warning: {warning}\n{original}"));
+                        }
+                    }
+                }
+            }
+        }
+    }
+    response
+}
+
+fn handle_call_inner(id: serde_json::Value, params: &serde_json::Value) -> serde_json::Value {
     let name_raw = params.get("name").and_then(|v| v.as_str()).unwrap_or("");
     let args_raw = params.get("arguments").cloned().unwrap_or(json!({}));
+
+    let local_search = matches!(
+        name_raw,
+        "cbeta_search"
+            | "tipitaka_search"
+            | "gretil_search"
+            | "sarit_search"
+            | "muktabodha_search"
+            | "shinzen_search"
+            | "shoku_shinzen_search"
+    ) || (name_raw == "search"
+        && matches!(
+            args_raw.get("source").and_then(|v| v.as_str()),
+            None | Some(
+                "all"
+                    | "cbeta"
+                    | "tipitaka"
+                    | "gretil"
+                    | "sarit"
+                    | "muktabodha"
+                    | "shinzen"
+                    | "shoku_shinzen"
+            )
+        ));
+    if let Some(query) = args_raw
+        .get("query")
+        .and_then(|v| v.as_str())
+        .filter(|q| local_search && buddha_core::text_utils::looks_like_user_regex(q))
+    {
+        if let Err(error) = regex::Regex::new(query) {
+            let message = format!("Invalid regex: {error}");
+            let error = json!({"category":"invalid_argument", "code":"INVALID_ARGUMENT", "field":"query", "retryable":false, "message":message});
+            return json!({"jsonrpc":"2.0", "id":id, "result":{"isError":true, "content":[{"type":"text", "text":message}], "_meta":{"error":error}, "structuredContent":{"status":"error", "error":error}}});
+        }
+    }
 
     if crate::unified::is_unified_mode()
         && (crate::unified::is_unified_tool(name_raw) || name_raw == "tibetan_search")
@@ -2888,6 +3205,57 @@ fn handle_call(id: serde_json::Value, params: &serde_json::Value) -> serde_json:
         if let Some(response) = crate::unified::validate_unified_call(&id, name_raw, &args_raw) {
             return response;
         }
+    }
+
+    // Cross-corpus operations use the same implementation as CLI, without index writes.
+    if name_raw == "verify"
+        || (name_raw == "fetch" && args_raw.get("ids").is_some())
+        || (name_raw == "search"
+            && args_raw
+                .get("source")
+                .and_then(|v| v.as_str())
+                .is_none_or(|s| s == "all"))
+    {
+        let source = args_raw.get("source").and_then(|v| v.as_str());
+        let number = |key: &str, default: usize| {
+            args_raw
+                .get(key)
+                .and_then(|v| v.as_u64())
+                .map(|n| n as usize)
+                .unwrap_or(default)
+        };
+        let value = match name_raw {
+            "verify" => buddha_core::operations::verify(
+                args_raw["id"].as_str().unwrap_or(""),
+                args_raw["quote"].as_str().unwrap_or(""),
+                args_raw.get("lb").and_then(|v| v.as_str()),
+                args_raw
+                    .get("lineNumber")
+                    .and_then(|v| v.as_u64())
+                    .map(|n| n as usize),
+                source,
+            ),
+            "fetch" => {
+                let ids = args_raw["ids"]
+                    .as_array()
+                    .into_iter()
+                    .flatten()
+                    .filter_map(|v| v.as_str().map(str::to_owned))
+                    .collect::<Vec<_>>();
+                buddha_core::operations::fetch_many(&ids, source, number("maxChars", 2000))
+            }
+            _ => Ok(buddha_core::operations::search_all(
+                args_raw["query"].as_str().unwrap_or(""),
+                source == Some("all"),
+                number("maxResults", 20),
+                number("offset", 0),
+                args_raw["loose"].as_bool().unwrap_or(false),
+                number("maxMatchesPerFile", 5),
+            )),
+        };
+        let mut response = buddha_core::operations::response(id, value);
+        response["result"]["structuredContent"]["tool"] = json!(name_raw);
+        return response;
     }
 
     // Unified dispatch: translate unified tool names to legacy names
@@ -3008,6 +3376,27 @@ fn handle_call(id: serde_json::Value, params: &serde_json::Value) -> serde_json:
         (name_raw.to_string(), args_raw)
     };
     let name = name.as_str();
+    let local_root = if name.starts_with("cbeta_") {
+        Some(cbeta_root())
+    } else if name.starts_with("tipitaka_") {
+        Some(tipitaka_root())
+    } else if name.starts_with("gretil_") {
+        Some(gretil_root())
+    } else if name.starts_with("sarit_") {
+        Some(sarit_root())
+    } else if name.starts_with("muktabodha_") {
+        Some(muktabodha_root())
+    } else {
+        None
+    };
+    if let Some(root) = local_root.filter(|root| !root.exists()) {
+        let message = format!(
+            "Corpus not installed: {}. Run buddha init or install the corpus.",
+            root.display()
+        );
+        return json!({"jsonrpc":"2.0", "id":id, "result": {"content":[{"type":"text", "text":message}], "isError":true, "_meta":{"available":false,"error":{"category":"data_unavailable","code":"corpus_not_installed","field":"source","retryable":false}}}});
+    }
+
     match name {
         "buddha_version" => {
             let data_status = json!({
@@ -3311,7 +3700,7 @@ Flow: search({source:"jozen"}) -> fetch with lineno
                         } else {
                             0.0
                         };
-                        let cand = json!({
+                        let mut cand = json!({
                                 "source": "cbeta",
                                 "id": id_norm,
                                 "title": null,
@@ -3319,6 +3708,14 @@ Flow: search({source:"jozen"}) -> fetch with lineno
                                 "fetch": {"tool": "cbeta_fetch", "args": {"id": format!("T{:04}", n)}},
                                 "resolvedBy": "direct-id"
                         });
+                        if buddha_core::path_resolver::resolve_cbeta_path_direct(&id_norm).is_none()
+                        {
+                            cand.as_object_mut().unwrap().remove("fetch");
+                            cand["score"] = json!(0.0);
+                            cand["resolvedBy"] = json!("unavailable-id");
+                            cand["note"] = json!(buddha_core::path_resolver::cbeta_missing_hint(&id_norm).unwrap_or_else(|| "Not in local CBETA; try SAT or a title search, and work_catalog for Shingon works.".to_string()));
+                            cand["next"] = json!({"tool":"sat_search","args":{"query":id_norm}});
+                        }
                         cands_scored.push((1.20 + bias, cand));
                         direct_id_mode = true;
                     }
@@ -3746,7 +4143,10 @@ Flow: search({source:"jozen"}) -> fetch with lineno
                 }
             }
 
-            cands_scored.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal));
+            for (_, candidate) in &mut cands_scored {
+                buddha_core::operations::check_direct_candidate(candidate);
+            }
+            buddha_core::operations::rank_resolve_candidates(&mut cands_scored, q);
             let mut candidates: Vec<serde_json::Value> = Vec::new();
             let mut seen: std::collections::HashSet<(String, String)> =
                 std::collections::HashSet::new();
@@ -3870,7 +4270,6 @@ Flow: search({source:"jozen"}) -> fetch with lineno
             return json!({"jsonrpc":"2.0","id": id, "result": { "content": [{"type":"text","text": summary }], "_meta": meta }});
         }
         "cbeta_fetch" => {
-            ensure_cbeta_data();
             let mut matched_id: Option<String> = None;
             let mut matched_title: Option<String> = None;
             let mut matched_score: Option<f32> = None;
@@ -3920,6 +4319,9 @@ Flow: search({source:"jozen"}) -> fetch with lineno
             }
             let xml_arc = cbeta_xml_cached(&path);
             let xml = xml_arc.as_str();
+            if let Some(error) = line_context_error(&xml, &args, false) {
+                return line_error_response(id, error);
+            }
             // includeNotes support
             let include_notes = args
                 .get("includeNotes")
@@ -3978,12 +4380,12 @@ Flow: search({source:"jozen"}) -> fetch with lineno
                     .unwrap_or(
                         args.get("contextLines")
                             .and_then(|v| v.as_u64())
-                            .unwrap_or(1),
+                            .unwrap_or(2),
                     ) as usize;
                 let context_after = args.get("contextAfter").and_then(|v| v.as_u64()).unwrap_or(
                     args.get("contextLines")
                         .and_then(|v| v.as_u64())
-                        .unwrap_or(3),
+                        .unwrap_or(5),
                 ) as usize;
                 let pat = format!(r#"<lb\b[^>]*\bn\s*=\s*["']{}["']"#, regex::escape(&lb));
                 if let Ok(re) = Regex::new(&pat) {
@@ -4065,12 +4467,12 @@ Flow: search({source:"jozen"}) -> fetch with lineno
                     .unwrap_or(
                         args.get("contextLines")
                             .and_then(|v| v.as_u64())
-                            .unwrap_or(10),
+                            .unwrap_or(2),
                     ) as usize;
                 let context_after = args.get("contextAfter").and_then(|v| v.as_u64()).unwrap_or(
                     args.get("contextLines")
                         .and_then(|v| v.as_u64())
-                        .unwrap_or(100),
+                        .unwrap_or(5),
                 ) as usize;
                 if is_plain {
                     ensure_gaiji();
@@ -4207,6 +4609,9 @@ Flow: search({source:"jozen"}) -> fetch with lineno
                 }
             };
 
+            if let Some(error) = empty_line_context_error(&text, &extraction_method, false) {
+                return line_error_response(id, error);
+            }
             // If highlight is provided but lb/lineNumber isn't, focus output around the first match.
             // This avoids "start of text only" when the match is far from the beginning.
             let full_flag = args.get("full").and_then(|v| v.as_bool()).unwrap_or(false);
@@ -4219,7 +4624,7 @@ Flow: search({source:"jozen"}) -> fetch with lineno
                         .unwrap_or(
                             args.get("contextLines")
                                 .and_then(|v| v.as_u64())
-                                .unwrap_or(3),
+                                .unwrap_or(5),
                         ) as usize;
                     let after = args.get("contextAfter").and_then(|v| v.as_u64()).unwrap_or(
                         args.get("contextLines")
@@ -4344,7 +4749,29 @@ Flow: search({source:"jozen"}) -> fetch with lineno
                 "highlighted": if highlight_count > 0 { Some(highlight_count) } else { None::<usize> },
                 "highlightPositions": if highlight_positions.is_empty() { None::<Vec<serde_json::Value>> } else { Some(highlight_positions) },
             });
-            let (citation, source_url) = local_source_link("cbeta", matched_id.as_deref(), &path);
+            if let Some(title) = buddha_core::cbeta_title_from_header(&path) {
+                meta["title"] = json!(title);
+            }
+            let (fallback_citation, source_url) =
+                local_source_link("cbeta", matched_id.as_deref(), &path);
+            let range = cbeta_context_lb_range(xml, &args);
+            let mut citation = fallback_citation;
+            if let Some((start, end)) = range {
+                meta["lbStart"] = json!(start);
+                meta["lbEnd"] = json!(end);
+                if let Some(file_id) = path
+                    .file_stem()
+                    .and_then(|s| s.to_str())
+                    .filter(|id| id.starts_with('T'))
+                {
+                    let end_arg = if start == end {
+                        None
+                    } else {
+                        Some(end.as_str())
+                    };
+                    citation = buddha_core::cbeta_citation(file_id, &start, end_arg).or(citation);
+                }
+            }
             if let Some(c) = citation {
                 meta["citation"] = json!(c);
             }
@@ -4398,7 +4825,6 @@ Flow: search({source:"jozen"}) -> fetch with lineno
             return json!({"jsonrpc":"2.0","id": id, "result": { "content": [{"type":"text","text": summary }], "_meta": meta }});
         }
         "tipitaka_fetch" => {
-            ensure_tipitaka_data();
             let mut matched_id: Option<String> = None;
             let mut matched_title: Option<String> = None;
             let mut matched_score: Option<f32> = None;
@@ -4509,6 +4935,9 @@ Flow: search({source:"jozen"}) -> fetch with lineno
             let mut xml = fs::read(&cur_path)
                 .map(|b| decode_xml_bytes(&b))
                 .unwrap_or_default();
+            if let Some(error) = line_context_error(&xml, &args, false) {
+                return line_error_response(id, error);
+            }
             let (mut text, mut extraction_method) =
                 if let Some(line_num) = args.get("lineNumber").and_then(|v| v.as_u64()) {
                     // 新しいパラメータを優先、fallbackで古いパラメータを使用
@@ -4518,12 +4947,12 @@ Flow: search({source:"jozen"}) -> fetch with lineno
                         .unwrap_or(
                             args.get("contextLines")
                                 .and_then(|v| v.as_u64())
-                                .unwrap_or(10),
+                                .unwrap_or(2),
                         ) as usize;
                     let context_after = args.get("contextAfter").and_then(|v| v.as_u64()).unwrap_or(
                         args.get("contextLines")
                             .and_then(|v| v.as_u64())
-                            .unwrap_or(100),
+                            .unwrap_or(5),
                     ) as usize;
                     let context_text = buddha_core::extract_xml_around_line_asymmetric(
                         &xml,
@@ -4553,6 +4982,9 @@ Flow: search({source:"jozen"}) -> fetch with lineno
                 } else {
                     (extract_text(&xml), "full".to_string())
                 };
+            if let Some(error) = empty_line_context_error(&text, &extraction_method, false) {
+                return line_error_response(id, error);
+            }
             // フォールバックA：抽出が空で、同ベースの連番ファイルがある場合は最小番号を開く
             if text.trim().is_empty() {
                 if let Some(stem) = cur_path.file_stem().and_then(|s| s.to_str()) {
@@ -4726,7 +5158,7 @@ Flow: search({source:"jozen"}) -> fetch with lineno
         }
         "sat_search" => {
             let q = args.get("query").and_then(|v| v.as_str()).unwrap_or("");
-            let rows = args.get("rows").and_then(|v| v.as_u64()).unwrap_or(100) as usize;
+            let rows = args.get("rows").and_then(|v| v.as_u64()).unwrap_or(5) as usize;
             let offs = args.get("offs").and_then(|v| v.as_u64()).unwrap_or(0) as usize;
             let exact = args.get("exact").and_then(|v| v.as_bool()).unwrap_or(true);
             let titles_only = args
@@ -4738,8 +5170,10 @@ Flow: search({source:"jozen"}) -> fetch with lineno
                 .and_then(|v| v.as_str())
                 .unwrap_or("id,fascnm,startid,endid");
             // sat_search formatting and suggestions rely on title + useid.
-            let fields_used =
-                sat_wrap7_ensure_fields(fields_requested, &["id", "fascnm", "startid", "endid"]);
+            let fields_used = sat_wrap7_ensure_fields(
+                fields_requested,
+                &["id", "fascnm", "fascnum", "startid", "endid", "body"],
+            );
             let fq: Vec<String> = args
                 .get("fq")
                 .and_then(|v| v.as_array())
@@ -4866,34 +5300,14 @@ Flow: search({source:"jozen"}) -> fetch with lineno
                     meta["extractionMethod"] = json!("sat-detail-extract");
                     return json!({ "jsonrpc":"2.0","id": id, "result": { "content": [{"type":"text","text": sliced }], "_meta": meta }});
                 } else {
-                    let shown_end = std::cmp::min(offs + rows, count as usize);
-                    let shown_start = if count == 0 { 0 } else { offs + 1 };
-                    let mut summary = if titles_only {
-                        format!(
-                            "{} titles (showing {}-{}):\n\n",
-                            count, shown_start, shown_end
-                        )
-                    } else {
-                        format!(
-                            "{} results (showing {}-{}):\n\n",
-                            count, shown_start, shown_end
-                        )
-                    };
-                    let docs = meta_base
-                        .get("results")
-                        .and_then(|v| v.as_array())
-                        .cloned()
-                        .unwrap_or_default();
-                    for (i, d) in docs.iter().enumerate() {
-                        summary.push_str(&format!(
-                            "{}. {}\n",
-                            shown_start + i,
-                            sat_doc_display_line(d)
-                        ));
-                    }
-                    summary.push_str(
-	                        "\nSee _meta.results for raw docs and _meta.fetchSuggestions for next-step fetch calls.",
-	                    );
+                    let docs = meta_base["results"].as_array().cloned().unwrap_or_default();
+                    let summary = buddha_core::operations::online_search_text(
+                        "sat",
+                        &docs,
+                        count as usize,
+                        offs,
+                        0,
+                    );
                     return json!({ "jsonrpc":"2.0","id": id, "result": { "content": [{"type":"text","text": summary }], "_meta": meta_base }});
                 }
             } else {
@@ -4907,17 +5321,9 @@ Flow: search({source:"jozen"}) -> fetch with lineno
                 };
                 let meta =
                     json!({ "count": hits.len(), "results": hits, "titlesOnly": titles_only });
-                let summary = if titles_only {
-                    format!(
-                        "{} titles; see _meta.results",
-                        meta["count"].as_u64().unwrap_or(0)
-                    )
-                } else {
-                    format!(
-                        "{} results; see _meta.results",
-                        meta["count"].as_u64().unwrap_or(0)
-                    )
-                };
+                let docs = meta["results"].as_array().cloned().unwrap_or_default();
+                let summary =
+                    buddha_core::operations::online_search_text("sat", &docs, docs.len(), offs, 0);
                 return json!({ "jsonrpc":"2.0","id": id, "result": { "content": [{"type":"text","text": summary }], "_meta": meta }});
             }
         }
@@ -5244,15 +5650,14 @@ Flow: search({source:"jozen"}) -> fetch with lineno
             }
 
             let total = parsed.total_count.unwrap_or(parsed.results.len());
-            let total_pages = parsed.total_pages.unwrap_or(0);
-            let summary = if total_pages > 0 {
-                format!(
-                    "{} results (page {}/{}); see _meta.results",
-                    total, page, total_pages
-                )
-            } else {
-                format!("{} results (page {}); see _meta.results", total, page)
-            };
+            let docs = serde_json::to_value(&parsed.results).unwrap_or_default();
+            let summary = buddha_core::operations::online_search_text(
+                "jozen",
+                docs.as_array().unwrap(),
+                total,
+                0,
+                page,
+            );
             let meta = json!({
                 "source": "jozen",
                 "query": q,
@@ -5341,18 +5746,25 @@ Flow: search({source:"jozen"}) -> fetch with lineno
                 .and_then(|v| v.parse::<GrepOrder>().ok())
                 .unwrap_or(GrepOrder::Canon);
 
-            ensure_cbeta_data();
-            let (results, total_matched) = cbeta_grep_ordered(
+            let (results, _) = cbeta_grep_ordered(
                 &cbeta_root(),
                 &cbeta_match_pattern(q_raw, &q),
-                max_results,
+                usize::MAX,
                 max_matches_per_file,
                 order,
             );
+            let offset = args
+                .get("offset")
+                .or_else(|| args.get("offs"))
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0) as usize;
+            let (results, total_matched) =
+                buddha_core::paginate_grep_results(results, offset, max_results);
 
             let mut summary = format!(
-                "Found {} files with matches for '{}':\n\n",
+                "Found {} of {} files with matches for '{}':\n\n",
                 results.len(),
+                total_matched,
                 q_display
             );
             for (i, result) in results.iter().enumerate() {
@@ -5373,10 +5785,21 @@ Flow: search({source:"jozen"}) -> fetch with lineno
                 ));
 
                 for (j, m) in result.matches.iter().enumerate().take(2) {
+                    let location = m
+                        .lb
+                        .clone()
+                        .or_else(|| cbeta_extract_lb_from_line_near(&m.context, Some(&m.highlight)))
+                        .map(|lb| format!("lb {}", lb))
+                        .or_else(|| m.line_number.map(|line| format!("line {}", line)))
+                        .unwrap_or_else(|| "location unknown".to_string());
                     summary.push_str(&format!(
-                        "   Match {}: ...{}...\n",
+                        "   Match {} ({}): ...{}...\n",
                         j + 1,
-                        m.context.chars().take(100).collect::<String>()
+                        location,
+                        search_snippet(&m.context)
+                            .chars()
+                            .take(100)
+                            .collect::<String>()
                     ));
                 }
                 if result.matches.len() > 2 {
@@ -5394,9 +5817,7 @@ Flow: search({source:"jozen"}) -> fetch with lineno
                 }
                 summary.push('\n');
             }
-            if results.len() >= max_results {
-                summary.push_str("NOTE: Results may be truncated by maxResults. Increase maxResults to see more.\n");
-            }
+
             // Lightweight next-call hints for AI clients (low token cost)
             let hint_top = hint_top(3);
             let mut fetch_suggestions: Vec<serde_json::Value> = Vec::new();
@@ -5413,13 +5834,13 @@ Flow: search({source:"jozen"}) -> fetch with lineno
                     {
                         fetch_suggestions.push(json!({
                             "tool": "cbeta_fetch",
-                            "args": {"id": r.file_id, "lb": lb, "contextBefore": 1, "contextAfter": 3, "highlight": hl_pat, "highlightRegex": hl_regex, "format": "plain"},
+                            "args": {"id": r.file_id, "lb": lb, "contextBefore": 2, "contextAfter": 5, "highlight": hl_pat, "highlightRegex": hl_regex, "format": "plain"},
                             "mode": "low-cost"
                         }));
                     } else if let Some(ln) = m.line_number {
                         fetch_suggestions.push(json!({
                             "tool": "cbeta_fetch",
-                            "args": {"id": r.file_id, "lineNumber": ln, "contextBefore": 1, "contextAfter": 3, "highlight": hl_pat, "highlightRegex": hl_regex, "format": "plain"},
+                            "args": {"id": r.file_id, "lineNumber": ln, "contextBefore": 2, "contextAfter": 5, "highlight": hl_pat, "highlightRegex": hl_regex, "format": "plain"},
                             "mode": "low-cost"
                         }));
                     }
@@ -5448,11 +5869,10 @@ Flow: search({source:"jozen"}) -> fetch with lineno
                 "queryRaw": q_display,
                 "searchPattern": q,
                 "totalFiles": results.len(),
-                "totalFilesMatched": total_matched,
-                "results": results_meta,
+                "maxMatchesPerFile": max_matches_per_file, "offset": offset, "totalFilesMatched": total_matched, "results": results_meta,
                 "hint": "Use cbeta_fetch (id + lineNumber) for low-cost context; cbeta_pipeline with autoFetch=false to summarize",
                 "fetchSuggestions": fetch_suggestions,
-                "truncatedByMaxResults": results.len() >= max_results
+                "truncatedByMaxResults": offset.saturating_add(results.len()) < total_matched
             });
             // Optional pipeline hint (kept minimal)
             meta["pipelineHint"] = json!({
@@ -5482,11 +5902,11 @@ Flow: search({source:"jozen"}) -> fetch with lineno
             let context_before = args
                 .get("contextBefore")
                 .and_then(|v| v.as_u64())
-                .unwrap_or(10) as usize;
+                .unwrap_or(2) as usize;
             let context_after = args
                 .get("contextAfter")
                 .and_then(|v| v.as_u64())
-                .unwrap_or(100) as usize;
+                .unwrap_or(5) as usize;
             let mut auto_fetch = args
                 .get("autoFetch")
                 .and_then(|v| v.as_bool())
@@ -5568,14 +5988,20 @@ Flow: search({source:"jozen"}) -> fetch with lineno
                 .and_then(|v| v.as_bool())
                 .unwrap_or(false);
 
-            ensure_cbeta_data();
             let (results, _) = cbeta_grep_ordered(
                 &cbeta_root(),
                 &cbeta_match_pattern(q_raw, &q),
-                max_results,
+                usize::MAX,
                 max_matches_per_file,
                 GrepOrder::Canon,
             );
+            let offset = args
+                .get("offset")
+                .or_else(|| args.get("offs"))
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0) as usize;
+            let (results, total_matched) =
+                buddha_core::paginate_grep_results(results, offset, max_results);
 
             // Build summary and suggestions
             let mut summary = format!(
@@ -5593,10 +6019,21 @@ Flow: search({source:"jozen"}) -> fetch with lineno
                 ));
                 summary.push_str(&format!("   {} matches\n", result.total_matches));
                 for (j, m) in result.matches.iter().enumerate().take(2) {
+                    let location = m
+                        .lb
+                        .clone()
+                        .or_else(|| cbeta_extract_lb_from_line_near(&m.context, Some(&m.highlight)))
+                        .map(|lb| format!("lb {}", lb))
+                        .or_else(|| m.line_number.map(|line| format!("line {}", line)))
+                        .unwrap_or_else(|| "location unknown".to_string());
                     summary.push_str(&format!(
-                        "   Match {}: ...{}...\n",
+                        "   Match {} ({}): ...{}...\n",
                         j + 1,
-                        m.context.chars().take(100).collect::<String>()
+                        location,
+                        search_snippet(&m.context)
+                            .chars()
+                            .take(100)
+                            .collect::<String>()
                     ));
                 }
                 if let Some(m) = result.matches.first() {
@@ -5638,7 +6075,7 @@ Flow: search({source:"jozen"}) -> fetch with lineno
                 "searchPattern": q,
                 "queryRaw": q_raw,
                 "totalFiles": results.len(),
-                "results": results,
+                "maxMatchesPerFile": max_matches_per_file, "offset": offset, "totalFilesMatched": total_matched, "results": results,
                 "fetchSuggestions": suggestions
             });
             if force_no_auto && auto_fetch {
@@ -5882,6 +6319,9 @@ Flow: search({source:"jozen"}) -> fetch with lineno
                 return json!({"jsonrpc":"2.0","id": id, "result": fetch_not_found_response("gretil", &q, candidates)});
             }
             let xml = fs::read_to_string(&path).unwrap_or_default();
+            if let Some(error) = line_context_error(&xml, &args, false) {
+                return line_error_response(id, error);
+            }
             let include_notes = args
                 .get("includeNotes")
                 .and_then(|v| v.as_bool())
@@ -5926,6 +6366,9 @@ Flow: search({source:"jozen"}) -> fetch with lineno
                 } else {
                     (extract_text_opts(&xml, include_notes), "full".to_string())
                 };
+            if let Some(error) = empty_line_context_error(&text, &extraction_method, false) {
+                return line_error_response(id, error);
+            }
             let full_flag = args.get("full").and_then(|v| v.as_bool()).unwrap_or(false);
             let mut sliced = if full_flag {
                 text.clone()
@@ -6030,12 +6473,10 @@ Flow: search({source:"jozen"}) -> fetch with lineno
         }
         "gretil_search" => {
             let q_raw = args.get("query").and_then(|v| v.as_str()).unwrap_or("");
-            let looks_like_regex = q_raw.chars().any(|c| ".+*?[](){}|\\".contains(c));
-            let q = if q_raw.chars().any(|c| c.is_whitespace()) && !looks_like_regex {
-                to_whitespace_fuzzy_literal(q_raw)
-            } else {
-                q_raw.to_string()
-            };
+            let q = buddha_core::text_utils::indic_query_pattern(
+                q_raw,
+                args.get("loose").and_then(|v| v.as_bool()).unwrap_or(false),
+            );
             let max_results = args
                 .get("maxResults")
                 .and_then(|v| v.as_u64())
@@ -6044,11 +6485,18 @@ Flow: search({source:"jozen"}) -> fetch with lineno
                 .get("maxMatchesPerFile")
                 .and_then(|v| v.as_u64())
                 .unwrap_or(5) as usize;
-            let results = gretil_grep(&gretil_root(), &q, max_results, max_matches_per_file);
+            let results = gretil_grep(&gretil_root(), &q, usize::MAX, max_matches_per_file);
+            let offset = args
+                .get("offset")
+                .or_else(|| args.get("offs"))
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0) as usize;
+            let (results, total_matched) =
+                buddha_core::paginate_grep_results(results, offset, max_results);
             let mut summary = format!(
                 "Found {} files with matches for '{}':\n\n",
                 results.len(),
-                q
+                q_raw
             );
             for (i, result) in results.iter().enumerate() {
                 summary.push_str(&format!(
@@ -6068,9 +6516,15 @@ Flow: search({source:"jozen"}) -> fetch with lineno
                 ));
                 for (j, m) in result.matches.iter().enumerate().take(2) {
                     summary.push_str(&format!(
-                        "   Match {}: ...{}...\n",
+                        "   Match {} ({}): ...{}...\n",
                         j + 1,
-                        m.context.chars().take(100).collect::<String>()
+                        m.line_number
+                            .map(|line| format!("line {}", line))
+                            .unwrap_or_else(|| "location unknown".to_string()),
+                        search_snippet(&m.context)
+                            .chars()
+                            .take(100)
+                            .collect::<String>()
                     ));
                 }
                 if result.matches.len() > 2 {
@@ -6083,14 +6537,14 @@ Flow: search({source:"jozen"}) -> fetch with lineno
             }
             // Lightweight next-call hints (low token) for GRETIL
             let hint_top = hint_top(3);
-            let hl_regex = looks_like_regex || (q != q_raw);
+            let hl_regex = buddha_core::text_utils::indic_query_is_regex(q_raw) || (q != q_raw);
             let mut fetch_suggestions: Vec<serde_json::Value> = Vec::new();
             for r in results.iter().take(hint_top) {
                 if let Some(m) = r.matches.first() {
                     if let Some(ln) = m.line_number {
                         fetch_suggestions.push(json!({
                         "tool": "gretil_fetch",
-                        "args": {"id": r.file_id, "lineNumber": ln, "contextBefore": 1, "contextAfter": 3, "highlight": q, "highlightRegex": hl_regex},
+                        "args": {"id": r.file_id, "lineNumber": ln, "contextBefore": 2, "contextAfter": 5, "highlight": q, "highlightRegex": hl_regex},
                         "mode": "low-cost"
                     }));
                     }
@@ -6099,7 +6553,7 @@ Flow: search({source:"jozen"}) -> fetch with lineno
             let mut meta = json!({
                 "searchPattern": q,
                 "totalFiles": results.len(),
-                "results": results,
+                "maxMatchesPerFile": max_matches_per_file, "offset": offset, "totalFilesMatched": total_matched, "results": results,
                 "hint": "Use gretil_fetch (id + lineNumber) for low-cost context; gretil_pipeline with autoFetch=false to summarize",
                 "fetchSuggestions": fetch_suggestions
             });
@@ -6111,20 +6565,18 @@ Flow: search({source:"jozen"}) -> fetch with lineno
         }
         "gretil_pipeline" => {
             let q_raw = args.get("query").and_then(|v| v.as_str()).unwrap_or("");
-            let looks_like_regex = q_raw.chars().any(|c| ".+*?[](){}|\\".contains(c));
-            let q = if q_raw.chars().any(|c| c.is_whitespace()) && !looks_like_regex {
-                to_whitespace_fuzzy_literal(q_raw)
-            } else {
-                q_raw.to_string()
-            };
+            let q = buddha_core::text_utils::indic_query_pattern(
+                q_raw,
+                args.get("loose").and_then(|v| v.as_bool()).unwrap_or(false),
+            );
             let context_before = args
                 .get("contextBefore")
                 .and_then(|v| v.as_u64())
-                .unwrap_or(10) as usize;
+                .unwrap_or(2) as usize;
             let context_after = args
                 .get("contextAfter")
                 .and_then(|v| v.as_u64())
-                .unwrap_or(100) as usize;
+                .unwrap_or(5) as usize;
             let max_results = args
                 .get("maxResults")
                 .and_then(|v| v.as_u64())
@@ -6137,11 +6589,17 @@ Flow: search({source:"jozen"}) -> fetch with lineno
                 .get("includeMatchLine")
                 .and_then(|v| v.as_bool())
                 .unwrap_or(true);
-            let results = gretil_grep(&gretil_root(), &q, max_results, max_matches_per_file);
+            let results = gretil_grep(&gretil_root(), &q, usize::MAX, max_matches_per_file);
+            let offset = args
+                .get("offset")
+                .or_else(|| args.get("offs"))
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0) as usize;
+            let (results, total_matched) =
+                buddha_core::paginate_grep_results(results, offset, max_results);
             let mut content_items: Vec<serde_json::Value> = Vec::new();
-            let mut meta =
-                json!({ "searchPattern": q, "totalFiles": results.len(), "results": results });
-            let summary = format!("Found {} files with matches for '{}'", results.len(), q);
+            let mut meta = json!({ "searchPattern": q, "totalFiles": results.len(), "maxMatchesPerFile": max_matches_per_file, "offset": offset, "totalFilesMatched": total_matched, "results": results });
+            let summary = format!("Found {} files with matches for '{}'", results.len(), q_raw);
             content_items.push(json!({"type":"text","text": summary}));
             let force_no_auto = std::env::var("BUDDHA_FORCE_NO_AUTO")
                 .or_else(|_| std::env::var("DAIZO_FORCE_NO_AUTO"))
@@ -6222,20 +6680,20 @@ Flow: search({source:"jozen"}) -> fetch with lineno
                                 );
                                 let mut chigh: Vec<serde_json::Value> = Vec::new();
                                 if let Some(pat) = args.get("highlight").and_then(|v| v.as_str()) {
-                                    let looks_like =
-                                        pat.chars().any(|c| ".+*?[](){}|\\".contains(c));
-                                    let mut hlr = args
+                                    let explicit_regex = args
                                         .get("highlightRegex")
                                         .and_then(|v| v.as_bool())
                                         .unwrap_or(false);
-                                    let pat = if pat.chars().any(|c| c.is_whitespace())
-                                        && !looks_like
-                                        && !hlr
-                                    {
-                                        hlr = true;
-                                        to_whitespace_fuzzy_literal(pat)
+                                    let hlr = true;
+                                    let pat = if explicit_regex {
+                                        pat.to_owned()
                                     } else {
-                                        pat.to_string()
+                                        buddha_core::text_utils::indic_query_pattern(
+                                            pat,
+                                            args.get("loose")
+                                                .and_then(|v| v.as_bool())
+                                                .unwrap_or(false),
+                                        )
                                     };
                                     if hlr {
                                         if let Ok(re) = regex::Regex::new(&pat) {
@@ -6385,7 +6843,7 @@ Flow: search({source:"jozen"}) -> fetch with lineno
             let limit = args.get("limit").and_then(|v| v.as_u64()).unwrap_or(20) as usize;
             let catalog = load_or_build_shinzen_work_catalog();
             let results = search_shinzen_work_catalog(catalog, query, volume, limit);
-            let summary = results
+            let mut summary = results
                 .iter()
                 .enumerate()
                 .map(|(i, entry)| {
@@ -6424,7 +6882,7 @@ Flow: search({source:"jozen"}) -> fetch with lineno
                     }));
                 }
             }
-            let next_actions = results
+            let mut next_actions = results
                 .iter()
                 .take(5)
                 .map(|entry| {
@@ -6445,6 +6903,11 @@ Flow: search({source:"jozen"}) -> fetch with lineno
                     }
                 })
                 .collect::<Vec<_>>();
+            if results.is_empty() {
+                let (text, actions) = catalog_empty_result("shinzen", query);
+                summary = text;
+                next_actions.extend(actions);
+            }
             let result_views = results
                 .iter()
                 .map(|entry| shinzen_work_agent_view(entry))
@@ -6514,6 +6977,9 @@ Flow: search({source:"jozen"}) -> fetch with lineno
             }
 
             let xml = fs::read_to_string(&path).unwrap_or_default();
+            if let Some(error) = line_context_error(&xml, &args, true) {
+                return line_error_response(id, error);
+            }
             let format = args
                 .get("format")
                 .and_then(|v| v.as_str())
@@ -6542,6 +7008,9 @@ Flow: search({source:"jozen"}) -> fetch with lineno
                 (extract_shinzen_text(&xml), "full".to_string())
             };
 
+            if let Some(error) = empty_line_context_error(&text, &extraction_method, true) {
+                return line_error_response(id, error);
+            }
             let full_flag = args.get("full").and_then(|v| v.as_bool()).unwrap_or(false);
             let mut sliced = if full_flag {
                 text.clone()
@@ -6584,10 +7053,14 @@ Flow: search({source:"jozen"}) -> fetch with lineno
                     idx.iter()
                         .find(|entry| entry.path == canonical.to_string_lossy())
                 });
-            let biblio = resolve_shinzen_bibliography_for_path(&shinzen_kunten_tei_root(), &path);
+            let mut biblio =
+                resolve_shinzen_bibliography_for_path(&shinzen_kunten_tei_root(), &path);
             let work = biblio.as_ref().and_then(|b| {
                 find_shinzen_work_for_bibliography(load_or_build_shinzen_work_catalog(), b)
             });
+            if let (Some(b), Some(w)) = (biblio.as_mut(), work.as_ref()) {
+                buddha_core::apply_shinzen_catalog_bibliography(b, w);
+            }
             let total_chars = text.chars().count();
             let requested_start = args
                 .get("page")
@@ -6653,12 +7126,19 @@ Flow: search({source:"jozen"}) -> fetch with lineno
                 .get("maxMatchesPerFile")
                 .and_then(|v| v.as_u64())
                 .unwrap_or(5) as usize;
-            let mut results = shinzen_grep(
+            let results = shinzen_grep(
                 &shinzen_kunten_tei_root(),
                 &q,
-                max_results,
+                usize::MAX,
                 max_matches_per_file,
             );
+            let offset = args
+                .get("offset")
+                .or_else(|| args.get("offs"))
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0) as usize;
+            let (mut results, total_matched) =
+                buddha_core::paginate_grep_results(results, offset, max_results);
             buddha_core::apply_shinzen_work_titles(
                 &mut results,
                 load_or_build_shinzen_work_catalog(),
@@ -6677,7 +7157,14 @@ Flow: search({source:"jozen"}) -> fetch with lineno
                     result.file_id
                 ));
                 for (j, m) in result.matches.iter().enumerate().take(2) {
-                    summary.push_str(&format!("   Match {}: ...{}...\n", j + 1, m.context));
+                    summary.push_str(&format!(
+                        "   Match {} ({}): ...{}...\n",
+                        j + 1,
+                        m.line_number
+                            .map(|line| format!("line {}", line))
+                            .unwrap_or_else(|| "location unknown".to_string()),
+                        search_snippet(&m.context)
+                    ));
                 }
                 summary.push('\n');
             }
@@ -6700,7 +7187,7 @@ Flow: search({source:"jozen"}) -> fetch with lineno
                     };
                     fetch_suggestions.push(json!({
                         "tool": "shinzen_fetch",
-                        "args": {"id": r.file_id, "lineNumber": ln, "contextBefore": 1, "contextAfter": 3, "highlight": q},
+                        "args": {"id": r.file_id, "lineNumber": ln, "contextBefore": 2, "contextAfter": 5, "highlight": q},
                         "mode": "low-cost",
                         "citation": citation,
                         "workId": work_id
@@ -6730,7 +7217,7 @@ Flow: search({source:"jozen"}) -> fetch with lineno
             let mut meta = json!({
                 "searchPattern": q,
                 "totalFiles": results.len(),
-                "results": results_meta,
+                "maxMatchesPerFile": max_matches_per_file, "offset": offset, "totalFilesMatched": total_matched, "results": results_meta,
                 "hint": "Use shinzen_fetch (id + lineNumber) for low-cost context; shinzen_pipeline with autoFetch=false to summarize. To find a WORK by title/author, use shinzen_work_catalog.",
                 "fetchSuggestions": fetch_suggestions
             });
@@ -6753,19 +7240,26 @@ Flow: search({source:"jozen"}) -> fetch with lineno
                 .get("maxMatchesPerFile")
                 .and_then(|v| v.as_u64())
                 .unwrap_or(3) as usize;
-            let mut results = shinzen_grep(
+            let results = shinzen_grep(
                 &shinzen_kunten_tei_root(),
                 q,
-                max_results,
+                usize::MAX,
                 max_matches_per_file,
             );
+            let offset = args
+                .get("offset")
+                .or_else(|| args.get("offs"))
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0) as usize;
+            let (mut results, total_matched) =
+                buddha_core::paginate_grep_results(results, offset, max_results);
             buddha_core::apply_shinzen_work_titles(
                 &mut results,
                 load_or_build_shinzen_work_catalog(),
                 false,
             );
             let summary = format!("Found {} files with matches for '{}'", results.len(), q);
-            let meta = json!({"searchPattern": q, "totalFiles": results.len(), "results": results});
+            let meta = json!({"searchPattern": q, "totalFiles": results.len(), "maxMatchesPerFile": max_matches_per_file, "offset": offset, "totalFilesMatched": total_matched, "results": results});
             return json!({"jsonrpc":"2.0","id": id, "result": { "content": [{"type":"text","text": summary}], "_meta": meta }});
         }
         "sarit_title_search" => {
@@ -6835,7 +7329,7 @@ Flow: search({source:"jozen"}) -> fetch with lineno
                 .unwrap_or(20) as usize;
             let catalog = load_or_build_shoku_shinzen_work_catalog();
             let results = search_shinzen_work_catalog(catalog, query, volume, limit);
-            let summary = results
+            let mut summary = results
                 .iter()
                 .enumerate()
                 .map(|(index, entry)| {
@@ -6858,7 +7352,7 @@ Flow: search({source:"jozen"}) -> fetch with lineno
                 })
                 .collect::<Vec<_>>()
                 .join("\n");
-            let next_actions = results
+            let mut next_actions = results
                 .iter()
                 .take(5)
                 .map(|entry| {
@@ -6879,6 +7373,11 @@ Flow: search({source:"jozen"}) -> fetch with lineno
                     }
                 })
                 .collect::<Vec<_>>();
+            if results.is_empty() {
+                let (text, actions) = catalog_empty_result("shoku_shinzen", query);
+                summary = text;
+                next_actions.extend(actions);
+            }
             let fetch_suggestions = next_actions
                 .iter()
                 .filter(|action| action["reason"] == "work-start")
@@ -6917,8 +7416,14 @@ Flow: search({source:"jozen"}) -> fetch with lineno
                 .get("maxMatchesPerFile")
                 .and_then(|v| v.as_u64())
                 .unwrap_or(5) as usize;
-            let mut results =
-                shoku_shinzen_grep(&shoku_shinzen_kunten_tei_root(), &q, max_results, per);
+            let results = shoku_shinzen_grep(&shoku_shinzen_kunten_tei_root(), &q, usize::MAX, per);
+            let offset = args
+                .get("offset")
+                .or_else(|| args.get("offs"))
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0) as usize;
+            let (mut results, total_matched) =
+                buddha_core::paginate_grep_results(results, offset, max_results);
             buddha_core::apply_shinzen_work_titles(
                 &mut results,
                 load_or_build_shoku_shinzen_work_catalog(),
@@ -6959,7 +7464,7 @@ Flow: search({source:"jozen"}) -> fetch with lineno
                 }
             }
             return json!({"jsonrpc":"2.0","id": id, "result": { "content": [{"type":"text","text": summary }], "_meta": json!({
-                "count": results.len(), "results": results_meta, "fetchSuggestions": fetch_suggestions,
+                "count": results.len(), "totalFiles": results.len(), "maxMatchesPerFile": per, "offset": offset, "totalFilesMatched": total_matched, "results": results_meta, "fetchSuggestions": fetch_suggestions,
                 "hint": "Use shoku_shinzen_fetch with id + lineNumber for context."
             }) }});
         }
@@ -7017,6 +7522,9 @@ Flow: search({source:"jozen"}) -> fetch with lineno
                 return json!({"jsonrpc":"2.0","id":id,"result":fetch_not_found_response("shoku_shinzen",&query,candidates)});
             }
             let xml = fs::read_to_string(&path).unwrap_or_default();
+            if let Some(error) = line_context_error(&xml, &args, true) {
+                return line_error_response(id, error);
+            }
             let format = args
                 .get("format")
                 .and_then(|value| value.as_str())
@@ -7082,6 +7590,9 @@ Flow: search({source:"jozen"}) -> fetch with lineno
                 (corrected.join("\n"), "full".to_string(), applied)
             };
 
+            if let Some(error) = empty_line_context_error(&text, &extraction_method, true) {
+                return line_error_response(id, error);
+            }
             let full_flag = args
                 .get("full")
                 .and_then(|value| value.as_bool())
@@ -7217,8 +7728,14 @@ Flow: search({source:"jozen"}) -> fetch with lineno
                 .get("maxMatchesPerFile")
                 .and_then(|v| v.as_u64())
                 .unwrap_or(3) as usize;
-            let mut results =
-                shoku_shinzen_grep(&shoku_shinzen_kunten_tei_root(), &q, max_results, per);
+            let results = shoku_shinzen_grep(&shoku_shinzen_kunten_tei_root(), &q, usize::MAX, per);
+            let offset = args
+                .get("offset")
+                .or_else(|| args.get("offs"))
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0) as usize;
+            let (mut results, total_matched) =
+                buddha_core::paginate_grep_results(results, offset, max_results);
             buddha_core::apply_shinzen_work_titles(
                 &mut results,
                 load_or_build_shoku_shinzen_work_catalog(),
@@ -7242,10 +7759,9 @@ Flow: search({source:"jozen"}) -> fetch with lineno
                 .filter_map(|r| r.matches.first().and_then(|m| m.line_number)
                     .map(|ln| json!({"tool":"shoku_shinzen_fetch","args":{"id":r.file_id,"lineNumber":ln,"contextBefore":1,"contextAfter":3,"highlight":q},"mode":"low-cost"})))
                 .take(3).collect();
-            return json!({"jsonrpc":"2.0","id": id, "result": { "content": [{"type":"text","text": summary }], "_meta": json!({ "count": results.len(), "results": results, "fetchSuggestions": fetch_suggestions }) }});
+            return json!({"jsonrpc":"2.0","id": id, "result": { "content": [{"type":"text","text": summary }], "_meta": json!({ "count": results.len(), "maxMatchesPerFile": per, "offset": offset, "totalFilesMatched": total_matched, "results": results, "fetchSuggestions": fetch_suggestions }) }});
         }
         "sarit_fetch" => {
-            ensure_sarit_data();
             let mut matched_id: Option<String> = None;
             let mut matched_title: Option<String> = None;
             let mut matched_score: Option<f32> = None;
@@ -7300,6 +7816,9 @@ Flow: search({source:"jozen"}) -> fetch with lineno
             }
 
             let xml = fs::read_to_string(&path).unwrap_or_default();
+            if let Some(error) = line_context_error(&xml, &args, false) {
+                return line_error_response(id, error);
+            }
             let include_notes = args
                 .get("includeNotes")
                 .and_then(|v| v.as_bool())
@@ -7345,6 +7864,9 @@ Flow: search({source:"jozen"}) -> fetch with lineno
                     (extract_text_opts(&xml, include_notes), "full".to_string())
                 };
 
+            if let Some(error) = empty_line_context_error(&text, &extraction_method, false) {
+                return line_error_response(id, error);
+            }
             let full_flag = args.get("full").and_then(|v| v.as_bool()).unwrap_or(false);
             let mut sliced = if full_flag {
                 text.clone()
@@ -7431,12 +7953,10 @@ Flow: search({source:"jozen"}) -> fetch with lineno
         }
         "sarit_search" => {
             let q_raw = args.get("query").and_then(|v| v.as_str()).unwrap_or("");
-            let looks_like_regex = q_raw.chars().any(|c| ".+*?[](){}|\\".contains(c));
-            let q = if q_raw.chars().any(|c| c.is_whitespace()) && !looks_like_regex {
-                to_whitespace_fuzzy_literal(q_raw)
-            } else {
-                q_raw.to_string()
-            };
+            let q = buddha_core::text_utils::indic_query_pattern(
+                q_raw,
+                args.get("loose").and_then(|v| v.as_bool()).unwrap_or(false),
+            );
             let max_results = args
                 .get("maxResults")
                 .and_then(|v| v.as_u64())
@@ -7446,8 +7966,14 @@ Flow: search({source:"jozen"}) -> fetch with lineno
                 .and_then(|v| v.as_u64())
                 .unwrap_or(5) as usize;
 
-            ensure_sarit_data();
-            let results = sarit_grep(&sarit_root(), &q, max_results, max_matches_per_file);
+            let results = sarit_grep(&sarit_root(), &q, usize::MAX, max_matches_per_file);
+            let offset = args
+                .get("offset")
+                .or_else(|| args.get("offs"))
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0) as usize;
+            let (results, total_matched) =
+                buddha_core::paginate_grep_results(results, offset, max_results);
 
             let mut summary = format!(
                 "Found {} files with matches for '{}':\n\n",
@@ -7472,9 +7998,15 @@ Flow: search({source:"jozen"}) -> fetch with lineno
                 ));
                 for (j, m) in result.matches.iter().enumerate().take(2) {
                     summary.push_str(&format!(
-                        "   Match {}: ...{}...\n",
+                        "   Match {} ({}): ...{}...\n",
                         j + 1,
-                        m.context.chars().take(100).collect::<String>()
+                        m.line_number
+                            .map(|line| format!("line {}", line))
+                            .unwrap_or_else(|| "location unknown".to_string()),
+                        search_snippet(&m.context)
+                            .chars()
+                            .take(100)
+                            .collect::<String>()
                     ));
                 }
                 if result.matches.len() > 2 {
@@ -7492,14 +8024,14 @@ Flow: search({source:"jozen"}) -> fetch with lineno
                 .ok()
                 .and_then(|s| s.parse::<usize>().ok())
                 .unwrap_or(1);
-            let hl_regex = looks_like_regex || (q != q_raw);
+            let hl_regex = buddha_core::text_utils::indic_query_is_regex(q_raw) || (q != q_raw);
             let mut fetch_suggestions: Vec<serde_json::Value> = Vec::new();
             for r in results.iter().take(hint_top) {
                 if let Some(m) = r.matches.first() {
                     if let Some(ln) = m.line_number {
                         fetch_suggestions.push(json!({
                             "tool": "sarit_fetch",
-                            "args": {"id": r.file_id, "lineNumber": ln, "contextBefore": 1, "contextAfter": 3, "highlight": q, "highlightRegex": hl_regex},
+                            "args": {"id": r.file_id, "lineNumber": ln, "contextBefore": 2, "contextAfter": 5, "highlight": q, "highlightRegex": hl_regex},
                             "mode": "low-cost"
                         }));
                     }
@@ -7508,7 +8040,7 @@ Flow: search({source:"jozen"}) -> fetch with lineno
             let mut meta = json!({
                 "searchPattern": q,
                 "totalFiles": results.len(),
-                "results": results,
+                "maxMatchesPerFile": max_matches_per_file, "offset": offset, "totalFilesMatched": total_matched, "results": results,
                 "hint": "Use sarit_fetch (id + lineNumber) for low-cost context; sarit_pipeline with autoFetch=false to summarize",
                 "fetchSuggestions": fetch_suggestions
             });
@@ -7520,20 +8052,18 @@ Flow: search({source:"jozen"}) -> fetch with lineno
         }
         "sarit_pipeline" => {
             let q_raw = args.get("query").and_then(|v| v.as_str()).unwrap_or("");
-            let looks_like_regex = q_raw.chars().any(|c| ".+*?[](){}|\\".contains(c));
-            let q = if q_raw.chars().any(|c| c.is_whitespace()) && !looks_like_regex {
-                to_whitespace_fuzzy_literal(q_raw)
-            } else {
-                q_raw.to_string()
-            };
+            let q = buddha_core::text_utils::indic_query_pattern(
+                q_raw,
+                args.get("loose").and_then(|v| v.as_bool()).unwrap_or(false),
+            );
             let context_before = args
                 .get("contextBefore")
                 .and_then(|v| v.as_u64())
-                .unwrap_or(10) as usize;
+                .unwrap_or(2) as usize;
             let context_after = args
                 .get("contextAfter")
                 .and_then(|v| v.as_u64())
-                .unwrap_or(100) as usize;
+                .unwrap_or(5) as usize;
             let max_results = args
                 .get("maxResults")
                 .and_then(|v| v.as_u64())
@@ -7546,12 +8076,18 @@ Flow: search({source:"jozen"}) -> fetch with lineno
                 .get("includeMatchLine")
                 .and_then(|v| v.as_bool())
                 .unwrap_or(true);
-            ensure_sarit_data();
-            let results = sarit_grep(&sarit_root(), &q, max_results, max_matches_per_file);
+
+            let results = sarit_grep(&sarit_root(), &q, usize::MAX, max_matches_per_file);
+            let offset = args
+                .get("offset")
+                .or_else(|| args.get("offs"))
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0) as usize;
+            let (results, total_matched) =
+                buddha_core::paginate_grep_results(results, offset, max_results);
             let mut content_items: Vec<serde_json::Value> = Vec::new();
-            let mut meta =
-                json!({ "searchPattern": q, "totalFiles": results.len(), "results": results });
-            let summary = format!("Found {} files with matches for '{}'", results.len(), q);
+            let mut meta = json!({ "searchPattern": q, "totalFiles": results.len(), "maxMatchesPerFile": max_matches_per_file, "offset": offset, "totalFilesMatched": total_matched, "results": results });
+            let summary = format!("Found {} files with matches for '{}'", results.len(), q_raw);
             content_items.push(json!({"type":"text","text": summary}));
             let force_no_auto = std::env::var("BUDDHA_FORCE_NO_AUTO")
                 .or_else(|_| std::env::var("DAIZO_FORCE_NO_AUTO"))
@@ -7631,20 +8167,20 @@ Flow: search({source:"jozen"}) -> fetch with lineno
                                 );
                                 let mut chigh: Vec<serde_json::Value> = Vec::new();
                                 if let Some(pat) = args.get("highlight").and_then(|v| v.as_str()) {
-                                    let looks_like =
-                                        pat.chars().any(|c| ".+*?[](){}|\\".contains(c));
-                                    let mut hlr = args
+                                    let explicit_regex = args
                                         .get("highlightRegex")
                                         .and_then(|v| v.as_bool())
                                         .unwrap_or(false);
-                                    let pat = if pat.chars().any(|c| c.is_whitespace())
-                                        && !looks_like
-                                        && !hlr
-                                    {
-                                        hlr = true;
-                                        to_whitespace_fuzzy_literal(pat)
+                                    let hlr = true;
+                                    let pat = if explicit_regex {
+                                        pat.to_owned()
                                     } else {
-                                        pat.to_string()
+                                        buddha_core::text_utils::indic_query_pattern(
+                                            pat,
+                                            args.get("loose")
+                                                .and_then(|v| v.as_bool())
+                                                .unwrap_or(false),
+                                        )
                                     };
                                     if hlr {
                                         if let Ok(re) = regex::Regex::new(&pat) {
@@ -7750,7 +8286,6 @@ Flow: search({source:"jozen"}) -> fetch with lineno
             return json!({"jsonrpc":"2.0","id": id, "result": { "content": content_items, "_meta": meta }});
         }
         "muktabodha_title_search" => {
-            ensure_muktabodha_dir();
             let q = args
                 .get("query")
                 .and_then(|v| v.as_str())
@@ -7782,7 +8317,6 @@ Flow: search({source:"jozen"}) -> fetch with lineno
             return json!({"jsonrpc":"2.0","id": id, "result": { "content": [{"type":"text","text": summary }], "_meta": meta }});
         }
         "muktabodha_fetch" => {
-            ensure_muktabodha_dir();
             let mut matched_id: Option<String> = None;
             let mut matched_title: Option<String> = None;
             let mut matched_score: Option<f32> = None;
@@ -7841,6 +8375,9 @@ Flow: search({source:"jozen"}) -> fetch with lineno
 
             let bytes = fs::read(&path).unwrap_or_default();
             let xml = decode_xml_bytes(&bytes);
+            if let Some(error) = line_context_error(&xml, &args, false) {
+                return line_error_response(id, error);
+            }
             let include_notes = args
                 .get("includeNotes")
                 .and_then(|v| v.as_bool())
@@ -7885,6 +8422,9 @@ Flow: search({source:"jozen"}) -> fetch with lineno
                     (xml.clone(), "full-txt".to_string())
                 };
 
+            if let Some(error) = empty_line_context_error(&text, &extraction_method, false) {
+                return line_error_response(id, error);
+            }
             let full_flag = args.get("full").and_then(|v| v.as_bool()).unwrap_or(false);
             let mut sliced = if full_flag {
                 text.clone()
@@ -7958,12 +8498,10 @@ Flow: search({source:"jozen"}) -> fetch with lineno
         }
         "muktabodha_search" => {
             let q_raw = args.get("query").and_then(|v| v.as_str()).unwrap_or("");
-            let looks_like_regex = q_raw.chars().any(|c| ".+*?[](){}|\\".contains(c));
-            let q = if q_raw.chars().any(|c| c.is_whitespace()) && !looks_like_regex {
-                to_whitespace_fuzzy_literal(q_raw)
-            } else {
-                q_raw.to_string()
-            };
+            let q = buddha_core::text_utils::indic_query_pattern(
+                q_raw,
+                args.get("loose").and_then(|v| v.as_bool()).unwrap_or(false),
+            );
             let max_results = args
                 .get("maxResults")
                 .and_then(|v| v.as_u64())
@@ -7973,9 +8511,14 @@ Flow: search({source:"jozen"}) -> fetch with lineno
                 .and_then(|v| v.as_u64())
                 .unwrap_or(5) as usize;
 
-            ensure_muktabodha_dir();
-            let results =
-                muktabodha_grep(&muktabodha_root(), &q, max_results, max_matches_per_file);
+            let results = muktabodha_grep(&muktabodha_root(), &q, usize::MAX, max_matches_per_file);
+            let offset = args
+                .get("offset")
+                .or_else(|| args.get("offs"))
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0) as usize;
+            let (results, total_matched) =
+                buddha_core::paginate_grep_results(results, offset, max_results);
 
             let mut summary = format!(
                 "Found {} files with matches for '{}':\n\n",
@@ -8000,9 +8543,15 @@ Flow: search({source:"jozen"}) -> fetch with lineno
                 ));
                 for (j, m) in result.matches.iter().enumerate().take(2) {
                     summary.push_str(&format!(
-                        "   Match {}: ...{}...\n",
+                        "   Match {} ({}): ...{}...\n",
                         j + 1,
-                        m.context.chars().take(100).collect::<String>()
+                        m.line_number
+                            .map(|line| format!("line {}", line))
+                            .unwrap_or_else(|| "location unknown".to_string()),
+                        search_snippet(&m.context)
+                            .chars()
+                            .take(100)
+                            .collect::<String>()
                     ));
                 }
                 if result.matches.len() > 2 {
@@ -8013,14 +8562,14 @@ Flow: search({source:"jozen"}) -> fetch with lineno
                 }
                 summary.push('\n');
             }
-            let hl_regex = looks_like_regex || (q != q_raw);
+            let hl_regex = buddha_core::text_utils::indic_query_is_regex(q_raw) || (q != q_raw);
             let mut fetch_suggestions: Vec<serde_json::Value> = Vec::new();
             if let Some(r) = results.first() {
                 if let Some(m) = r.matches.first() {
                     if let Some(ln) = m.line_number {
                         fetch_suggestions.push(json!({
                             "tool": "muktabodha_fetch",
-                            "args": {"id": r.file_id, "lineNumber": ln, "contextBefore": 1, "contextAfter": 3, "highlight": q, "highlightRegex": hl_regex},
+                            "args": {"id": r.file_id, "lineNumber": ln, "contextBefore": 2, "contextAfter": 5, "highlight": q, "highlightRegex": hl_regex},
                             "mode": "low-cost"
                         }));
                     }
@@ -8029,7 +8578,7 @@ Flow: search({source:"jozen"}) -> fetch with lineno
             let mut meta = json!({
                 "searchPattern": q,
                 "totalFiles": results.len(),
-                "results": results,
+                "maxMatchesPerFile": max_matches_per_file, "offset": offset, "totalFilesMatched": total_matched, "results": results,
                 "hint": "Use muktabodha_fetch (id + lineNumber) for low-cost context; muktabodha_pipeline with autoFetch=false to summarize",
                 "fetchSuggestions": fetch_suggestions
             });
@@ -8041,20 +8590,18 @@ Flow: search({source:"jozen"}) -> fetch with lineno
         }
         "muktabodha_pipeline" => {
             let q_raw = args.get("query").and_then(|v| v.as_str()).unwrap_or("");
-            let looks_like_regex = q_raw.chars().any(|c| ".+*?[](){}|\\".contains(c));
-            let q = if q_raw.chars().any(|c| c.is_whitespace()) && !looks_like_regex {
-                to_whitespace_fuzzy_literal(q_raw)
-            } else {
-                q_raw.to_string()
-            };
+            let q = buddha_core::text_utils::indic_query_pattern(
+                q_raw,
+                args.get("loose").and_then(|v| v.as_bool()).unwrap_or(false),
+            );
             let context_before = args
                 .get("contextBefore")
                 .and_then(|v| v.as_u64())
-                .unwrap_or(10) as usize;
+                .unwrap_or(2) as usize;
             let context_after = args
                 .get("contextAfter")
                 .and_then(|v| v.as_u64())
-                .unwrap_or(100) as usize;
+                .unwrap_or(5) as usize;
             let max_results = args
                 .get("maxResults")
                 .and_then(|v| v.as_u64())
@@ -8068,12 +8615,16 @@ Flow: search({source:"jozen"}) -> fetch with lineno
                 .and_then(|v| v.as_bool())
                 .unwrap_or(true);
 
-            ensure_muktabodha_dir();
-            let results =
-                muktabodha_grep(&muktabodha_root(), &q, max_results, max_matches_per_file);
+            let results = muktabodha_grep(&muktabodha_root(), &q, usize::MAX, max_matches_per_file);
+            let offset = args
+                .get("offset")
+                .or_else(|| args.get("offs"))
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0) as usize;
+            let (results, total_matched) =
+                buddha_core::paginate_grep_results(results, offset, max_results);
             let mut content_items: Vec<serde_json::Value> = Vec::new();
-            let mut meta =
-                json!({ "searchPattern": q, "totalFiles": results.len(), "results": results });
+            let mut meta = json!({ "searchPattern": q, "totalFiles": results.len(), "maxMatchesPerFile": max_matches_per_file, "offset": offset, "totalFilesMatched": total_matched, "results": results });
             let summary = format!("Found {} files with matches for '{}'", results.len(), q);
             content_items.push(json!({"type":"text","text": summary}));
 
@@ -8171,12 +8722,10 @@ Flow: search({source:"jozen"}) -> fetch with lineno
         }
         "tipitaka_search" => {
             let q_raw = args.get("query").and_then(|v| v.as_str()).unwrap_or("");
-            let looks_like_regex = q_raw.chars().any(|c| ".+*?[](){}|\\".contains(c));
-            let q = if q_raw.chars().any(|c| c.is_whitespace()) && !looks_like_regex {
-                to_whitespace_fuzzy_literal(q_raw)
-            } else {
-                q_raw.to_string()
-            };
+            let q = buddha_core::text_utils::indic_query_pattern(
+                q_raw,
+                args.get("loose").and_then(|v| v.as_bool()).unwrap_or(false),
+            );
             let max_results = args
                 .get("maxResults")
                 .and_then(|v| v.as_u64())
@@ -8186,13 +8735,19 @@ Flow: search({source:"jozen"}) -> fetch with lineno
                 .and_then(|v| v.as_u64())
                 .unwrap_or(5) as usize;
 
-            ensure_tipitaka_data();
-            let results = tipitaka_grep(&tipitaka_root(), &q, max_results, max_matches_per_file);
+            let results = tipitaka_grep(&tipitaka_root(), &q, usize::MAX, max_matches_per_file);
+            let offset = args
+                .get("offset")
+                .or_else(|| args.get("offs"))
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0) as usize;
+            let (results, total_matched) =
+                buddha_core::paginate_grep_results(results, offset, max_results);
 
             let mut summary = format!(
                 "Found {} files with matches for '{}':\n\n",
                 results.len(),
-                q
+                q_raw
             );
             for (i, result) in results.iter().enumerate() {
                 summary.push_str(&format!(
@@ -8213,9 +8768,15 @@ Flow: search({source:"jozen"}) -> fetch with lineno
 
                 for (j, m) in result.matches.iter().enumerate().take(2) {
                     summary.push_str(&format!(
-                        "   Match {}: ...{}...\n",
+                        "   Match {} ({}): ...{}...\n",
                         j + 1,
-                        m.context.chars().take(100).collect::<String>()
+                        m.line_number
+                            .map(|line| format!("line {}", line))
+                            .unwrap_or_else(|| "location unknown".to_string()),
+                        search_snippet(&m.context)
+                            .chars()
+                            .take(100)
+                            .collect::<String>()
                     ));
                 }
                 if result.matches.len() > 2 {
@@ -8235,14 +8796,14 @@ Flow: search({source:"jozen"}) -> fetch with lineno
             }
             // Lightweight next-call hints for Tipitaka (no pipeline tool)
             let hint_top = hint_top(3);
-            let hl_regex = looks_like_regex || (q != q_raw);
+            let hl_regex = buddha_core::text_utils::indic_query_is_regex(q_raw) || (q != q_raw);
             let mut fetch_suggestions: Vec<serde_json::Value> = Vec::new();
             for r in results.iter().take(hint_top) {
                 if let Some(m) = r.matches.first() {
                     if let Some(ln) = m.line_number {
                         fetch_suggestions.push(json!({
                         "tool": "tipitaka_fetch",
-                        "args": {"id": r.file_id, "lineNumber": ln, "contextBefore": 1, "contextAfter": 3, "highlight": q, "highlightRegex": hl_regex},
+                        "args": {"id": r.file_id, "lineNumber": ln, "contextBefore": 2, "contextAfter": 5, "highlight": q, "highlightRegex": hl_regex},
                         "mode": "low-cost"
                     }));
                     }
@@ -8251,7 +8812,7 @@ Flow: search({source:"jozen"}) -> fetch with lineno
             let meta = json!({
                 "searchPattern": q,
                 "totalFiles": results.len(),
-                "results": results,
+                "maxMatchesPerFile": max_matches_per_file, "offset": offset, "totalFilesMatched": total_matched, "results": results,
                 "hint": "Use tipitaka_fetch (id + lineNumber) for low-cost context",
                 "fetchSuggestions": fetch_suggestions
             });
@@ -9223,22 +9784,6 @@ fn sat_tnumber_from_startid(useid: &str) -> Option<String> {
     Some(format!("T{}", p0))
 }
 
-fn sat_doc_display_line(doc: &serde_json::Value) -> String {
-    let title = doc.get("fascnm").and_then(|v| v.as_str()).unwrap_or("");
-    let useid = doc.get("startid").and_then(|v| v.as_str()).unwrap_or("");
-    let tnum = doc
-        .get("tNumber")
-        .and_then(|v| v.as_str())
-        .map(|s| s.to_string())
-        .or_else(|| sat_tnumber_from_startid(useid))
-        .unwrap_or_else(|| "?".to_string());
-    if title.is_empty() {
-        format!("{} [useid: {}]", tnum, useid)
-    } else {
-        format!("{} {} [useid: {}]", tnum, title, useid)
-    }
-}
-
 fn sat_wrap7_search_json(
     q: &str,
     rows: usize,
@@ -9678,13 +10223,28 @@ fn normalize_ws(s: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::{
-        cbeta_dila_id, cbeta_extract_lb_from_line_near, cbeta_part_arg, fetch_next_start_char,
-        fetch_not_found_response, fetch_page_bounds, handle_call, handle_initialize, hint_top_from,
-        jozen_extract_detail, jozen_parse_search_html, local_source_link, sat_pick_best_doc,
-        should_focus_highlight, slice_text_bounds, spill_large_content_response_to,
+        cbeta_context_lb_range, cbeta_dila_id, cbeta_extract_lb_from_line_near, cbeta_part_arg,
+        fetch_next_start_char, fetch_not_found_response, fetch_page_bounds, handle_call,
+        handle_initialize, hint_top_from, jozen_extract_detail, jozen_parse_search_html,
+        local_source_link, sat_pick_best_doc, should_focus_highlight, slice_text_bounds,
+        spill_large_content_response_to,
     };
     use serde_json::json;
     use std::path::Path;
+
+    #[test]
+    fn numbered_missing_id_does_not_suggest_unrelated_titles() {
+        let result = fetch_not_found_response(
+            "cbeta",
+            "T9999",
+            vec![json!({"id":"T02n0099","title":"unrelated"})],
+        );
+        assert_eq!(result["_meta"]["candidates"], json!([]));
+        assert!(!result["content"][0]["text"]
+            .as_str()
+            .unwrap()
+            .contains("Nearest candidates"));
+    }
 
     #[test]
     fn metadata_only_work_actions_are_executable_unified_searches() {
@@ -9735,6 +10295,44 @@ mod tests {
         assert_eq!(response["error"]["code"], -32602);
         assert_eq!(response["error"]["data"]["tool"], "no_such_tool");
         assert!(response.get("result").is_none());
+    }
+
+    #[test]
+    fn line_context_validation_checks_physical_and_numbered_ranges() {
+        let args = json!({"lineNumber": 3});
+        let error = super::line_context_error("one\ntwo", &args, false).unwrap();
+        assert_eq!(error["code"], "INVALID_ARGUMENT");
+        assert!(error["message"].as_str().unwrap().contains("1..=2"));
+        let xml = "<TEI><text><lb n=\"0\"/>first<lb n=\"2\"/>second</text></TEI>";
+        assert!(super::line_context_error(xml, &json!({"lineNumber":2}), true).is_none());
+        assert_eq!(
+            super::line_context_error(xml, &args, true).unwrap()["code"],
+            "INVALID_ARGUMENT"
+        );
+        assert_eq!(
+            super::line_context_error("<TEI/>", &args, true).unwrap()["code"],
+            "NOT_FOUND"
+        );
+        assert_eq!(
+            super::empty_line_context_error("[2]  ", "line-context-2", true).unwrap()["code"],
+            "NOT_FOUND"
+        );
+        assert!(super::empty_line_context_error("[2] text", "line-context-2", true).is_none());
+    }
+
+    #[test]
+    fn invalid_local_search_regex_is_machine_readable() {
+        for params in [
+            json!({"name":"cbeta_search","arguments":{"query":"["}}),
+            json!({"name":"search","arguments":{"source":"cbeta","query":"["}}),
+        ] {
+            let response = handle_call(json!(1), &params);
+            assert_eq!(response["result"]["isError"], true);
+            assert_eq!(
+                response["result"]["_meta"]["error"]["code"],
+                "INVALID_ARGUMENT"
+            );
+        }
     }
 
     #[test]
@@ -9939,6 +10537,27 @@ mod tests {
     }
 
     #[test]
+    fn cbeta_fetch_context_range_tracks_requested_lines() {
+        let xml =
+            "<TEI>\n<lb n=\"0749c21\"/>一\n<lb n=\"0749c22\"/>二\n<lb n=\"0749c23\"/>三\n</TEI>";
+        assert_eq!(
+            cbeta_context_lb_range(
+                xml,
+                &json!({"lb":"0749c22", "contextBefore":1, "contextAfter":1})
+            ),
+            Some(("0749c21".into(), "0749c23".into()))
+        );
+        assert_eq!(
+            cbeta_context_lb_range(
+                xml,
+                &json!({"lineNumber":3, "contextBefore":0, "contextAfter":1})
+            ),
+            Some(("0749c22".into(), "0749c23".into()))
+        );
+        assert!(cbeta_context_lb_range(xml, &json!({"lb":"0749c22", "startChar":1})).is_none());
+    }
+
+    #[test]
     fn cbeta_extract_lb_from_line_near_fallbacks_to_first_when_anchor_missing() {
         let line = r#"<lb n="0001a01"/>甲<lb n="0001a02"/>乙"#;
         let lb = cbeta_extract_lb_from_line_near(line, Some("不存在"));
@@ -10112,7 +10731,7 @@ pub fn run_stdio_server() -> Result<()> {
                 "tools/list" => handle_tools_list(req.id),
                 "tools/call" => {
                     let mut resp = handle_call(req.id, &req.params);
-                    crate::unified::rewrite_meta_suggestions(&mut resp);
+
                     let tool_name = req
                         .params
                         .get("name")
@@ -10123,8 +10742,11 @@ pub fn run_stdio_server() -> Result<()> {
                         .get("arguments")
                         .cloned()
                         .unwrap_or_else(|| json!({}));
+                    crate::unified::add_search_continuation(&mut resp, tool_name, &arguments);
+                    crate::unified::rewrite_meta_suggestions(&mut resp);
+                    let mut resp = spill_large_content_response(resp);
                     crate::unified::enrich_tool_response(&mut resp, tool_name, &arguments);
-                    spill_large_content_response(resp)
+                    resp
                 }
                 _ => {
                     json!({"jsonrpc":"2.0","id":req.id,"error":{"code": -32601, "message":"Method not found"}})

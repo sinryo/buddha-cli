@@ -4,6 +4,50 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+- Rank curated common-name and crosswalk matches above title-only matches in resolve results.
+
+- Show online search hits and pagination in text, provide recovery for empty work catalogs, and deduplicate and order resolve candidates.
+
+- Add shared local cross-corpus search to CLI/MCP, with script selection, per-corpus counts, skipped installations and online search actions.
+- Add `verify` to CLI/MCP for corrected quotation text, variant pairs, partial matches, source locations and citation checks.
+- Add batch local fetch for up to ten IDs with per-ID locators, per-item errors and a default cap of 2000 characters each.
+- Emit runnable CLI commands in JSON retrieval guidance while keeping MCP tool/args actions.
+- Add resolve/title-search recovery and locally existing same-number candidates to missing CBETA fetch errors.
+- Check local existence before recommending fetch for direct IDs in every local corpus.
+- Show `0 matching files` for empty searches and warn about out-of-range offsets only when offset is positive.
+
+### Fixed
+- Local search and fetch report missing corpora without downloading them; use init or the installer.
+- Doctor warns about duplicate names, backups, broken links, stale index paths and legacy logs.
+- Uninstall removes legacy aliases and includes GRETIL in purge while preserving SHINZEN links.
+- Updates rebuild indexes with the binary installed under BUDDHA_DIR.
+- The installer marks the CLI executable, and help and schema describe available corpora and options.
+- Local search summaries show the original query and limit displayed search patterns.
+- Text snippets retain spaces between words while joining CJK line breaks.
+- SHINZEN bibliography follows the work catalog when a matching work is available.
+- Empty searches and title resolution provide alternative search guidance.
+- CBETA ID resolution checks local availability before suggesting a fetch.
+- Local corpus searches and pipelines support `--offset` / MCP `offset` (`offs` alias), report matching-file totals and continuation actions, and keep deterministic page order.
+- CBETA plain-text fetch excludes table-of-contents `<cb:mulu>` text to avoid duplicated body headings.
+- CLI and MCP share corpus ID detection, including CBETA canons and Jozen IDs.
+- CLI result count options accept `--max-results`, `--limit`, and `--rows` as aliases.
+- SHINZEN missing texts return a structured NOT_FOUND error and exit code 10.
+- Line context defaults to two preceding and five following lines.
+- Pali/Sanskrit literal searches equate NFC/NFD and `ṃ`/`ṁ`; CLI `--loose` and MCP `loose:true` fold diacritics/case (including Harvard-Kyoto), with retry guidance for zero-hit ASCII queries.
+- Local MCP fetches and SHINZEN CLI fetches validate requested line numbers before extracting context.
+- MCP local regex search and pipeline responses show the line-based warning in text and expose query mode and warnings in structured results.
+- Local TEI fetches prefer the body over front matter when a body is present.
+- CLI local fetches reject out-of-range or empty line contexts with the valid line range.
+- Local CLI and MCP searches reject invalid regular expressions with a machine-readable argument error.
+- SHINZEN and SHOKU_SHINZEN label simple corrected-reading matches with both the original and corrected forms.
+- CLI local search results identify phrase and regular-expression modes and warn that regular expressions are line-based.
+- CBETA gaiji decode Unicode mappings, prefer normalized alternatives to character names, and avoid duplicating mapped characters.
+- Local TEI text extraction excludes headers, separates paragraphs and verse lines, and handles fragments beginning with closing tags.
+- CLI highlights support alternatives and case-insensitive matching; anchored search patterns are recognized as regular expressions.
+- CBETA MCP fetch includes titles and Taishō citation ranges; the installer preserves existing binaries if the build fails.
+- Set `BUDDHA_MCP_STRUCTURED_TEXT=0` to omit the duplicate structured text.
+- MCP structured results include readable text, and CBETA search summaries show clean snippets, locations and the total number of matching files.
+
 ## [0.6.18] - 2026-10-20
 
 ### Fixed

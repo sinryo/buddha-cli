@@ -20,6 +20,7 @@ use ignore::WalkBuilder;
 use serde::Deserialize;
 
 pub mod common_titles;
+pub mod operations;
 pub mod path_resolver;
 pub mod repo;
 pub mod text_utils;
@@ -1796,6 +1797,22 @@ pub fn shinzen_preferred_citation(
     }
 }
 
+/// Replace inferred attribution with the catalog entry covering this page.
+pub fn apply_shinzen_catalog_bibliography(
+    biblio: &mut ShinzenBibliography,
+    work: &ShinzenWorkEntry,
+) {
+    if work.title.trim().is_empty() {
+        return;
+    }
+    biblio.citation = shinzen_preferred_citation(biblio, Some(work));
+    biblio.work_title = Some(work.title.clone());
+    biblio.author = work.author.clone();
+    biblio.confidence = work.confidence.clone();
+    biblio.evidence.clear();
+    biblio.warning = None;
+}
+
 /// 続真言宗全書の頁と作品カタログから、AI がそのまま提示できる引用文を組む。
 /// 作品情報がない場合でも、巻・頁の出典は必ず返す。
 pub fn shoku_shinzen_preferred_citation(
@@ -1827,7 +1844,7 @@ pub fn apply_shinzen_work_titles(
         return;
     }
     for r in results.iter_mut() {
-        let Some(b) = r.biblio.as_ref() else {
+        let Some(b) = r.biblio.as_mut() else {
             continue;
         };
         let Some(work) = find_shinzen_work_for_page(catalog, &b.volume, &b.page) else {
@@ -1839,7 +1856,8 @@ pub fn apply_shinzen_work_titles(
         r.title = if shoku {
             shoku_shinzen_preferred_citation(&b.volume, &b.page, Some(&work))
         } else {
-            shinzen_preferred_citation(b, Some(&work))
+            apply_shinzen_catalog_bibliography(b, &work);
+            b.citation.clone()
         };
     }
 }
@@ -3835,85 +3853,7 @@ pub fn extract_text(xml: &str) -> String {
 }
 
 fn parse_gaiji_map(xml: &str) -> HashMap<String, String> {
-    let mut map = HashMap::new();
-    let mut reader = Reader::from_str(xml);
-    reader.config_mut().trim_text_start = true;
-    reader.config_mut().trim_text_end = true;
-    let mut buf = Vec::new();
-    let mut in_chardecl = false;
-    let mut in_char = false;
-    let mut current_id: Option<String> = None;
-    let mut current_mapping_type: Option<String> = None;
-    let mut current_val: Option<String> = None;
-    let mut in_charname = false;
-    let mut in_mapping = false;
-    loop {
-        match reader.read_event_into(&mut buf) {
-            Ok(Event::Start(e)) | Ok(Event::Empty(e)) => {
-                let name_owned = e.name().as_ref().to_owned();
-                let name = local_name(&name_owned);
-                if name == b"charDecl" {
-                    in_chardecl = true;
-                } else if in_chardecl && name == b"char" {
-                    in_char = true;
-                    current_id = attr_val(&e, b"xml:id").map(|v| v.to_string());
-                    current_val = None;
-                    current_mapping_type = None;
-                } else if in_char && name == b"mapping" {
-                    current_mapping_type = attr_val(&e, b"type").map(|v| v.to_string());
-                    in_mapping = true;
-                } else if in_char && name == b"charName" {
-                    in_charname = true;
-                }
-            }
-            Ok(Event::End(e)) => {
-                let name_owned = e.name().as_ref().to_owned();
-                let name = local_name(&name_owned);
-                if name == b"charDecl" {
-                    in_chardecl = false;
-                }
-                if name == b"mapping" {
-                    in_mapping = false;
-                }
-                if name == b"charName" {
-                    in_charname = false;
-                }
-                if name == b"char" && in_char {
-                    if let (Some(id), Some(v)) = (current_id.clone(), current_val.clone()) {
-                        if !v.is_empty() {
-                            map.insert(id, v);
-                        }
-                    }
-                    in_char = false;
-                    current_id = None;
-                    current_val = None;
-                    current_mapping_type = None;
-                }
-            }
-            Ok(Event::Text(t)) => {
-                let text = t.decode().unwrap_or_default().into_owned();
-                if in_char && in_mapping && current_mapping_type.as_deref() == Some("unicode") {
-                    if !text.trim().is_empty() {
-                        current_val = Some(text);
-                    }
-                } else if in_char && in_mapping && current_mapping_type.as_deref() == Some("normal")
-                {
-                    if current_val.is_none() && !text.trim().is_empty() {
-                        current_val = Some(text);
-                    }
-                } else if in_char && in_charname {
-                    if current_val.is_none() && !text.trim().is_empty() {
-                        current_val = Some(text);
-                    }
-                }
-            }
-            Ok(Event::Eof) => break,
-            Err(_) => break,
-            _ => {}
-        }
-        buf.clear();
-    }
-    map
+    cbeta_gaiji_map_fast(xml)
 }
 
 /// Fast CBETA gaiji map extraction: parse only `<charDecl>` and exit early.
@@ -3934,6 +3874,10 @@ pub fn cbeta_gaiji_map_fast(xml: &str) -> HashMap<String, String> {
     let mut current_val: Option<String> = None;
     let mut in_charname = false;
     let mut in_mapping = false;
+    let mut in_local_name = false;
+    let mut in_value = false;
+    let mut local_name_value = String::new();
+    let mut priority = 0;
     loop {
         match reader.read_event_into(&mut buf) {
             Ok(Event::Start(e)) => {
@@ -3945,10 +3889,16 @@ pub fn cbeta_gaiji_map_fast(xml: &str) -> HashMap<String, String> {
                     in_char = true;
                     current_id = attr_val(&e, b"xml:id").map(|v| v.to_string());
                     current_val = None;
+                    priority = 0;
+                    local_name_value.clear();
                     current_mapping_type = None;
                 } else if in_char && name == b"mapping" {
                     current_mapping_type = attr_val(&e, b"type").map(|v| v.to_string());
                     in_mapping = true;
+                } else if in_char && name == b"localName" {
+                    in_local_name = true;
+                } else if in_char && name == b"value" {
+                    in_value = true;
                 } else if in_char && name == b"charName" {
                     in_charname = true;
                 }
@@ -3974,6 +3924,12 @@ pub fn cbeta_gaiji_map_fast(xml: &str) -> HashMap<String, String> {
                 if name == b"mapping" {
                     in_mapping = false;
                 }
+                if name == b"localName" {
+                    in_local_name = false;
+                }
+                if name == b"value" {
+                    in_value = false;
+                }
                 if name == b"charName" {
                     in_charname = false;
                 }
@@ -3991,18 +3947,31 @@ pub fn cbeta_gaiji_map_fast(xml: &str) -> HashMap<String, String> {
             }
             Ok(Event::Text(t)) => {
                 let text = t.decode().unwrap_or_default().into_owned();
-                if in_char && in_mapping && current_mapping_type.as_deref() == Some("unicode") {
-                    if !text.trim().is_empty() {
-                        current_val = Some(text);
-                    }
-                } else if in_char && in_mapping && current_mapping_type.as_deref() == Some("normal")
-                {
-                    if current_val.is_none() && !text.trim().is_empty() {
-                        current_val = Some(text);
-                    }
-                } else if in_char && in_charname {
-                    if current_val.is_none() && !text.trim().is_empty() {
-                        current_val = Some(text);
+                let value = text.trim();
+                if in_local_name {
+                    local_name_value = value.to_string();
+                } else if !value.is_empty() {
+                    let (candidate, rank) =
+                        if in_mapping && current_mapping_type.as_deref() == Some("unicode") {
+                            let decoded = value
+                                .strip_prefix("U+")
+                                .and_then(|v| u32::from_str_radix(v, 16).ok())
+                                .and_then(char::from_u32)
+                                .map(|c| c.to_string())
+                                .unwrap_or_else(|| value.to_string());
+                            (decoded, 3)
+                        } else if (in_mapping && current_mapping_type.as_deref() == Some("normal"))
+                            || (in_value && local_name_value == "normalized form")
+                        {
+                            (value.to_string(), 2)
+                        } else if in_charname {
+                            (value.to_string(), 1)
+                        } else {
+                            (String::new(), 0)
+                        };
+                    if rank > priority {
+                        current_val = Some(candidate);
+                        priority = rank;
                     }
                 }
             }
@@ -4075,7 +4044,7 @@ fn extract_cbeta_plain_impl(
     let mut buf = Vec::new();
     let mut out = String::new();
 
-    // Exclude <teiHeader> content (metadata) by tracking XML element depth.
+    // Exclude <teiHeader> metadata and <cb:mulu> navigation subtrees.
     let mut skip_header_depth: usize = 0;
     // Exclude notes when include_notes=false (depth-based subtree skip).
     let mut skip_note_depth: usize = 0;
@@ -4083,6 +4052,7 @@ fn extract_cbeta_plain_impl(
     let mut collect_note: bool = false;
     let mut note_depth: usize = 0;
     let mut note_buf = String::new();
+    let mut replaced_g_depth = 0usize;
 
     loop {
         match reader.read_event_into(&mut buf) {
@@ -4090,12 +4060,17 @@ fn extract_cbeta_plain_impl(
                 let name_owned = e.name().as_ref().to_owned();
                 let name = local_name(&name_owned);
 
+                if replaced_g_depth > 0 {
+                    replaced_g_depth += 1;
+                    continue;
+                }
+
                 if skip_header_depth > 0 {
                     // Inside teiHeader; just track depth.
                     skip_header_depth += 1;
                     continue;
                 }
-                if name == b"teiHeader" {
+                if name == b"teiHeader" || name == b"mulu" {
                     skip_header_depth = 1;
                     continue;
                 }
@@ -4107,6 +4082,7 @@ fn extract_cbeta_plain_impl(
                             let key = r.trim_start_matches('#').to_string();
                             if let Some(v) = gaiji.and_then(|m| m.get(&key)) {
                                 note_buf.push_str(v);
+                                replaced_g_depth = 1;
                             }
                         }
                     }
@@ -4139,6 +4115,7 @@ fn extract_cbeta_plain_impl(
                         let key = r.trim_start_matches('#').to_string();
                         if let Some(v) = gaiji.and_then(|m| m.get(&key)) {
                             out.push_str(v);
+                            replaced_g_depth = 1;
                         }
                     }
                 }
@@ -4147,10 +4124,14 @@ fn extract_cbeta_plain_impl(
                 let name_owned = e.name().as_ref().to_owned();
                 let name = local_name(&name_owned);
 
+                if replaced_g_depth > 0 {
+                    continue;
+                }
+
                 if skip_header_depth > 0 {
                     continue;
                 }
-                if name == b"teiHeader" {
+                if name == b"teiHeader" || name == b"mulu" {
                     continue;
                 }
 
@@ -4190,6 +4171,11 @@ fn extract_cbeta_plain_impl(
                 let name_owned = e.name().as_ref().to_owned();
                 let name = local_name(&name_owned);
 
+                if replaced_g_depth > 0 {
+                    replaced_g_depth -= 1;
+                    continue;
+                }
+
                 if skip_header_depth > 0 {
                     skip_header_depth = skip_header_depth.saturating_sub(1);
                     continue;
@@ -4215,7 +4201,7 @@ fn extract_cbeta_plain_impl(
                 }
             }
             Ok(Event::Text(t)) => {
-                if skip_header_depth > 0 {
+                if replaced_g_depth > 0 || skip_header_depth > 0 {
                     // ignore
                 } else if collect_note {
                     note_buf.push_str(&t.decode().unwrap_or_default());
@@ -4224,7 +4210,7 @@ fn extract_cbeta_plain_impl(
                 }
             }
             Ok(Event::CData(t)) => {
-                if skip_header_depth > 0 {
+                if replaced_g_depth > 0 || skip_header_depth > 0 {
                     // ignore
                 } else if collect_note {
                     note_buf.push_str(&String::from_utf8_lossy(&t));
@@ -4263,129 +4249,179 @@ pub fn extract_cbeta_plain_from_snippet(
 
 pub fn extract_text_opts(xml: &str, include_notes: bool) -> String {
     let gaiji = parse_gaiji_map(xml);
+    let mut scan = Reader::from_str(xml);
+    scan.config_mut().allow_unmatched_ends = true;
+    let mut has_text = false;
+    let mut has_body = false;
+    loop {
+        match scan.read_event() {
+            Ok(Event::Start(e)) => match local_name(e.name().as_ref()) {
+                b"text" => has_text = true,
+                b"body" => has_body = true,
+                _ => {}
+            },
+            Ok(Event::Eof) | Err(_) => break,
+            _ => {}
+        }
+    }
+    let target: Option<&[u8]> = if has_body {
+        Some(b"body")
+    } else if has_text {
+        Some(b"text")
+    } else {
+        None
+    };
     let mut reader = Reader::from_str(xml);
-    reader.config_mut().trim_text_start = true;
-    reader.config_mut().trim_text_end = true;
+    reader.config_mut().allow_unmatched_ends = true;
     let mut buf = Vec::new();
     let mut out = String::new();
-    let mut skip_depth: usize = 0; // for excluding notes
-    let mut collect_note: bool = false;
-    let mut note_depth: usize = 0;
+    let mut header_depth = 0usize;
+    let mut note_depth = 0usize;
     let mut note_buf = String::new();
+    let mut replaced_g_depth = 0usize;
+    let mut target_depth = 0usize;
     loop {
         match reader.read_event_into(&mut buf) {
             Ok(Event::Start(e)) => {
                 let name_owned = e.name().as_ref().to_owned();
                 let name = local_name(&name_owned);
+                if let Some(target) = target {
+                    if target_depth == 0 {
+                        if name == target {
+                            target_depth = 1;
+                        }
+                        continue;
+                    }
+                    target_depth += 1;
+                }
+                if header_depth > 0 {
+                    header_depth += 1;
+                    continue;
+                }
+                if name == b"teiHeader" {
+                    header_depth = 1;
+                    continue;
+                }
+                if replaced_g_depth > 0 {
+                    replaced_g_depth += 1;
+                    continue;
+                }
+                if note_depth > 0 {
+                    note_depth += 1;
+                    continue;
+                }
                 if name == b"note" {
-                    if include_notes {
-                        collect_note = true;
-                        note_depth = 1;
-                        note_buf.clear();
-                    } else {
-                        skip_depth = 1;
-                    }
-                } else if name == b"lb" {
-                    if skip_depth == 0 && !collect_note {
-                        out.push('\n');
-                    }
-                } else if name == b"pb" {
-                    if skip_depth == 0 && !collect_note {
-                        out.push('\n');
+                    note_depth = 1;
+                    note_buf.clear();
+                    continue;
+                }
+                if matches!(name, b"p" | b"l" | b"lg" | b"head" | b"div" | b"lb" | b"pb") {
+                    if !out.is_empty() && !out.ends_with('\n') {
                         out.push('\n');
                     }
                 } else if name == b"g" {
-                    if skip_depth == 0 {
-                        if let Some(r) = attr_val(&e, b"ref") {
-                            let key = r.trim_start_matches('#').to_string();
-                            if let Some(v) = gaiji.get(&key) {
-                                out.push_str(v);
-                            }
-                        }
+                    if let Some(value) =
+                        attr_val(&e, b"ref").and_then(|r| gaiji.get(r.trim_start_matches('#')))
+                    {
+                        out.push_str(value);
+                        replaced_g_depth = 1;
                     }
                 }
             }
             Ok(Event::Empty(e)) => {
                 let name_owned = e.name().as_ref().to_owned();
                 let name = local_name(&name_owned);
-                if name == b"lb" {
-                    if skip_depth == 0 && !collect_note {
-                        out.push('\n');
-                    }
-                } else if name == b"pb" {
-                    if skip_depth == 0 && !collect_note {
-                        out.push('\n');
+                if target.is_some() && target_depth == 0 {
+                    continue;
+                }
+                if header_depth > 0 || note_depth > 0 || replaced_g_depth > 0 {
+                    continue;
+                }
+                if matches!(name, b"lb" | b"pb") {
+                    if !out.is_empty() && !out.ends_with('\n') {
                         out.push('\n');
                     }
                 } else if name == b"g" {
-                    if skip_depth == 0 {
-                        if let Some(r) = attr_val(&e, b"ref") {
-                            let key = r.trim_start_matches('#').to_string();
-                            if let Some(v) = gaiji.get(&key) {
-                                out.push_str(v);
-                            }
-                        }
-                    }
-                } else if name == b"note" {
-                    // empty note
-                    if include_notes && !collect_note && skip_depth == 0 {
-                        // nothing
+                    if let Some(value) =
+                        attr_val(&e, b"ref").and_then(|r| gaiji.get(r.trim_start_matches('#')))
+                    {
+                        out.push_str(value);
                     }
                 }
             }
             Ok(Event::End(e)) => {
                 let name_owned = e.name().as_ref().to_owned();
                 let name = local_name(&name_owned);
-                if name == b"note" {
-                    if skip_depth > 0 {
-                        if skip_depth > 0 {
-                            skip_depth -= 1;
+                if target.is_some() {
+                    if target_depth == 0 {
+                        continue;
+                    }
+                    target_depth -= 1;
+                    if target_depth == 0 {
+                        continue;
+                    }
+                }
+                if header_depth > 0 {
+                    header_depth -= 1;
+                    continue;
+                }
+                if replaced_g_depth > 0 {
+                    replaced_g_depth -= 1;
+                    continue;
+                }
+                if note_depth > 0 {
+                    note_depth -= 1;
+                    if note_depth == 0 && include_notes {
+                        let note = note_buf.split_whitespace().collect::<Vec<_>>().join(" ");
+                        if !note.is_empty() {
+                            out.push_str(" [注] ");
+                            out.push_str(&note);
+                            out.push(' ');
                         }
                     }
-                    if collect_note {
-                        note_depth = note_depth.saturating_sub(1);
-                        if note_depth == 0 {
-                            let t = note_buf.split_whitespace().collect::<Vec<_>>().join(" ");
-                            if !t.is_empty() {
-                                out.push_str(" [注] ");
-                                out.push_str(&t);
-                                out.push(' ');
-                            }
-                            collect_note = false;
-                            note_buf.clear();
-                        }
-                    }
-                } else if collect_note {
-                    if note_depth > 0 {
-                        note_depth -= 1;
-                    }
-                } else if skip_depth > 0 {
-                    skip_depth -= 1;
+                    continue;
+                }
+                if matches!(name, b"p" | b"l" | b"lg" | b"head" | b"div")
+                    && !out.is_empty()
+                    && !out.ends_with('\n')
+                {
+                    out.push('\n');
                 }
             }
             Ok(Event::Text(t)) => {
-                let text = t.decode().unwrap_or_default().into_owned();
-                if collect_note {
-                    note_buf.push_str(&text);
-                } else if skip_depth == 0 {
-                    out.push_str(&text);
+                if (target.is_none() || target_depth > 0)
+                    && header_depth == 0
+                    && replaced_g_depth == 0
+                {
+                    if note_depth > 0 {
+                        if include_notes {
+                            note_buf.push_str(&t.decode().unwrap_or_default());
+                        }
+                    } else {
+                        out.push_str(&t.decode().unwrap_or_default());
+                    }
                 }
             }
             Ok(Event::CData(t)) => {
-                let text = String::from_utf8_lossy(&t).into_owned();
-                if collect_note {
-                    note_buf.push_str(&text);
-                } else if skip_depth == 0 {
-                    out.push_str(&text);
+                if (target.is_none() || target_depth > 0)
+                    && header_depth == 0
+                    && replaced_g_depth == 0
+                {
+                    if note_depth > 0 {
+                        if include_notes {
+                            note_buf.push_str(&String::from_utf8_lossy(&t));
+                        }
+                    } else {
+                        out.push_str(&String::from_utf8_lossy(&t));
+                    }
                 }
             }
-            Ok(Event::Eof) => break,
-            Err(_) => break,
+            Ok(Event::Eof) | Err(_) => break,
             _ => {}
         }
         buf.clear();
     }
-    out.split_whitespace().collect::<Vec<_>>().join(" ")
+    normalize_plain_lines(&out)
 }
 
 pub fn extract_cbeta_juan(xml: &str, part: &str) -> Option<String> {
@@ -4752,6 +4788,12 @@ pub struct GrepMatch {
     /// Page-line where the match ends, when it spans more than one line.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub lb_end: Option<String>,
+    #[serde(rename = "matchedIn", skip_serializing_if = "Option::is_none")]
+    pub matched_in: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub sic: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub corr: Option<String>,
 }
 
 #[derive(Serialize, Debug, Clone)]
@@ -4817,7 +4859,10 @@ pub fn cbeta_grep(
             (true, false) => std::cmp::Ordering::Less,
             (false, true) => std::cmp::Ordering::Greater,
             _ => match b.total_matches.cmp(&a.total_matches) {
-                std::cmp::Ordering::Equal => a.file_id.cmp(&b.file_id),
+                std::cmp::Ordering::Equal => a
+                    .file_id
+                    .cmp(&b.file_id)
+                    .then_with(|| a.file_path.cmp(&b.file_path)),
                 other => other,
             },
         }
@@ -4888,21 +4933,112 @@ pub fn cbeta_grep_ordered(
     let taisho = |r: &GrepResult| r.file_path.contains("/T/");
     all.sort_by(|a, b| {
         taisho(b).cmp(&taisho(a)).then_with(|| match order {
-            GrepOrder::Canon => a.file_id.cmp(&b.file_id),
+            GrepOrder::Canon => a
+                .file_id
+                .cmp(&b.file_id)
+                .then_with(|| a.file_path.cmp(&b.file_path)),
             GrepOrder::Matches => b
                 .total_matches
                 .cmp(&a.total_matches)
-                .then_with(|| a.file_id.cmp(&b.file_id)),
+                .then_with(|| a.file_id.cmp(&b.file_id))
+                .then_with(|| a.file_path.cmp(&b.file_path)),
         })
     });
     all.truncate(max_results);
     (all, total)
 }
 
+/// Slice an already deterministically ordered, complete list of matching files.
+/// The total is measured before slicing, including out-of-range requests.
+pub fn paginate_grep_results(
+    results: Vec<GrepResult>,
+    offset: usize,
+    max_results: usize,
+) -> (Vec<GrepResult>, usize) {
+    let total = results.len();
+    (
+        results.into_iter().skip(offset).take(max_results).collect(),
+        total,
+    )
+}
+
+/// Add continuation metadata without replacing existing fetch actions or warnings.
+pub fn annotate_grep_page(
+    meta: &mut serde_json::Value,
+    search_tool: &str,
+    mut args: serde_json::Value,
+    offset: usize,
+    total: usize,
+    returned: usize,
+) {
+    use serde_json::json;
+    meta["totalFiles"] = json!(returned);
+    meta["offset"] = json!(offset);
+    meta["totalFilesMatched"] = json!(total);
+    let next = offset.saturating_add(returned);
+    if returned > 0 && next < total {
+        meta["nextOffset"] = json!(next);
+        args["offset"] = json!(next);
+        if let Some(obj) = args.as_object_mut() {
+            obj.remove("offs");
+        }
+        let mut actions = meta
+            .get("nextActions")
+            .and_then(|v| v.as_array())
+            .cloned()
+            .unwrap_or_else(|| {
+                ["fetchSuggestions", "suggestions"]
+                    .iter()
+                    .flat_map(|key| {
+                        meta.get(*key)
+                            .and_then(|v| v.as_array())
+                            .cloned()
+                            .unwrap_or_default()
+                    })
+                    .collect()
+            });
+        actions.push(json!({"tool":search_tool,"args":args}));
+        meta["nextActions"] = json!(actions);
+    } else if offset > 0 && offset >= total {
+        let mut warnings = meta
+            .get("warnings")
+            .and_then(|v| v.as_array())
+            .cloned()
+            .unwrap_or_default();
+        warnings.push(json!(format!(
+            "offset {offset} is at or beyond total matching files {total}."
+        )));
+        meta["warnings"] = json!(warnings);
+    }
+}
+
+/// Compact search heading shared by text output and MCP continuations.
+pub fn grep_page_heading(offset: usize, total: usize, returned: usize) -> String {
+    let end = offset.saturating_add(returned);
+    let mut heading = if total == 0 {
+        "0 matching files".to_string()
+    } else if returned == 0 {
+        format!("0 of {total} matching files shown")
+    } else {
+        format!("{}–{end} of {total} matching files shown", offset + 1)
+    };
+    if returned > 0 && end < total {
+        heading.push_str(&format!("; next: --offset {end}"));
+    } else if offset > 0 && offset >= total {
+        heading.push_str(&format!(
+            "; offset {offset} is at or beyond total matching files {total}"
+        ));
+    }
+    heading
+}
+
 fn grep_sort_best_first(results: &mut Vec<GrepResult>, max_results: usize) {
     // Prefer more matches, then stable file_id ordering.
     let cmp = |a: &GrepResult, b: &GrepResult| match b.total_matches.cmp(&a.total_matches) {
-        std::cmp::Ordering::Equal => a.file_id.cmp(&b.file_id),
+        std::cmp::Ordering::Equal => a
+            .file_id
+            .cmp(&b.file_id)
+            .then_with(|| a.file_path.cmp(&b.file_path)),
         other => other,
     };
 
@@ -5020,6 +5156,32 @@ fn lb_span(raw: &str, match_start: usize, match_end: usize) -> (Option<String>, 
     (start, end)
 }
 
+/// Taishō-style citation `No. 235, T08p749a12-17` (page, column a/b/c, line; the end
+/// repeats only what changes: `-17`, `-b03`, `-750a02`).
+pub fn cbeta_citation(file_id: &str, lb_start: &str, lb_end: Option<&str>) -> Option<String> {
+    let (canon_vol, no) = file_id.split_once('n')?;
+    let no = no.trim_start_matches('0');
+    let split = |lb: &str| -> Option<(String, char, String)> {
+        let pos = lb.find(|c: char| c.is_ascii_alphabetic())?;
+        let (page, rest) = lb.split_at(pos);
+        let mut chars = rest.chars();
+        let col = chars.next()?;
+        let page = page.trim_start_matches('0');
+        Some((format!("{:0>3}", page), col, chars.as_str().to_string()))
+    };
+    let (p1, c1, l1) = split(lb_start)?;
+    let end = match lb_end.and_then(split) {
+        Some((p2, c2, l2)) if p2 == p1 && c2 == c1 => format!("-{}", l2),
+        Some((p2, c2, l2)) if p2 == p1 => format!("-{}{}", c2, l2),
+        Some((p2, c2, l2)) => format!("-{}{}{}", p2, c2, l2),
+        None => String::new(),
+    };
+    Some(format!(
+        "No. {}, {}p{}{}{}{}",
+        no, canon_vol, p1, c1, l1, end
+    ))
+}
+
 /// Main title (`<title level="m">`) from the head of a CBETA TEI file.
 pub fn cbeta_title_from_header(path: &Path) -> Option<String> {
     use std::io::Read as _;
@@ -5074,6 +5236,7 @@ fn cbeta_grep_file(
                 line_number: Some(m.line_number as usize),
                 lb,
                 lb_end,
+                ..Default::default()
             }
         })
         .collect();
@@ -5206,7 +5369,7 @@ pub fn tipitaka_grep(
     });
 
     // Search files in parallel using ripgrep
-    paths
+    let mut results = paths
         .par_iter()
         .filter_map(|p| {
             // UTF-16対応の読み込み
@@ -5332,10 +5495,11 @@ pub fn tipitaka_grep(
                 fetch_hints,
             })
         })
-        .collect::<Vec<_>>()
-        .into_iter()
-        .take(max_results)
-        .collect()
+        .collect::<Vec<_>>();
+    // Preserve the existing sorted-path order after parallel collection.
+    results.sort_by(|a, b| a.file_path.cmp(&b.file_path));
+    results.truncate(max_results);
+    results
 }
 
 pub fn gretil_grep(
@@ -5359,7 +5523,7 @@ pub fn gretil_grep(
         collect_xml_paths_cached(&XML_PATHS_ALL_CACHE, root, |_, name| name.ends_with(".xml"));
 
     // Search files in parallel using ripgrep
-    paths
+    let mut results = paths
         .par_iter()
         .filter_map(|p| {
             let rg_matches = ripgrep_search_file(p, &matcher, max_matches_per_file)?;
@@ -5414,10 +5578,11 @@ pub fn gretil_grep(
                 fetch_hints,
             })
         })
-        .collect::<Vec<_>>()
-        .into_iter()
-        .take(max_results)
-        .collect()
+        .collect::<Vec<_>>();
+    // Preserve the existing sorted-path order after parallel collection.
+    results.sort_by(|a, b| a.file_path.cmp(&b.file_path));
+    results.truncate(max_results);
+    results
 }
 
 pub fn sarit_grep(
@@ -5538,6 +5703,10 @@ fn shinzen_grep_for_collection(
         Ok(m) => m,
         Err(_) => return Vec::new(),
     };
+    let choice_re = regex::Regex::new(
+        r"(?s)<choice\b[^>]*>.*?<sic\b[^>]*>(.*?)</sic>.*?<corr\b[^>]*>(.*?)</corr>.*?</choice>",
+    )
+    .unwrap();
 
     let paths = collect_xml_paths_cached(&SHINZEN_XML_PATHS_CACHE, root, |path, name| {
         name.ends_with(".xml") && parse_shinzen_volume_page(path).is_some()
@@ -5577,7 +5746,13 @@ fn shinzen_grep_for_collection(
                 let body_start = xml.find("<text").unwrap_or(0);
                 let body = &xml[body_start..];
                 let lbs = lb_markers(body);
-                for mat in phrase.find_iter(body) {
+                let choices: Vec<_> = choice_re.captures_iter(body).collect();
+                let mut corrected = body.to_string();
+                for choice in choices.iter().rev() {
+                    let sic = choice.get(1).unwrap();
+                    corrected.replace_range(sic.start()..sic.end(), &" ".repeat(sic.len()));
+                }
+                for mat in phrase.find_iter(&corrected) {
                     if matches.len() >= max_matches_per_file {
                         break;
                     }
@@ -5609,6 +5784,45 @@ fn shinzen_grep_for_collection(
                         juan_number: None,
                         section: Some(section.clone()),
                         line_number: Some(first),
+                        ..Default::default()
+                    });
+                }
+                for choice in choices {
+                    if matches.len() >= max_matches_per_file {
+                        break;
+                    }
+                    let sic = choice.get(1).unwrap();
+                    let corr = choice.get(2).unwrap();
+                    if !phrase.is_match(sic.as_str()) {
+                        continue;
+                    }
+                    let Some(first) = lbs
+                        .iter()
+                        .rev()
+                        .find(|(pos, _)| *pos <= sic.start())
+                        .and_then(|(_, n)| n.parse::<usize>().ok())
+                    else {
+                        continue;
+                    };
+                    if matches
+                        .iter()
+                        .any(|m: &GrepMatch| m.line_number == Some(first))
+                    {
+                        continue;
+                    }
+                    let Some(line) = lines.iter().find(|line| line.number == first) else {
+                        continue;
+                    };
+                    let sic = strip_xml_tags(sic.as_str());
+                    let corr = strip_xml_tags(corr.as_str());
+                    matches.push(GrepMatch {
+                        context: line.text.clone(),
+                        highlight: corr.clone(),
+                        line_number: Some(first),
+                        section: Some(section.clone()),
+                        matched_in: Some("sic".to_string()),
+                        sic: Some(sic),
+                        corr: Some(corr),
                         ..Default::default()
                     });
                 }
@@ -5752,6 +5966,45 @@ pub use lib_line_extraction::*;
 mod tests_shinzen {
     use super::*;
     use std::fs;
+
+    #[test]
+    fn catalog_attribution_replaces_conflicting_inference() {
+        let mut b = ShinzenBibliography {
+            volume: "13".into(),
+            page: "218".into(),
+            page_citation: "真言宗全書 第13巻 218頁".into(),
+            citation: "性心『即身成佛義鈔』".into(),
+            confidence: "medium".into(),
+            work_title: Some("即身成佛義鈔".into()),
+            author: Some("性心".into()),
+            evidence: vec!["inference".into()],
+            warning: None,
+        };
+        let w = ShinzenWorkEntry {
+            id: "SZW1".into(),
+            title: "即身成佛義鈔".into(),
+            aliases: vec![],
+            author: Some("宥快".into()),
+            summary: String::new(),
+            range: ShinzenWorkRange {
+                start_volume: "13".into(),
+                start_page: "218".into(),
+                start_id: "SZ13p0218".into(),
+                end_volume: None,
+                end_page: None,
+                end_id: None,
+                citation: String::new(),
+            },
+            confidence: "high".into(),
+            source: String::new(),
+            evidence: vec![],
+            warnings: vec![],
+        };
+        apply_shinzen_catalog_bibliography(&mut b, &w);
+        assert_eq!(b.author.as_deref(), Some("宥快"));
+        assert!(b.citation.starts_with("宥快『即身成佛義鈔』"));
+        assert!(b.evidence.is_empty());
+    }
 
     fn sample_shinzen_xml() -> &'static str {
         r##"<?xml version='1.0' encoding='utf-8'?>
@@ -6177,6 +6430,26 @@ mod tests_cbeta_index_and_plain {
     }
 
     #[test]
+    fn citation_ranges() {
+        assert_eq!(
+            cbeta_citation("T08n0235", "0749a13", Some("0749a16")).as_deref(),
+            Some("No. 235, T08p749a13-16")
+        );
+        assert_eq!(
+            cbeta_citation("T19n0924A", "0749a29", Some("0749b03")).as_deref(),
+            Some("No. 924A, T19p749a29-b03")
+        );
+        assert_eq!(
+            cbeta_citation("T18n0873", "0336c24", Some("0337a06")).as_deref(),
+            Some("No. 873, T18p336c24-337a06")
+        );
+        assert_eq!(
+            cbeta_citation("T18n0848", "0046c01", None).as_deref(),
+            Some("No. 848, T18p046c01")
+        );
+    }
+
+    #[test]
     fn build_cbeta_index_prefers_cjk_title_over_collection_title() {
         let dir = tempfile::tempdir().unwrap();
         let p = dir.path().join("T0001.xml");
@@ -6233,6 +6506,39 @@ mod tests_cbeta_index_and_plain {
 
         let out2 = extract_cbeta_plain_from_xml(xml, true);
         assert!(out2.contains("[注] 注釈"));
+    }
+
+    #[test]
+    fn cbeta_gaiji_prefers_unicode_or_normalized_form_without_duplication() {
+        let xml = r##"<TEI><teiHeader><charDecl>
+          <char xml:id="CB1"><charName>CBETA CHARACTER CB1</charName><mapping type="unicode">U+3B88</mapping></char>
+          <char xml:id="SD1"><charName>CBETA CHARACTER SD1</charName><charProp><localName>normalized form</localName><value>悉</value></charProp></char>
+        </charDecl></teiHeader><text><body><p><g ref="#CB1">㮈</g><g ref="#SD1"/></p></body></text></TEI>"##;
+        assert_eq!(extract_cbeta_plain_from_xml(xml, false), "㮈悉");
+    }
+
+    #[test]
+    fn general_tei_excludes_header_and_keeps_paragraphs_and_fragments() {
+        assert_eq!(extract_text_opts("<TEI><teiHeader><title>Metadata</title></teiHeader><text><body><p>First</p><p>Second</p></body></text></TEI>", false), "First\nSecond");
+        assert_eq!(
+            extract_text_opts("</div><p>Fragment</p>", false),
+            "Fragment"
+        );
+    }
+
+    #[test]
+    fn general_tei_prefers_body_to_front_and_falls_back_to_text() {
+        assert_eq!(
+            extract_text_opts(
+                "<TEI><text><front><p>Front</p></front><body><p>Body</p></body></text></TEI>",
+                false
+            ),
+            "Body"
+        );
+        assert_eq!(
+            extract_text_opts("<TEI><text><p>Text</p></text></TEI>", false),
+            "Text"
+        );
     }
 
     #[test]
@@ -6322,6 +6628,82 @@ mod tests_cbeta_index_and_plain {
         // kundoku text with okurigana still matches line-wise
         let r = shinzen_grep(dir.path(), "六大ト者", 10, 3);
         assert_eq!(r[0].matches[0].line_number, Some(3));
+    }
+
+    #[test]
+    fn shinzen_sic_match_is_labelled_with_corrected_highlight() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(dir.path().join("volume_13_page_006.xml"), "<TEI><text><body><lb n=\"3\"/>於<choice><sic>小動護摩</sic><corr>不動護摩</corr></choice>修法</body></text></TEI>").unwrap();
+        for results in [
+            shinzen_grep(dir.path(), "小動護摩", 10, 3),
+            shoku_shinzen_grep(dir.path(), "小動護摩", 10, 3),
+        ] {
+            let m = &results[0].matches[0];
+            assert_eq!(m.highlight, "不動護摩");
+            assert_eq!(m.matched_in.as_deref(), Some("sic"));
+            assert_eq!(m.sic.as_deref(), Some("小動護摩"));
+            assert_eq!(m.corr.as_deref(), Some("不動護摩"));
+        }
+    }
+
+    #[test]
+    fn tipitaka_and_gretil_pages_preserve_path_order() {
+        let dir = tempfile::tempdir().unwrap();
+        for path in ["a/z.xml", "b/a.xml", "c/b.xml"] {
+            let path = dir.path().join(path);
+            fs::create_dir_all(path.parent().unwrap()).unwrap();
+            fs::write(path, "<TEI><text><body><p>dharma</p></body></text></TEI>").unwrap();
+        }
+        for grep in [tipitaka_grep, gretil_grep] {
+            let all = grep(dir.path(), "dharma", usize::MAX, 5);
+            assert_eq!(
+                all.iter().map(|r| r.file_id.as_str()).collect::<Vec<_>>(),
+                vec!["z", "a", "b"]
+            );
+            let (page, total) = paginate_grep_results(all, 2, 2);
+            assert_eq!(total, 3);
+            assert_eq!(page[0].file_id, "b");
+        }
+    }
+
+    #[test]
+    fn cbeta_pages_preserve_both_sort_orders_and_total() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("T/T01");
+        fs::create_dir_all(&root).unwrap();
+        for n in [3, 1, 4, 2] {
+            fs::write(
+                root.join(format!("T01n{n:04}.xml")),
+                format!(
+                    "<TEI><text><body>\n{}</body></text></TEI>",
+                    "dharma\n".repeat(n)
+                ),
+            )
+            .unwrap();
+        }
+        for order in [GrepOrder::Canon, GrepOrder::Matches] {
+            let (all, _) = cbeta_grep_ordered(dir.path(), "dharma", usize::MAX, 5, order);
+            let ids = all.iter().map(|r| r.file_id.as_str()).collect::<Vec<_>>();
+            assert_eq!(
+                ids,
+                match order {
+                    GrepOrder::Canon => vec!["T01n0001", "T01n0002", "T01n0003", "T01n0004"],
+                    GrepOrder::Matches => vec!["T01n0004", "T01n0003", "T01n0002", "T01n0001"],
+                }
+            );
+            let (first, total) = paginate_grep_results(all.clone(), 0, 2);
+            let (second, second_total) = paginate_grep_results(all.clone(), 2, 2);
+            assert_eq!((total, second_total), (4, 4));
+            assert_eq!(
+                first
+                    .iter()
+                    .chain(&second)
+                    .map(|r| &r.file_id)
+                    .collect::<Vec<_>>(),
+                all.iter().map(|r| &r.file_id).collect::<Vec<_>>()
+            );
+            assert!(paginate_grep_results(all, usize::MAX, 2).0.is_empty());
+        }
     }
 
     #[test]
@@ -6621,4 +7003,140 @@ pub fn parse_shoku_page_id(stem: &str) -> Option<String> {
     let volume = caps.get(1)?.as_str().to_string();
     let page: usize = caps.get(2)?.as_str().parse().ok()?;
     Some(format!("SKZ{}p{:04}", volume, page))
+}
+
+pub fn detect_source(id: &str) -> Option<&'static str> {
+    let id = id.trim();
+    if id.is_empty() {
+        return None;
+    }
+
+    let upper = id.to_ascii_uppercase();
+
+    // SHOKU_SHINZEN work id: SKZW{digits}. Check before the SKZ page-id rule.
+    if upper.starts_with("SKZW") {
+        let rest = &upper[4..];
+        if !rest.is_empty() && rest.chars().all(|c| c.is_ascii_digit()) {
+            return Some("shoku_shinzen");
+        }
+    }
+
+    // SHOKU_SHINZEN: SKZ{volume}p{page}, e.g. SKZ02p0128
+    if upper.starts_with("SKZ") {
+        let rest = &upper[3..];
+        if let Some((volume, page)) = rest.split_once('P') {
+            if !volume.is_empty()
+                && !page.is_empty()
+                && volume.chars().all(|c| c.is_ascii_digit())
+                && page.chars().all(|c| c.is_ascii_digit())
+            {
+                return Some("shoku_shinzen");
+            }
+        }
+    }
+
+    // SHINZEN work id: SZW{digits} (e.g. SZW0001) or SZW-META-{digits} (e.g. SZW-META-0120).
+    // Must be checked BEFORE the SZ{volume}p{page} passage-id rule below, since "SZW..."
+    // also starts with "SZ" but is not a P-split passage id.
+    if upper.starts_with("SZW") {
+        let rest = &upper[3..];
+        let is_all_digits = !rest.is_empty() && rest.chars().all(|c| c.is_ascii_digit());
+        let is_meta = rest
+            .strip_prefix("-META-")
+            .map(|d| !d.is_empty() && d.chars().all(|c| c.is_ascii_digit()))
+            .unwrap_or(false);
+        if is_all_digits || is_meta {
+            return Some("shinzen");
+        }
+    }
+
+    // SHINZEN: SZ{volume}p{page}, e.g. SZ09p0243
+    if upper.starts_with("SZ") {
+        let rest = &upper[2..];
+        if let Some((volume, page)) = rest.split_once('P') {
+            if !volume.is_empty()
+                && !page.is_empty()
+                && volume.chars().all(|c| c.is_ascii_digit())
+                && page.chars().all(|c| c.is_ascii_digit())
+            {
+                return Some("shinzen");
+            }
+        }
+    }
+
+    // Tipitaka: DN/MN/SN/AN/KN followed by digits
+    for pref in &["DN", "MN", "SN", "AN", "KN"] {
+        if upper.starts_with(pref) {
+            let rest = &upper[pref.len()..];
+            let digits: String = rest.chars().take_while(|c| c.is_ascii_digit()).collect();
+            if !digits.is_empty() {
+                return Some("tipitaka");
+            }
+        }
+    }
+
+    // Tipitaka: file stem pattern like s0101m.mul
+    if [".MUL", ".ATT", ".TIK"]
+        .iter()
+        .any(|ext| upper.ends_with(ext))
+    {
+        return Some("tipitaka");
+    }
+
+    // JOZEN: J followed by 2 digits + underscore (e.g. J01_0200B19)
+    if upper.starts_with('J') && id.len() >= 4 {
+        let after_j: String = id.chars().skip(1).take(2).collect();
+        if after_j.chars().all(|c| c.is_ascii_digit()) && id.chars().nth(3) == Some('_') {
+            return Some("jozen");
+        }
+    }
+
+    // GRETIL: sa_ prefix
+    if id.starts_with("sa_") {
+        return Some("gretil");
+    }
+
+    // SAT: comma-separated digits (useid) e.g. "2,7,98,38,0"
+    if id.contains(',') && id.chars().all(|c| c.is_ascii_digit() || c == ',') {
+        return Some("sat");
+    }
+
+    // CBETA canon names from xml-p5; check after more specific corpus IDs.
+    let prefix = upper
+        .chars()
+        .take_while(|c| c.is_ascii_alphabetic())
+        .collect::<String>();
+    let canons = [
+        "A", "B", "C", "CC", "D", "F", "G", "GA", "GB", "I", "J", "K", "L", "LC", "M", "N", "P",
+        "S", "T", "TX", "U", "X", "Y", "ZS", "ZW",
+    ];
+    if canons.contains(&prefix.as_str())
+        && upper[prefix.len()..].starts_with(|c: char| c.is_ascii_digit())
+    {
+        return Some("cbeta");
+    }
+
+    None
+}
+
+#[cfg(test)]
+mod source_detection_contract_tests {
+    #[test]
+    fn recognizes_corpus_ids_without_prefix_collisions() {
+        for (id, expected) in [
+            ("X63n1217", "cbeta"),
+            ("B32n0177", "cbeta"),
+            ("J01_0200B19", "jozen"),
+            ("J01n0001", "cbeta"),
+            ("DN1", "tipitaka"),
+            ("s0101m.att", "tipitaka"),
+            ("s0101m.tik", "tipitaka"),
+            ("SZ09p0243", "shinzen"),
+            ("SKZW0001", "shoku_shinzen"),
+            ("sa_example", "gretil"),
+            ("2,7,98,38,0", "sat"),
+        ] {
+            assert_eq!(super::detect_source(id), Some(expected), "{id}");
+        }
+    }
 }

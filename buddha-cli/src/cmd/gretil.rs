@@ -1,4 +1,4 @@
-use crate::regex_utils::{apply_highlight, compile_query, FuzzyMode};
+use crate::regex_utils::{apply_highlight, FuzzyMode};
 use crate::{
     decode_xml_bytes, load_or_build_gretil_index_cli, resolve_gretil_path_cli, slice_text_cli,
     SliceArgs,
@@ -41,6 +41,7 @@ pub fn gretil_fetch(args: &crate::Commands) -> anyhow::Result<()> {
         }
         let xml = decode_xml_bytes(&std::fs::read(&path)?);
         let (text, extraction_method) = if let Some(line_num) = line_number {
+            super::common::validate_line_number(&xml, *line_num)?;
             let before = context_lines.unwrap_or(*context_before);
             let after = context_lines.unwrap_or(*context_after);
             let context_text =
@@ -52,6 +53,9 @@ pub fn gretil_fetch(args: &crate::Commands) -> anyhow::Result<()> {
         } else {
             (extract_text_opts(&xml, *include_notes), "full".to_string())
         };
+        if let Some(line_num) = line_number {
+            super::common::validate_line_text(&xml, *line_num, &text)?;
+        }
         let slice = SliceArgs {
             page: *page,
             page_size: *page_size,
@@ -121,7 +125,7 @@ pub fn gretil_fetch(args: &crate::Commands) -> anyhow::Result<()> {
                 "jsonrpc":"2.0","id": serde_json::Value::Null,
                 "result": { "content": [{"type":"text","text": sliced}], "_meta": meta }
             });
-            println!("{}", serde_json::to_string(&envelope)?);
+            println!("{}", super::common::cli_json(&envelope)?);
         } else {
             println!("{}", sliced);
         }
@@ -132,7 +136,9 @@ pub fn gretil_fetch(args: &crate::Commands) -> anyhow::Result<()> {
 pub fn gretil_pipeline(args: &crate::Commands) -> anyhow::Result<()> {
     if let crate::Commands::GretilPipeline {
         query,
+        loose,
         max_results,
+        offset,
         max_matches_per_file,
         context_before,
         context_after,
@@ -153,9 +159,10 @@ pub fn gretil_pipeline(args: &crate::Commands) -> anyhow::Result<()> {
         json,
     } = args
     {
-        let q = compile_query(query, FuzzyMode::Whitespace, false, true).0;
+        let q = buddha_core::text_utils::indic_query_pattern(query, *loose);
         let root = gretil_root();
-        let results = gretil_grep(&root, &q, *max_results, *max_matches_per_file);
+        let results = gretil_grep(&root, &q, usize::MAX, *max_matches_per_file);
+        let (results, total) = buddha_core::paginate_grep_results(results, *offset, *max_results);
         let mut content_items: Vec<serde_json::Value> = Vec::new();
         let mut meta = serde_json::json!({
             "searchPattern": q,
@@ -163,7 +170,16 @@ pub fn gretil_pipeline(args: &crate::Commands) -> anyhow::Result<()> {
             "results": results,
             "hint": "Use gretil-fetch with the file_id to get full content"
         });
-        let summary = format!("Found {} files with matches for '{}'", results.len(), q);
+        super::common::annotate_search_page(
+            &mut meta,
+            "gretil_search",
+            serde_json::json!({"query":query,"maxResults":max_results,"maxMatchesPerFile":max_matches_per_file,"loose":loose}),
+            *offset,
+            total,
+            results.len(),
+        );
+        super::common::annotate_indic_search(&mut meta, query, *loose, total == 0);
+        let summary = buddha_core::grep_page_heading(*offset, total, results.len());
         content_items.push(serde_json::json!({"type":"text","text": summary}));
         if *autofetch {
             let mut fetched: Vec<serde_json::Value> = Vec::new();
@@ -198,8 +214,16 @@ pub fn gretil_pipeline(args: &crate::Commands) -> anyhow::Result<()> {
             // (is_regex, pattern, compiled_regex_if_regex) — compiled at most once.
             let hl_spec: Option<(bool, String, Option<regex::Regex>)> =
                 highlight.as_deref().map(|pat0| {
-                    let (pat, hlr) =
-                        compile_query(pat0, FuzzyMode::Whitespace, *highlight_regex, true);
+                    let (pat, hlr) = if *highlight_regex
+                        || buddha_core::text_utils::indic_query_is_regex(pat0)
+                    {
+                        (pat0.to_owned(), true)
+                    } else {
+                        (
+                            buddha_core::text_utils::indic_query_pattern(pat0, *loose),
+                            true,
+                        )
+                    };
                     let re = if hlr {
                         regex::Regex::new(&pat).ok()
                     } else {
@@ -316,10 +340,24 @@ pub fn gretil_pipeline(args: &crate::Commands) -> anyhow::Result<()> {
         if *json {
             let envelope = serde_json::json!({
                 "jsonrpc":"2.0","id": serde_json::Value::Null,
-                "result": { "content": content_items, "_meta": meta }
+                "result": { "content": content_items, "_meta": meta, "structuredContent": super::common::search_page_content(&meta) }
             });
-            println!("{}", serde_json::to_string(&envelope)?);
+            println!("{}", super::common::cli_json(&envelope)?);
         } else {
+            if !*loose
+                && query.is_ascii()
+                && !buddha_core::text_utils::indic_query_is_regex(query)
+                && total == 0
+            {
+                println!("# No matches. Retry with --loose to ignore diacritics and case.");
+            }
+            if let Some(warnings) = meta["warnings"].as_array() {
+                for warning in warnings {
+                    if let Some(warning) = warning.as_str() {
+                        println!("# {warning}");
+                    }
+                }
+            }
             for c in content_items {
                 if let Some(t) = c.get("text").and_then(|v| v.as_str()) {
                     println!("{}", t);
@@ -332,19 +370,26 @@ pub fn gretil_pipeline(args: &crate::Commands) -> anyhow::Result<()> {
 
 pub fn gretil_search(
     query: &str,
+    loose: bool,
     max_results: usize,
+    offset: usize,
     max_matches_per_file: usize,
     json: bool,
 ) -> anyhow::Result<()> {
-    let q = compile_query(query, FuzzyMode::Whitespace, false, true).0;
-    let results = gretil_grep(&gretil_root(), &q, max_results, max_matches_per_file);
-    super::common::corpus_grep_summary(
+    let q = buddha_core::text_utils::indic_query_pattern(query, loose);
+    let results = gretil_grep(&gretil_root(), &q, usize::MAX, max_matches_per_file);
+    let (results, total) = buddha_core::paginate_grep_results(results, offset, max_results);
+    super::common::indic_grep_summary(
         "gretil-fetch",
-        None,
+        Some(total),
         &q,
+        query,
+        loose,
         &results,
         "Use gretil-fetch with the file_id to get full content",
         json,
         super::common::SearchExtra::None,
+        offset,
+        serde_json::json!({"query":query,"maxResults":max_results,"maxMatchesPerFile":max_matches_per_file,"loose":loose}),
     )
 }

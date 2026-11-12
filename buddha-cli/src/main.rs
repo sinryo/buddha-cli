@@ -102,7 +102,11 @@ fn output_error(msg: &str, code: &str, json_mode: bool) {
 fn classify_error(err: &anyhow::Error) -> (&'static str, i32) {
     let msg = format!("{:#}", err);
     let lower = msg.to_lowercase();
-    if lower.contains("not found")
+    if lower.contains("invalid argument") {
+        ("INVALID_ARGUMENT", 2)
+    } else if lower.contains("data not found") || lower.contains("unavailable") {
+        ("DATA_UNAVAILABLE", EXIT_DATA_UNAVAILABLE)
+    } else if lower.contains("not found")
         || lower.contains("no results")
         || lower.contains("no match")
         || lower.contains("no entries")
@@ -151,10 +155,11 @@ fn long_version() -> &'static str {
         - GRETIL (Göttingen Register of Electronic Texts in Indian Languages)\n\
         - SARIT (Search and Retrieval of Indic Texts)\n\
         - MUKTABODHA (Sanskrit digital library)\n\
+        - 真言宗全書 (SHINZEN) and 続真言宗全書 (SHOKU_SHINZEN)\n\
         - SAT (SAT Daizōkyō Text Database)\n\
         - 浄土宗全書 (Jodo Shu Zensho — online)\n\
         - Tibetan corpora: Adarsha + BUDA (online)\n\n\
-        Each corpus has search/fetch/pipeline commands. Use --json for structured MCP output.\n\
+        Pipeline commands are available for CBETA, GRETIL, SAT, SHINZEN and SHOKU_SHINZEN. Use --json for structured MCP output.\n\
         Also serves as an MCP (Model Context Protocol) server via 'buddha mcp'.",
     after_long_help = "COMMON PATTERNS:\n\
         Verify a quote:    buddha --text cbeta-search \"応無所住而生其心\"   (phrase; crosses lines/variants)\n\
@@ -194,6 +199,43 @@ struct Cli {
 
 #[derive(Subcommand, Debug)]
 enum Commands {
+    /// Search installed local corpora concurrently; script-selects corpora unless --source all.
+    Search {
+        #[arg(long)]
+        query: String,
+        #[arg(long, value_parser=["all","local"])]
+        source: Option<String>,
+        #[arg(long, default_value_t = 20)]
+        max_results: usize,
+        #[arg(long, default_value_t = 0)]
+        offset: usize,
+        #[arg(long, default_value_t = 5)]
+        max_matches_per_file: usize,
+        #[arg(long)]
+        loose: bool,
+    },
+    /// Fetch up to ten local IDs. Per-ID locations: ID@lb or ID:line.
+    Fetch {
+        #[arg(required=true, num_args=1..=10)]
+        ids: Vec<String>,
+        #[arg(long)]
+        source: Option<String>,
+        #[arg(long, default_value_t = 2000)]
+        max_chars: usize,
+    },
+    /// Verify a quotation against corrected local source text.
+    Verify {
+        #[arg(long)]
+        id: String,
+        #[arg(long)]
+        quote: String,
+        #[arg(long)]
+        lb: Option<String>,
+        #[arg(long)]
+        line_number: Option<usize>,
+        #[arg(long)]
+        source: Option<String>,
+    },
     /// Initialize data: download corpora and build search indices.
     ///
     /// Downloads CBETA (xml-p5), Tipitaka (romn), SARIT-corpus and builds
@@ -221,17 +263,23 @@ enum Commands {
         /// Query string (regex)
         #[arg(long)]
         query: String,
+        /// Ignore Latin diacritics and case (literal queries only).
+        #[arg(long)]
+        loose: bool,
         /// Maximum files to return
-        #[arg(long, default_value_t = 10)]
+        #[arg(long, default_value_t = 10, aliases = ["limit", "rows"])]
         max_results: usize,
+        /// Number of matching files to skip in the sorted results
+        #[arg(long, default_value_t = 0)]
+        offset: usize,
         /// Maximum matches per file (search)
         #[arg(long, default_value_t = 3)]
         max_matches_per_file: usize,
         /// Context lines before
-        #[arg(long, default_value_t = 10)]
+        #[arg(long, default_value_t = 2)]
         context_before: usize,
         /// Context lines after
-        #[arg(long, default_value_t = 100)]
+        #[arg(long, default_value_t = 5)]
         context_after: usize,
         /// Auto-fetch top files
         #[arg(long, action = clap::ArgAction::Set, num_args = 0..=1, default_missing_value = "true", default_value_t = false)]
@@ -293,7 +341,7 @@ enum Commands {
         #[arg(long)]
         query: String,
         /// Max results
-        #[arg(long, default_value_t = 10)]
+        #[arg(long, default_value_t = 10, aliases = ["max-results", "rows"])]
         limit: usize,
         /// Output JSON
         #[arg(long, action = clap::ArgAction::Set, num_args = 0..=1, default_missing_value = "true", default_value_t = false)]
@@ -354,11 +402,11 @@ enum Commands {
         /// Target line number for context extraction
         #[arg(long)]
         line_number: Option<usize>,
-        /// Number of lines before target line (default: 10)
-        #[arg(long, default_value_t = 10)]
+        /// Number of lines before target line (default: 2)
+        #[arg(long, default_value_t = 2)]
         context_before: usize,
-        /// Number of lines after target line (default: 100)
-        #[arg(long, default_value_t = 100)]
+        /// Number of lines after target line (default: 5)
+        #[arg(long, default_value_t = 5)]
         context_after: usize,
         /// Number of lines before/after target line (deprecated, use context_before/context_after)
         #[arg(long)]
@@ -380,9 +428,15 @@ enum Commands {
         /// Query string (regular expression)
         #[arg(long)]
         query: String,
+        /// Ignore Latin diacritics and case (literal queries only).
+        #[arg(long)]
+        loose: bool,
         /// Maximum number of files to return
-        #[arg(long, default_value_t = 20)]
+        #[arg(long, default_value_t = 20, aliases = ["limit", "rows"])]
         max_results: usize,
+        /// Number of matching files to skip in the sorted results
+        #[arg(long, default_value_t = 0)]
+        offset: usize,
         /// Maximum matches per file
         #[arg(long, default_value_t = 5)]
         max_matches_per_file: usize,
@@ -401,7 +455,7 @@ enum Commands {
         #[arg(long)]
         query: String,
         /// Max results
-        #[arg(long, default_value_t = 10)]
+        #[arg(long, default_value_t = 10, aliases = ["max-results", "rows"])]
         limit: usize,
         /// Output JSON
         #[arg(long, action = clap::ArgAction::Set, num_args = 0..=1, default_missing_value = "true", default_value_t = false)]
@@ -457,11 +511,11 @@ enum Commands {
         /// Target line number for context extraction
         #[arg(long)]
         line_number: Option<usize>,
-        /// Number of lines before target line (default: 10)
-        #[arg(long, default_value_t = 10)]
+        /// Number of lines before target line (default: 2)
+        #[arg(long, default_value_t = 2)]
         context_before: usize,
-        /// Number of lines after target line (default: 100)
-        #[arg(long, default_value_t = 100)]
+        /// Number of lines after target line (default: 5)
+        #[arg(long, default_value_t = 5)]
         context_after: usize,
         /// Number of lines before/after target line (deprecated, use context_before/context_after)
         #[arg(long)]
@@ -478,9 +532,15 @@ enum Commands {
         /// Query string (regular expression)
         #[arg(long)]
         query: String,
+        /// Ignore Latin diacritics and case (literal queries only).
+        #[arg(long)]
+        loose: bool,
         /// Maximum number of files to return
-        #[arg(long, default_value_t = 20)]
+        #[arg(long, default_value_t = 20, aliases = ["limit", "rows"])]
         max_results: usize,
+        /// Number of matching files to skip in the sorted results
+        #[arg(long, default_value_t = 0)]
+        offset: usize,
         /// Maximum matches per file
         #[arg(long, default_value_t = 5)]
         max_matches_per_file: usize,
@@ -497,7 +557,7 @@ enum Commands {
         #[arg(long)]
         query: String,
         /// Max results
-        #[arg(long, default_value_t = 10)]
+        #[arg(long, default_value_t = 10, aliases = ["max-results", "rows"])]
         limit: usize,
         /// Output JSON
         #[arg(long, action = clap::ArgAction::Set, num_args = 0..=1, default_missing_value = "true", default_value_t = false)]
@@ -553,11 +613,11 @@ enum Commands {
         /// Target line number for context extraction
         #[arg(long)]
         line_number: Option<usize>,
-        /// Number of lines before target line (default: 10)
-        #[arg(long, default_value_t = 10)]
+        /// Number of lines before target line (default: 2)
+        #[arg(long, default_value_t = 2)]
         context_before: usize,
-        /// Number of lines after target line (default: 100)
-        #[arg(long, default_value_t = 100)]
+        /// Number of lines after target line (default: 5)
+        #[arg(long, default_value_t = 5)]
         context_after: usize,
         /// Number of lines before/after target line (deprecated, use context_before/context_after)
         #[arg(long)]
@@ -574,9 +634,15 @@ enum Commands {
         /// Query string (regular expression)
         #[arg(long)]
         query: String,
+        /// Ignore Latin diacritics and case (literal queries only).
+        #[arg(long)]
+        loose: bool,
         /// Maximum number of files to return
-        #[arg(long, default_value_t = 20)]
+        #[arg(long, default_value_t = 20, aliases = ["limit", "rows"])]
         max_results: usize,
+        /// Number of matching files to skip in the sorted results
+        #[arg(long, default_value_t = 0)]
+        offset: usize,
         /// Maximum matches per file
         #[arg(long, default_value_t = 5)]
         max_matches_per_file: usize,
@@ -593,7 +659,7 @@ enum Commands {
         #[arg(long)]
         query: String,
         /// Max results
-        #[arg(long, default_value_t = 10)]
+        #[arg(long, default_value_t = 10, aliases = ["max-results", "rows"])]
         limit: usize,
         /// Output JSON
         #[arg(long, action = clap::ArgAction::Set, num_args = 0..=1, default_missing_value = "true", default_value_t = false)]
@@ -648,11 +714,11 @@ enum Commands {
         /// Target SHINZEN lb n line number for context extraction
         #[arg(long)]
         line_number: Option<usize>,
-        /// Number of lines before target line (default: 10)
-        #[arg(long, default_value_t = 10)]
+        /// Number of lines before target line (default: 2)
+        #[arg(long, default_value_t = 2)]
         context_before: usize,
-        /// Number of lines after target line (default: 100)
-        #[arg(long, default_value_t = 100)]
+        /// Number of lines after target line (default: 5)
+        #[arg(long, default_value_t = 5)]
         context_after: usize,
         /// Number of lines before/after target line (deprecated, use context_before/context_after)
         #[arg(long)]
@@ -672,8 +738,11 @@ enum Commands {
         #[arg(long)]
         query: String,
         /// Maximum number of files to return
-        #[arg(long, default_value_t = 20)]
+        #[arg(long, default_value_t = 20, aliases = ["limit", "rows"])]
         max_results: usize,
+        /// Number of matching files to skip in the sorted results
+        #[arg(long, default_value_t = 0)]
+        offset: usize,
         /// Maximum matches per file
         #[arg(long, default_value_t = 5)]
         max_matches_per_file: usize,
@@ -688,8 +757,11 @@ enum Commands {
         #[arg(long)]
         query: String,
         /// Maximum number of files to return
-        #[arg(long, default_value_t = 10)]
+        #[arg(long, default_value_t = 10, aliases = ["limit", "rows"])]
         max_results: usize,
+        /// Number of matching files to skip in the sorted results
+        #[arg(long, default_value_t = 0)]
+        offset: usize,
         /// Maximum matches per file
         #[arg(long, default_value_t = 3)]
         max_matches_per_file: usize,
@@ -711,7 +783,7 @@ enum Commands {
         #[arg(long)]
         volume: Option<String>,
         /// Max results
-        #[arg(long, default_value_t = 20)]
+        #[arg(long, default_value_t = 20, aliases = ["max-results", "rows"])]
         limit: usize,
         /// Output JSON
         #[arg(long, action = clap::ArgAction::Set, num_args = 0..=1, default_missing_value = "true", default_value_t = false)]
@@ -728,7 +800,7 @@ enum Commands {
         #[arg(long)]
         query: String,
         /// Max results
-        #[arg(long, default_value_t = 10)]
+        #[arg(long, default_value_t = 10, aliases = ["max-results", "rows"])]
         limit: usize,
         /// Output JSON
         #[arg(long, action = clap::ArgAction::Set, num_args = 0..=1, default_missing_value = "true", default_value_t = false)]
@@ -783,11 +855,11 @@ enum Commands {
         /// Target lb n line number
         #[arg(long)]
         line_number: Option<usize>,
-        /// Number of lines before target line (default: 10)
-        #[arg(long, default_value_t = 10)]
+        /// Number of lines before target line (default: 2)
+        #[arg(long, default_value_t = 2)]
         context_before: usize,
-        /// Number of lines after target line (default: 100)
-        #[arg(long, default_value_t = 100)]
+        /// Number of lines after target line (default: 5)
+        #[arg(long, default_value_t = 5)]
         context_after: usize,
         /// Number of lines before/after target line (deprecated)
         #[arg(long)]
@@ -807,8 +879,11 @@ enum Commands {
         #[arg(long)]
         query: String,
         /// Maximum number of files to return
-        #[arg(long, default_value_t = 20)]
+        #[arg(long, default_value_t = 20, aliases = ["limit", "rows"])]
         max_results: usize,
+        /// Number of matching files to skip in the sorted results
+        #[arg(long, default_value_t = 0)]
+        offset: usize,
         /// Maximum matches per file
         #[arg(long, default_value_t = 5)]
         max_matches_per_file: usize,
@@ -823,8 +898,11 @@ enum Commands {
         #[arg(long)]
         query: String,
         /// Maximum number of files to return
-        #[arg(long, default_value_t = 10)]
+        #[arg(long, default_value_t = 10, aliases = ["limit", "rows"])]
         max_results: usize,
+        /// Number of matching files to skip in the sorted results
+        #[arg(long, default_value_t = 0)]
+        offset: usize,
         /// Maximum matches per file
         #[arg(long, default_value_t = 3)]
         max_matches_per_file: usize,
@@ -853,7 +931,7 @@ enum Commands {
         #[arg(long)]
         volume: Option<String>,
         /// Max results
-        #[arg(long, default_value_t = 20)]
+        #[arg(long, default_value_t = 20, aliases = ["max-results", "rows"])]
         limit: usize,
         /// Output JSON
         #[arg(long, action = clap::ArgAction::Set, num_args = 0..=1, default_missing_value = "true", default_value_t = false)]
@@ -892,7 +970,7 @@ enum Commands {
         #[arg(long, default_value_t = 1)]
         page: usize,
         /// Maximum results to return per page
-        #[arg(long, default_value_t = 50)]
+        #[arg(long, default_value_t = 50, aliases = ["limit", "rows"])]
         max_results: usize,
         /// Maximum snippet characters (0 = unlimited)
         #[arg(long, default_value_t = 400)]
@@ -943,7 +1021,7 @@ enum Commands {
         #[arg(long, value_delimiter = ',')]
         sources: Vec<String>,
         /// Maximum results
-        #[arg(long, default_value_t = 20)]
+        #[arg(long, default_value_t = 20, aliases = ["max-results", "rows"])]
         limit: usize,
         /// Exact match mode (BUDA only)
         #[arg(long, action = clap::ArgAction::Set, num_args = 0..=1, default_missing_value = "true", default_value_t = true)]
@@ -1036,7 +1114,7 @@ enum Commands {
         #[arg(long, default_value_t = 5)]
         limit_per_source: usize,
         /// Max total candidates
-        #[arg(long, default_value_t = 10)]
+        #[arg(long, default_value_t = 10, aliases = ["max-results", "rows"])]
         limit: usize,
         /// Prefer this source (slight score boost)
         #[arg(long, value_parser = ["cbeta", "tipitaka", "gretil", "sarit", "muktabodha", "shinzen", "shoku_shinzen"])]
@@ -1085,16 +1163,19 @@ enum Commands {
         #[arg(long)]
         query: String,
         /// Maximum files to return
-        #[arg(long, default_value_t = 10)]
+        #[arg(long, default_value_t = 10, aliases = ["limit", "rows"])]
         max_results: usize,
+        /// Number of matching files to skip in the sorted results
+        #[arg(long, default_value_t = 0)]
+        offset: usize,
         /// Maximum matches per file (search)
         #[arg(long, default_value_t = 3)]
         max_matches_per_file: usize,
         /// Context lines before
-        #[arg(long, default_value_t = 10)]
+        #[arg(long, default_value_t = 2)]
         context_before: usize,
         /// Context lines after
-        #[arg(long, default_value_t = 100)]
+        #[arg(long, default_value_t = 5)]
         context_after: usize,
         /// Auto-fetch top files
         #[arg(long, action = clap::ArgAction::Set, num_args = 0..=1, default_missing_value = "true", default_value_t = false)]
@@ -1155,7 +1236,7 @@ enum Commands {
         #[arg(long)]
         query: String,
         /// Max results
-        #[arg(long, default_value_t = 10)]
+        #[arg(long, default_value_t = 10, aliases = ["max-results", "rows"])]
         limit: usize,
         /// Output JSON
         #[arg(long, action = clap::ArgAction::Set, num_args = 0..=1, default_missing_value = "true", default_value_t = false)]
@@ -1223,11 +1304,11 @@ enum Commands {
         /// --line-number and used for citation. Takes precedence over --line-number.
         #[arg(long)]
         lb: Option<String>,
-        /// Number of lines before target line (default: 10)
-        #[arg(long, default_value_t = 10)]
+        /// Number of lines before target line (default: 2)
+        #[arg(long, default_value_t = 2)]
         context_before: usize,
-        /// Number of lines after target line (default: 100)
-        #[arg(long, default_value_t = 100)]
+        /// Number of lines after target line (default: 5)
+        #[arg(long, default_value_t = 5)]
         context_after: usize,
         /// Number of lines before/after target line (deprecated, use context_before/context_after)
         #[arg(long)]
@@ -1250,7 +1331,7 @@ enum Commands {
         #[arg(long)]
         query: String,
         /// Rows
-        #[arg(long, default_value_t = 100)]
+        #[arg(long, default_value_t = 100, aliases = ["max-results", "limit"])]
         rows: usize,
         /// Offset
         #[arg(long, default_value_t = 0)]
@@ -1285,6 +1366,7 @@ enum Commands {
     /// Related: sat-search, sat-detail, sat-pipeline
     #[command(after_help = "EXAMPLES:\n  buddha sat-fetch --useid \"SAT12345\" --json")]
     SatFetch {
+        /// SAT detail page URL.
         #[arg(long)]
         url: Option<String>,
         /// Prefer useid (startid from search). This opens the containing SAT detail text/fascicle, not a match-level line anchor. If provided, URL is ignored.
@@ -1293,6 +1375,7 @@ enum Commands {
         /// Slice offset in extracted SAT detail text; not an offset into sat-search body and not a match offset.
         #[arg(long)]
         start_char: Option<usize>,
+        /// Maximum number of characters to return.
         #[arg(long)]
         max_chars: Option<usize>,
         /// Output JSON
@@ -1303,13 +1386,16 @@ enum Commands {
     ///
     /// Related: sat-search, sat-fetch, sat-pipeline
     SatDetail {
+        /// SAT detail useid.
         #[arg(long)]
         useid: String,
+        /// Search key for highlighting.
         #[arg(long, default_value = "")]
         key: String,
         /// Slice offset in extracted SAT detail text; not an offset into sat-search body and not a match offset.
         #[arg(long)]
         start_char: Option<usize>,
+        /// Maximum number of characters to return.
         #[arg(long)]
         max_chars: Option<usize>,
         /// Output JSON
@@ -1325,7 +1411,7 @@ enum Commands {
         #[arg(long)]
         query: String,
         /// Rows from search
-        #[arg(long, default_value_t = 100)]
+        #[arg(long, default_value_t = 100, aliases = ["max-results", "limit"])]
         rows: usize,
         /// Offset
         #[arg(long, default_value_t = 0)]
@@ -1357,7 +1443,7 @@ enum Commands {
         #[arg(long)]
         query: String,
         /// Max results
-        #[arg(long, default_value_t = 10)]
+        #[arg(long, default_value_t = 10, aliases = ["max-results", "rows"])]
         limit: usize,
         /// Output JSON
         #[arg(long, action = clap::ArgAction::Set, num_args = 0..=1, default_missing_value = "true", default_value_t = false)]
@@ -1418,11 +1504,11 @@ enum Commands {
         /// Target line number for context extraction
         #[arg(long)]
         line_number: Option<usize>,
-        /// Number of lines before target line (default: 10)
-        #[arg(long, default_value_t = 10)]
+        /// Number of lines before target line (default: 2)
+        #[arg(long, default_value_t = 2)]
         context_before: usize,
-        /// Number of lines after target line (default: 100)
-        #[arg(long, default_value_t = 100)]
+        /// Number of lines after target line (default: 5)
+        #[arg(long, default_value_t = 5)]
         context_after: usize,
         /// Number of lines before/after target line (deprecated, use context_before/context_after)
         #[arg(long)]
@@ -1493,6 +1579,7 @@ enum Commands {
     },
     /// Extract plain text from an XML file path (reads from stdin XML if --path omitted)
     ExtractText {
+        /// XML input path; omit to read standard input.
         #[arg(long)]
         path: Option<PathBuf>,
     },
@@ -1507,8 +1594,11 @@ enum Commands {
         #[arg(long)]
         query: String,
         /// Maximum number of files to return
-        #[arg(long, default_value_t = 20)]
+        #[arg(long, default_value_t = 20, aliases = ["limit", "rows"])]
         max_results: usize,
+        /// Number of matching files to skip in the sorted results
+        #[arg(long, default_value_t = 0)]
+        offset: usize,
         /// Maximum matches per file
         #[arg(long, default_value_t = 5)]
         max_matches_per_file: usize,
@@ -1527,9 +1617,15 @@ enum Commands {
         /// Query string (regular expression)
         #[arg(long)]
         query: String,
+        /// Ignore Latin diacritics and case (literal queries only).
+        #[arg(long)]
+        loose: bool,
         /// Maximum number of files to return
-        #[arg(long, default_value_t = 20)]
+        #[arg(long, default_value_t = 20, aliases = ["limit", "rows"])]
         max_results: usize,
+        /// Number of matching files to skip in the sorted results
+        #[arg(long, default_value_t = 0)]
+        offset: usize,
         /// Maximum matches per file
         #[arg(long, default_value_t = 5)]
         max_matches_per_file: usize,
@@ -1566,70 +1662,89 @@ fn ensure_dir(p: &PathBuf) -> anyhow::Result<()> {
     Ok(())
 }
 
-fn clone_tipitaka_sparse(target_dir: &Path) -> bool {
-    progress!(
-        "[clone] Cloning Tipitaka (romn only) to: {}",
-        target_dir.display()
-    );
-
-    // Remove target directory if it exists but is empty
-    if target_dir.exists() {
-        let _ = fs::remove_dir_all(target_dir);
+fn doctor_warnings(base: &Path) -> Vec<serde_json::Value> {
+    fn size(path: &Path) -> u64 {
+        let Ok(meta) = fs::symlink_metadata(path) else {
+            return 0;
+        };
+        if !meta.is_dir() {
+            return meta.len();
+        }
+        fs::read_dir(path)
+            .into_iter()
+            .flatten()
+            .flatten()
+            .map(|e| size(&e.path()))
+            .sum()
     }
-
-    // Use git clone with sparse-checkout directly
-    let temp_dir = target_dir.parent().unwrap_or(Path::new("."));
-    let target_name = target_dir
-        .file_name()
-        .unwrap_or_else(|| std::ffi::OsStr::new("tipitaka-xml"));
-
-    // Clone the repository with no checkout
-    if !run(
-        "git",
-        &[
-            "clone",
-            "--no-checkout",
-            "--depth",
-            "1",
-            "https://github.com/VipassanaTech/tipitaka-xml",
-            target_name.to_string_lossy().as_ref(),
-        ],
-        Some(&temp_dir.to_path_buf()),
-    ) {
-        eprintln!("[error] Failed to clone repository");
-        return false;
+    let mut warnings = Vec::new();
+    let known = [
+        "xml-p5",
+        "tipitaka-xml",
+        "GRETIL",
+        "SARIT-corpus",
+        "MUKTABODHA",
+        "SHINZEN",
+        "SHOKU_SHINZEN",
+        "cache",
+        "bin",
+    ];
+    let mut backups = Vec::new();
+    for entry in fs::read_dir(base).into_iter().flatten().flatten() {
+        let name = entry.file_name();
+        let name = name.to_string_lossy();
+        let trimmed = name.trim();
+        let path = entry.path();
+        if trimmed != name && known.contains(&trimmed) && base.join(trimmed).exists() {
+            warnings.push(serde_json::json!({"code":"duplicate_name", "path":path, "message":"Whitespace variant duplicates a known entry; inspect and remove the unwanted copy manually."}));
+        }
+        if name.starts_with("bin-before-") || name == "install-backups" {
+            backups.push(serde_json::json!({"path":path, "sizeBytes":size(&path)}));
+        }
+        if fs::symlink_metadata(&path).is_ok_and(|m| m.file_type().is_symlink()) && !path.exists() {
+            warnings.push(serde_json::json!({"code":"broken_symlink", "path":path, "target":fs::read_link(&path).ok(), "message":"Inspect the link and its target; remove or repair the link manually."}));
+        }
     }
-
-    let target_str = target_dir.to_string_lossy();
-
-    // Configure sparse checkout
-    if !run(
-        "git",
-        &["-C", &target_str, "config", "core.sparseCheckout", "true"],
-        None,
-    ) {
-        eprintln!("[error] Failed to configure sparse checkout");
-        return false;
+    if !backups.is_empty() {
+        let total: u64 = backups.iter().filter_map(|v| v["sizeBytes"].as_u64()).sum();
+        warnings.push(serde_json::json!({"code":"old_backups", "entries":backups, "sizeBytes":total, "message":"Inspect old backups and remove unwanted copies manually."}));
     }
-
-    // Create sparse-checkout file
-    let sparse_file = target_dir.join(".git").join("info").join("sparse-checkout");
-    if let Some(parent) = sparse_file.parent() {
-        let _ = fs::create_dir_all(parent);
+    let old_log = base.join("daizo-mcp.log");
+    if old_log.exists() {
+        warnings.push(serde_json::json!({"code":"old_log", "path":old_log, "message":"Inspect and remove the old log manually if no longer needed."}));
     }
-    if fs::write(&sparse_file, "romn/\n").is_err() {
-        eprintln!("[error] Failed to write sparse-checkout file");
-        return false;
+    for entry in fs::read_dir(base.join("cache"))
+        .into_iter()
+        .flatten()
+        .flatten()
+    {
+        let path = entry.path();
+        if !path
+            .file_name()
+            .and_then(|n| n.to_str())
+            .is_some_and(|n| n.ends_with("-index.json"))
+        {
+            continue;
+        }
+        if let Ok(contents) = fs::read(&path) {
+            if let Ok(serde_json::Value::Array(entries)) =
+                serde_json::from_slice::<serde_json::Value>(&contents)
+            {
+                for item in entries.iter().take(10) {
+                    if let Some(p) = item.get("path").and_then(|v| v.as_str()) {
+                        if !Path::new(p).exists() {
+                            warnings.push(serde_json::json!({"code":"stale_index_path", "index":path, "path":p, "message":"Rebuild the affected index after checking corpus paths."}));
+                        }
+                    }
+                }
+            }
+        }
     }
+    warnings
+}
 
-    // Checkout only the romn directory
-    if !run("git", &["-C", &target_str, "checkout"], None) {
-        eprintln!("[error] Failed to checkout romn directory");
-        return false;
-    }
-
-    progress!("[clone] Tipitaka romn directory cloned successfully");
-    true
+fn update_installed_binary(root: &Path) -> PathBuf {
+    root.join("bin").join("buddha")
 }
 
 fn run(cmd: &str, args: &[&str], cwd: Option<&PathBuf>) -> bool {
@@ -1689,31 +1804,15 @@ fn main() {
 
 /// Fetch subcommand for an ID by its prefix (used by `buddha fetch <ID>`).
 fn fetch_command_for_id(id: &str) -> Option<&'static str> {
-    let up = id.trim().to_ascii_uppercase();
-    let starts_digit = |p: &str| {
-        up.strip_prefix(p)
-            .and_then(|r| r.chars().next())
-            .is_some_and(|c| c.is_ascii_digit())
-    };
-    if starts_digit("SKZW") || starts_digit("SKZ") {
-        Some("shoku-shinzen-fetch")
-    } else if starts_digit("SZW") || starts_digit("SZ") {
-        Some("shinzen-fetch")
-    } else if ["DN", "MN", "SN", "AN", "KN"]
-        .iter()
-        .any(|p| starts_digit(p))
-        || up.ends_with(".MUL")
-        || up.ends_with(".ATT")
-        || up.ends_with(".TIK")
-    {
-        Some("tipitaka-fetch")
-    } else if regex::Regex::new(r"^[A-Z]{1,2}\d")
-        .map(|re| re.is_match(&up))
-        .unwrap_or(false)
-    {
-        Some("cbeta-fetch")
-    } else {
-        None
+    match buddha_core::detect_source(id)? {
+        "cbeta" => Some("cbeta-fetch"),
+        "tipitaka" => Some("tipitaka-fetch"),
+        "shinzen" => Some("shinzen-fetch"),
+        "shoku_shinzen" => Some("shoku-shinzen-fetch"),
+        "gretil" => Some("gretil-fetch"),
+        "jozen" => Some("jozen-fetch"),
+        "sat" => Some("sat-fetch"),
+        _ => None,
     }
 }
 
@@ -1737,6 +1836,23 @@ fn normalize_argv(mut argv: Vec<std::ffi::OsString>) -> Vec<std::ffi::OsString> 
     };
     let sub = argv[sub_ix].to_string_lossy().to_string();
     if sub == "fetch" {
+        let positional: Vec<_> = argv
+            .iter()
+            .skip(sub_ix + 1)
+            .take_while(|a| !a.to_string_lossy().starts_with('-'))
+            .collect();
+        if positional.len() > 1
+            || positional.first().is_some_and(|id| {
+                id.to_string_lossy().contains('@')
+                    || id
+                        .to_string_lossy()
+                        .rsplit_once(':')
+                        .is_some_and(|(_, n)| n.parse::<usize>().is_ok())
+            })
+        {
+            return argv;
+        }
+
         let id = bare_next(&argv).or_else(|| {
             argv.iter()
                 .position(|a| a == "--id")
@@ -1749,8 +1865,23 @@ fn normalize_argv(mut argv: Vec<std::ffi::OsString>) -> Vec<std::ffi::OsString> 
         if bare_next(&argv).is_some() {
             argv.insert(
                 sub_ix + 1,
-                if cmd.is_some() { "--id" } else { "--query" }.into(),
+                match cmd {
+                    Some("jozen-fetch") => "--lineno",
+                    Some("sat-fetch") => "--useid",
+                    Some(_) => "--id",
+                    None => "--query",
+                }
+                .into(),
             );
+        } else if matches!(cmd, Some("jozen-fetch" | "sat-fetch")) {
+            if let Some(i) = argv.iter().position(|a| a == "--id") {
+                argv[i] = if cmd == Some("jozen-fetch") {
+                    "--lineno"
+                } else {
+                    "--useid"
+                }
+                .into();
+            }
         } else if cmd.is_none() {
             if let Some(i) = argv.iter().position(|a| a == "--id") {
                 argv[i] = "--query".into();
@@ -1764,8 +1895,10 @@ fn normalize_argv(mut argv: Vec<std::ffi::OsString>) -> Vec<std::ffi::OsString> 
                 .get(i + 1)
                 .map(|a| a.to_string_lossy().replace('_', "-"))
             {
-                argv.drain(i..=i + 1);
-                argv[sub_ix] = format!("{}-search", src).into();
+                if src != "all" && src != "local" {
+                    argv.drain(i..=i + 1);
+                    argv[sub_ix] = format!("{}-search", src).into();
+                }
             }
         }
     }
@@ -1785,7 +1918,8 @@ fn normalize_argv(mut argv: Vec<std::ffi::OsString>) -> Vec<std::ffi::OsString> 
         let takes_query = sub.ends_with("-search")
             || sub.ends_with("-pipeline")
             || sub.ends_with("-work-catalog")
-            || sub == "resolve";
+            || sub == "resolve"
+            || sub == "search";
         if takes_id {
             argv.insert(sub_ix + 1, "--id".into());
         } else if takes_query {
@@ -1796,7 +1930,8 @@ fn normalize_argv(mut argv: Vec<std::ffi::OsString>) -> Vec<std::ffi::OsString> 
 }
 
 fn run_cli() -> i32 {
-    let cli = match Cli::try_parse_from(normalize_argv(env::args_os().collect())) {
+    let raw_args: Vec<_> = env::args_os().collect();
+    let cli = match Cli::try_parse_from(normalize_argv(raw_args)) {
         Ok(cli) => cli,
         Err(error) => {
             let code = error.exit_code();
@@ -1804,11 +1939,54 @@ fn run_cli() -> i32 {
                 let _ = error.print();
             } else {
                 let json = should_output_json(env::args_os().any(|arg| arg == "--json"), false);
-                output_error(error.to_string().trim(), "INVALID_ARGUMENT", json);
+                let message = error
+                    .to_string()
+                    .replace("--context-lines", "--context-before / --context-after");
+                output_error(message.trim(), "INVALID_ARGUMENT", json);
             }
             return code;
         }
     };
+
+    let indic_query = match &cli.command {
+        Commands::GretilSearch { query, loose, .. }
+        | Commands::SaritSearch { query, loose, .. }
+        | Commands::MuktabodhaSearch { query, loose, .. }
+        | Commands::TipitakaSearch { query, loose, .. }
+        | Commands::GretilPipeline { query, loose, .. } => Some((query, loose)),
+        _ => None,
+    };
+    if indic_query
+        .is_some_and(|(q, loose)| *loose && buddha_core::text_utils::indic_query_is_regex(q))
+    {
+        output_error(
+            "--loose cannot be combined with a regex query",
+            "INVALID_ARGUMENT",
+            should_output_json(cli.json, false),
+        );
+        return 2;
+    }
+    let regex_query = match &cli.command {
+        Commands::CbetaSearch { query, .. }
+        | Commands::GretilPipeline { query, .. }
+        | Commands::TipitakaSearch { query, .. }
+        | Commands::GretilSearch { query, .. }
+        | Commands::SaritSearch { query, .. }
+        | Commands::MuktabodhaSearch { query, .. }
+        | Commands::ShinzenSearch { query, .. }
+        | Commands::ShokuShinzenSearch { query, .. } => Some(query.as_str()),
+        _ => None,
+    };
+    if let Some(query) = regex_query.filter(|q| buddha_core::text_utils::looks_like_user_regex(q)) {
+        if let Err(error) = regex::Regex::new(query) {
+            output_error(
+                &format!("Invalid regex: {error}"),
+                "INVALID_ARGUMENT",
+                should_output_json(cli.json, false),
+            );
+            return 2;
+        }
+    }
 
     // Set global quiet flag
     if cli.quiet {
@@ -1823,10 +2001,100 @@ fn run_cli() -> i32 {
     }
 
     // Determine effective JSON mode from global flag
-    let global_json = should_output_json(cli.json, false);
+    let global_json =
+        should_output_json(cli.json, false) || std::env::args_os().any(|arg| arg == "--json");
+
+    let local_corpus = match &cli.command {
+        Commands::CbetaTitleSearch { .. }
+        | Commands::CbetaFetch { .. }
+        | Commands::CbetaPipeline { .. }
+        | Commands::CbetaSearch { .. } => Some(("Cbeta", cbeta_root())),
+        Commands::TipitakaTitleSearch { .. }
+        | Commands::TipitakaFetch { .. }
+        | Commands::TipitakaSearch { .. } => Some(("Tipitaka", tipitaka_root())),
+        Commands::GretilTitleSearch { .. }
+        | Commands::GretilFetch { .. }
+        | Commands::GretilPipeline { .. }
+        | Commands::GretilSearch { .. } => Some(("Gretil", gretil_root())),
+        Commands::SaritTitleSearch { .. }
+        | Commands::SaritFetch { .. }
+        | Commands::SaritSearch { .. } => Some(("Sarit", sarit_root())),
+        Commands::MuktabodhaTitleSearch { .. }
+        | Commands::MuktabodhaFetch { .. }
+        | Commands::MuktabodhaSearch { .. } => Some(("Muktabodha", muktabodha_root())),
+        Commands::ShinzenTitleSearch { .. }
+        | Commands::ShinzenFetch { .. }
+        | Commands::ShinzenSearch { .. }
+        | Commands::ShinzenPipeline { .. } => Some(("SHINZEN", shinzen_kunten_tei_root())),
+        Commands::ShokuShinzenTitleSearch { .. }
+        | Commands::ShokuShinzenFetch { .. }
+        | Commands::ShokuShinzenSearch { .. }
+        | Commands::ShokuShinzenPipeline { .. } => {
+            Some(("SHOKU_SHINZEN", shoku_shinzen_kunten_tei_root()))
+        }
+        _ => None,
+    };
 
     let result: anyhow::Result<()> = (|| {
+        if let Some((name, root)) = local_corpus {
+            if !root.exists() {
+                anyhow::bail!(
+                    "{} data unavailable; run buddha init or install the corpus",
+                    name
+                );
+            }
+        }
         match cli.command {
+            Commands::Search {
+                query,
+                source,
+                max_results,
+                offset,
+                loose,
+                max_matches_per_file,
+            } => {
+                if buddha_core::text_utils::looks_like_user_regex(&query) {
+                    regex::Regex::new(&query)
+                        .map_err(|e| anyhow::anyhow!("invalid argument: {e}"))?;
+                }
+                cmd::common::print_operation(
+                    buddha_core::operations::search_all(
+                        &query,
+                        source.as_deref() == Some("all"),
+                        max_results,
+                        offset,
+                        loose,
+                        max_matches_per_file,
+                    ),
+                    should_output_json(global_json, false),
+                )?;
+            }
+            Commands::Fetch {
+                ids,
+                source,
+                max_chars,
+            } => {
+                let value = buddha_core::operations::fetch_many(&ids, source.as_deref(), max_chars)
+                    .map_err(anyhow::Error::msg)?;
+                cmd::common::print_operation(value, should_output_json(global_json, false))?;
+            }
+            Commands::Verify {
+                id,
+                quote,
+                lb,
+                line_number,
+                source,
+            } => {
+                let value = buddha_core::operations::verify(
+                    &id,
+                    &quote,
+                    lb.as_deref(),
+                    line_number,
+                    source.as_deref(),
+                )
+                .map_err(anyhow::Error::msg)?;
+                cmd::common::print_operation(value, should_output_json(global_json, false))?;
+            }
             Commands::Mcp {} => {
                 return buddha_mcp::run_stdio_server();
             }
@@ -1944,6 +2212,7 @@ fn run_cli() -> i32 {
             Commands::CbetaPipeline {
                 query,
                 max_results,
+                offset,
                 max_matches_per_file,
                 context_before,
                 context_after,
@@ -1966,6 +2235,7 @@ fn run_cli() -> i32 {
                 let tmp = Commands::CbetaPipeline {
                     query,
                     max_results,
+                    offset,
                     max_matches_per_file,
                     context_before,
                     context_after,
@@ -2040,7 +2310,9 @@ fn run_cli() -> i32 {
             }
             Commands::GretilPipeline {
                 query,
+                loose,
                 max_results,
+                offset,
                 max_matches_per_file,
                 context_before,
                 context_after,
@@ -2062,7 +2334,9 @@ fn run_cli() -> i32 {
             } => {
                 let tmp = Commands::GretilPipeline {
                     query,
+                    loose,
                     max_results,
+                    offset,
                     max_matches_per_file,
                     context_before,
                     context_after,
@@ -2086,13 +2360,17 @@ fn run_cli() -> i32 {
             }
             Commands::GretilSearch {
                 query,
+                loose,
                 max_results,
+                offset,
                 max_matches_per_file,
                 json,
             } => {
                 cmd_gretil::gretil_search(
                     &query,
+                    loose,
                     max_results,
+                    offset,
                     max_matches_per_file,
                     should_output_json(global_json, json),
                 )?;
@@ -2150,13 +2428,17 @@ fn run_cli() -> i32 {
             }
             Commands::MuktabodhaSearch {
                 query,
+                loose,
                 max_results,
+                offset,
                 max_matches_per_file,
                 json,
             } => {
                 cmd_muktabodha::muktabodha_search(
                     &query,
+                    loose,
                     max_results,
+                    offset,
                     max_matches_per_file,
                     should_output_json(global_json, json),
                 )?;
@@ -2214,13 +2496,17 @@ fn run_cli() -> i32 {
             }
             Commands::SaritSearch {
                 query,
+                loose,
                 max_results,
+                offset,
                 max_matches_per_file,
                 json,
             } => {
                 cmd_sarit::sarit_search(
                     &query,
+                    loose,
                     max_results,
+                    offset,
                     max_matches_per_file,
                     should_output_json(global_json, json),
                 )?;
@@ -2277,12 +2563,14 @@ fn run_cli() -> i32 {
             Commands::ShinzenSearch {
                 query,
                 max_results,
+                offset,
                 max_matches_per_file,
                 json,
             } => {
                 cmd_shinzen::shinzen_search(
                     &query,
                     max_results,
+                    offset,
                     max_matches_per_file,
                     should_output_json(global_json, json),
                 )?;
@@ -2290,12 +2578,14 @@ fn run_cli() -> i32 {
             Commands::ShinzenPipeline {
                 query,
                 max_results,
+                offset,
                 max_matches_per_file,
                 json,
             } => {
                 cmd_shinzen::shinzen_pipeline(
                     &query,
                     max_results,
+                    offset,
                     max_matches_per_file,
                     should_output_json(global_json, json),
                 )?;
@@ -2352,12 +2642,14 @@ fn run_cli() -> i32 {
             Commands::ShokuShinzenSearch {
                 query,
                 max_results,
+                offset,
                 max_matches_per_file,
                 json,
             } => {
                 cmd_shoku_shinzen::shoku_shinzen_search(
                     &query,
                     max_results,
+                    offset,
                     max_matches_per_file,
                     should_output_json(global_json, json),
                 )?;
@@ -2365,12 +2657,14 @@ fn run_cli() -> i32 {
             Commands::ShokuShinzenPipeline {
                 query,
                 max_results,
+                offset,
                 max_matches_per_file,
                 json,
             } => {
                 cmd_shoku_shinzen::shoku_shinzen_pipeline(
                     &query,
                     max_results,
+                    offset,
                     max_matches_per_file,
                     should_output_json(global_json, json),
                 )?;
@@ -2487,23 +2781,8 @@ fn run_cli() -> i32 {
                 let default_base = default_buddha().join("xml-p5");
                 let base = root.unwrap_or(default_base.clone());
 
-                // Ensure CBETA data exists
-                if !default_base.exists() {
-                    progress!("[cbeta-index] CBETA data not found, downloading...");
-                    let ok = run(
-                        "git",
-                        &[
-                            "clone",
-                            "--depth",
-                            "1",
-                            "https://github.com/cbeta-org/xml-p5",
-                            default_base.to_string_lossy().as_ref(),
-                        ],
-                        None,
-                    );
-                    if !ok {
-                        anyhow::bail!("Failed to clone CBETA repository");
-                    }
+                if !base.exists() {
+                    anyhow::bail!("CBETA data unavailable; run buddha init or install the corpus");
                 }
 
                 let entries = build_cbeta_index(&base);
@@ -2524,12 +2803,10 @@ fn run_cli() -> i32 {
                 let default_base = default_buddha().join("tipitaka-xml");
                 let base = root.unwrap_or(default_base.clone());
 
-                // Ensure Tipitaka data exists
-                if !default_base.exists() {
-                    progress!("[tipitaka-index] Tipitaka data not found, downloading...");
-                    if !clone_tipitaka_sparse(&default_base) {
-                        anyhow::bail!("Failed to clone Tipitaka repository");
-                    }
+                if !base.exists() {
+                    anyhow::bail!(
+                        "Tipitaka data unavailable; run buddha init or install the corpus"
+                    );
                 }
 
                 let entries = build_tipitaka_index(&base);
@@ -2551,23 +2828,8 @@ fn run_cli() -> i32 {
                 let default_base = default_buddha().join("SARIT-corpus");
                 let base = root.unwrap_or(default_base.clone());
 
-                // Ensure SARIT data exists
-                if !default_base.exists() {
-                    progress!("[sarit-index] SARIT data not found, downloading...");
-                    let ok = run(
-                        "git",
-                        &[
-                            "clone",
-                            "--depth",
-                            "1",
-                            "https://github.com/sarit/SARIT-corpus.git",
-                            default_base.to_string_lossy().as_ref(),
-                        ],
-                        None,
-                    );
-                    if !ok {
-                        anyhow::bail!("Failed to clone SARIT repository");
-                    }
+                if !base.exists() {
+                    anyhow::bail!("SARIT data unavailable; run buddha init or install the corpus");
                 }
 
                 let entries = build_sarit_index(&base);
@@ -2802,6 +3064,7 @@ fn run_cli() -> i32 {
             Commands::CbetaSearch {
                 query,
                 max_results,
+                offset,
                 max_matches_per_file,
                 sort,
                 json,
@@ -2812,6 +3075,7 @@ fn run_cli() -> i32 {
                 cmd_cbeta::cbeta_search(
                     &query,
                     max_results,
+                    offset,
                     max_matches_per_file,
                     order,
                     should_output_json(global_json, json),
@@ -2819,13 +3083,17 @@ fn run_cli() -> i32 {
             }
             Commands::TipitakaSearch {
                 query,
+                loose,
                 max_results,
+                offset,
                 max_matches_per_file,
                 json,
             } => {
                 cmd_tipitaka::tipitaka_search(
                     &query,
+                    loose,
                     max_results,
+                    offset,
                     max_matches_per_file,
                     should_output_json(global_json, json),
                 )?;
@@ -2947,6 +3215,9 @@ fn run_cli() -> i32 {
                     cmd.push("-p".into());
                     cmd.push("buddha".into());
                 }
+                let install_root = default_buddha();
+                cmd.push("--root".into());
+                cmd.push(install_root.to_string_lossy().into_owned());
                 cmd.push("--locked".into());
                 cmd.push("--force".into());
                 let preview = cmd.join(" ");
@@ -2958,7 +3229,12 @@ fn run_cli() -> i32 {
                         anyhow::bail!("update failed: {}", preview);
                     }
                     // Post-install: rebuild indexes using the installed binary
-                    let ok2 = run("buddha", &["index-rebuild", "--source", "all"], None);
+                    let installed = update_installed_binary(&install_root);
+                    let ok2 = run(
+                        installed.to_string_lossy().as_ref(),
+                        &["index-rebuild", "--source", "all"],
+                        None,
+                    );
                     if !ok2 {
                         progress!("[warn] index rebuild failed after update; run: buddha index-rebuild --source all");
                     }
@@ -2995,6 +3271,7 @@ fn run_cli() -> i32 {
                     .iter()
                     .all(|(_, path, required)| !required || path.exists());
 
+                let warnings = doctor_warnings(&base);
                 if global_json {
                     let binary_status = binaries
                         .iter()
@@ -3022,6 +3299,7 @@ fn run_cli() -> i32 {
                         "{}",
                         serde_json::json!({
                             "schemaVersion": 1,
+                            "warnings": warnings,
                             "status": if ready { "ok" } else { "degraded" },
                             "buddhaDir": base,
                             "binaries": binary_status,
@@ -3046,6 +3324,9 @@ fn run_cli() -> i32 {
                             );
                         }
                     }
+                    for warning in &warnings {
+                        println!("warning: {}", warning);
+                    }
                     println!("data:");
                     for (source, path) in corpora {
                         println!(
@@ -3068,42 +3349,39 @@ fn run_cli() -> i32 {
             Commands::Uninstall { purge } => {
                 let base = default_buddha();
                 let bin = base.join("bin");
-                let cli = bin.join("buddha");
-                let cli_legacy = bin.join("daizo-cli");
-                let mcp = bin.join("buddha-mcp");
-                let mut removed: Vec<String> = Vec::new();
-                if cli.exists() {
-                    let _ = std::fs::remove_file(&cli);
-                    removed.push(cli.display().to_string());
-                }
-                if cli_legacy.exists() {
-                    let _ = std::fs::remove_file(&cli_legacy);
-                    removed.push(cli_legacy.display().to_string());
-                }
-                if mcp.exists() {
-                    let _ = std::fs::remove_file(&mcp);
-                    removed.push(mcp.display().to_string());
-                }
+                let mut targets: Vec<PathBuf> =
+                    ["buddha", "daizo-cli", "daizo", "buddha-mcp", "daizo-mcp"]
+                        .iter()
+                        .map(|name| bin.join(name))
+                        .collect();
                 if purge {
-                    let cbeta = base.join("xml-p5");
-                    let tipi = base.join("tipitaka-xml");
-                    let sarit = base.join("SARIT-corpus");
-                    let mukta = base.join("MUKTABODHA");
-                    let cache = base.join("cache");
-                    let _ = std::fs::remove_dir_all(&cbeta);
-                    let _ = std::fs::remove_dir_all(&tipi);
-                    let _ = std::fs::remove_dir_all(&sarit);
-                    let _ = std::fs::remove_dir_all(&mukta);
-                    let _ = std::fs::remove_dir_all(&cache);
-                    println!("[purge] removed data/cache under {}", base.display());
-                }
-                if removed.is_empty() {
-                    println!(
-                        "no binaries removed (nothing found under {})",
-                        bin.display()
+                    targets.extend(
+                        [
+                            "xml-p5",
+                            "tipitaka-xml",
+                            "GRETIL",
+                            "SARIT-corpus",
+                            "MUKTABODHA",
+                            "cache",
+                        ]
+                        .iter()
+                        .map(|name| base.join(name)),
                     );
-                } else {
-                    println!("removed: {}", removed.join(", "));
+                    println!("SHINZEN and SHOKU_SHINZEN are preserved, including symlinks and their targets.");
+                }
+                for path in &targets {
+                    if fs::symlink_metadata(path).is_ok() {
+                        println!("[remove] {}", path.display());
+                    }
+                }
+                for path in &targets {
+                    if let Ok(meta) = fs::symlink_metadata(path) {
+                        if meta.file_type().is_dir() {
+                            fs::remove_dir_all(path)?;
+                        } else {
+                            fs::remove_file(path)?;
+                        }
+                    }
                 }
             }
             Commands::Schema { command } => {
@@ -3117,7 +3395,18 @@ fn run_cli() -> i32 {
         Ok(()) => EXIT_OK,
         Err(e) => {
             let (code_str, exit_code) = classify_error(&e);
-            output_error(&format!("{:#}", e), code_str, global_json);
+            if let Some(recovery) = e
+                .downcast_ref::<cmd::common::RecoveryError>()
+                .filter(|_| global_json)
+            {
+                let mut value = recovery.recovery.clone();
+                cmd::common::cli_actions(&mut value);
+                value["error"] = serde_json::json!({"code":code_str,"message":recovery.message});
+                let _ = serde_json::to_writer(std::io::stderr(), &value);
+                let _ = writeln!(std::io::stderr());
+            } else {
+                output_error(&format!("{:#}", e), code_str, global_json);
+            }
             exit_code
         }
     }
@@ -3949,6 +4238,18 @@ use cmd::{
 };
 
 #[cfg(test)]
+mod update_install_tests {
+    #[test]
+    fn installed_binary_is_under_the_selected_cargo_root() {
+        let root = std::path::Path::new("/example/buddha-root");
+        assert_eq!(
+            super::update_installed_binary(root),
+            root.join("bin/buddha")
+        );
+    }
+}
+
+#[cfg(test)]
 mod argv_tests {
     use super::*;
 
@@ -4189,5 +4490,36 @@ mod tests {
             cmd::sat::SAT_SLICE_SEMANTICS,
             "start_char/end_char are offsets in extracted SAT detail text"
         );
+    }
+}
+
+#[cfg(test)]
+mod contract_alias_tests {
+    use super::*;
+    #[test]
+    fn count_aliases_and_error_priority() {
+        std::thread::Builder::new()
+            .stack_size(8 * 1024 * 1024)
+            .spawn(|| {
+                for flag in ["--max-results", "--limit", "--rows"] {
+                    assert!(
+                        Cli::try_parse_from(["buddha", "cbeta-search", "--query", "x", flag, "3"])
+                            .is_ok(),
+                        "{flag}"
+                    );
+                    assert!(
+                        Cli::try_parse_from(["buddha", "sat-search", "--query", "x", flag, "3"])
+                            .is_ok(),
+                        "{flag}"
+                    );
+                }
+                assert_eq!(
+                    classify_error(&anyhow::anyhow!("data not found")).0,
+                    "DATA_UNAVAILABLE"
+                );
+            })
+            .unwrap()
+            .join()
+            .unwrap();
     }
 }

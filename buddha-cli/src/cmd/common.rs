@@ -183,41 +183,155 @@ pub(crate) enum SearchExtra {
     Structure,
 }
 
+pub(crate) use buddha_core::annotate_grep_page as annotate_search_page;
+
+pub(crate) fn search_page_content(meta: &serde_json::Value) -> serde_json::Value {
+    let mut content = serde_json::json!({});
+    for key in [
+        "offset",
+        "totalFilesMatched",
+        "nextOffset",
+        "nextActions",
+        "warnings",
+    ] {
+        if let Some(value) = meta.get(key) {
+            content[key] = value.clone();
+        }
+    }
+    content
+}
+
 pub(crate) fn corpus_grep_summary(
     fetch_cmd: &str,
     total_matched: Option<usize>,
     pattern: &str,
+    query: &str,
     results: &[buddha_core::GrepResult],
     hint: &str,
     json: bool,
     extra: SearchExtra,
+    offset: usize,
+    continuation_args: serde_json::Value,
 ) -> anyhow::Result<()> {
+    corpus_grep_summary_inner(
+        fetch_cmd,
+        total_matched,
+        pattern,
+        query,
+        results,
+        hint,
+        json,
+        extra,
+        None,
+        offset,
+        continuation_args,
+    )
+}
+
+pub(crate) fn indic_grep_summary(
+    fetch_cmd: &str,
+    total_matched: Option<usize>,
+    pattern: &str,
+    query: &str,
+    loose: bool,
+    results: &[buddha_core::GrepResult],
+    hint: &str,
+    json: bool,
+    extra: SearchExtra,
+    offset: usize,
+    continuation_args: serde_json::Value,
+) -> anyhow::Result<()> {
+    corpus_grep_summary_inner(
+        fetch_cmd,
+        total_matched,
+        pattern,
+        query,
+        results,
+        hint,
+        json,
+        extra,
+        Some(loose),
+        offset,
+        continuation_args,
+    )
+}
+
+fn corpus_grep_summary_inner(
+    fetch_cmd: &str,
+    total_matched: Option<usize>,
+    pattern: &str,
+    query: &str,
+    results: &[buddha_core::GrepResult],
+    hint: &str,
+    json: bool,
+    extra: SearchExtra,
+    loose: Option<bool>,
+    offset: usize,
+    continuation_args: serde_json::Value,
+) -> anyhow::Result<()> {
+    let is_regex = buddha_core::text_utils::looks_like_user_regex(query)
+        || (query.contains('|')
+            && !matches!(
+                fetch_cmd,
+                "cbeta-fetch" | "shinzen-fetch" | "shoku-shinzen-fetch"
+            ));
+    let warning = "Regex matches do not cross lines. Remove regex symbols to search as a phrase.";
     if json {
         let mut meta = serde_json::json!({
-            "searchPattern": pattern,
+            "searchPattern": pattern.chars().take(200).collect::<String>(),
+            "query": query,
             "totalFiles": results.len(),
             "results": results,
-            "hint": hint
+            "hint": if total_matched.unwrap_or(results.len()) == 0 { no_results_hint(fetch_cmd) } else { hint }
         });
+        meta["queryMode"] = serde_json::json!(if is_regex { "regex" } else { "phrase" });
+        if is_regex {
+            meta["warnings"] = serde_json::json!([warning]);
+        }
+        if let Some(loose) = loose {
+            annotate_indic_search(
+                &mut meta,
+                query,
+                loose,
+                total_matched.unwrap_or(results.len()) == 0,
+            );
+        }
         if let Some(total) = total_matched {
             // Files that matched before --max-results truncation.
             meta["totalFilesMatched"] = serde_json::json!(total);
         }
-        let summary = format!(
-            "Found {} files with matches for '{}'",
+        annotate_search_page(
+            &mut meta,
+            &fetch_cmd.replace("-fetch", "_search").replace('-', "_"),
+            continuation_args,
+            offset,
+            total_matched.unwrap_or(results.len()),
             results.len(),
-            pattern
         );
+        let summary = format!("Found {} files with matches for '{}'", results.len(), query);
         let envelope = serde_json::json!({
             "jsonrpc":"2.0","id": serde_json::Value::Null,
-            "result": { "content": [{"type":"text","text": summary}], "_meta": meta }
+            "result": { "content": [{"type":"text","text": summary}], "_meta": meta, "structuredContent": search_page_content(&meta) }
         });
-        println!("{}", serde_json::to_string(&envelope)?);
+        println!("{}", cli_json(&envelope)?);
     } else {
+        if is_regex {
+            println!("# {warning}");
+        }
+        if loose == Some(false)
+            && !is_regex
+            && query.is_ascii()
+            && total_matched.unwrap_or(results.len()) == 0
+        {
+            println!("# No matches. Retry with --loose to ignore diacritics and case.");
+        }
         print!(
             "{}",
-            render_grep_text(fetch_cmd, total_matched, results, extra)
+            render_grep_text(fetch_cmd, total_matched, results, extra, offset)
         );
+        if total_matched.unwrap_or(results.len()) == 0 {
+            println!("# {}", no_results_hint(fetch_cmd));
+        }
     }
     Ok(())
 }
@@ -260,9 +374,53 @@ pub(crate) fn print_text_continuation(pagination: &serde_json::Map<String, serde
     }
 }
 
+fn no_results_hint(fetch_cmd: &str) -> &'static str {
+    if fetch_cmd == "cbeta-fetch" {
+        "No matches. Try shorter terms, variant or traditional characters, or another corpus. Japanese works in Taisho volumes 56–84 are in SAT; for Kukai and Shingon ritual works try shinzen / shoku_shinzen."
+    } else {
+        "No matches. Try shorter terms, spelling variants, or another corpus."
+    }
+}
+
+fn snippet_text(raw: &str) -> String {
+    let mut stripped = String::new();
+    let mut in_tag = false;
+    for c in raw.chars() {
+        match c {
+            '<' => in_tag = true,
+            '>' if in_tag => in_tag = false,
+            _ if !in_tag => stripped.push(c),
+            _ => {}
+        }
+    }
+    let mut out = String::new();
+    let mut space = false;
+    for c in stripped.chars() {
+        if c.is_whitespace() {
+            space = true;
+            continue;
+        }
+        if space
+            && out
+                .chars()
+                .last()
+                .is_some_and(|prev: char| !is_cjk(prev) || !is_cjk(c))
+        {
+            out.push(' ');
+        }
+        out.push(c);
+        space = false;
+    }
+    out
+}
+
+fn is_cjk(c: char) -> bool {
+    matches!(c as u32, 0x3400..=0x9fff | 0xf900..=0xfaff | 0x20000..=0x3134f)
+}
+
 /// One readable line of matched text: tags and whitespace dropped, length capped.
 pub(crate) fn plain_snippet(raw: &str, max_chars: usize) -> String {
-    let plain = buddha_core::strip_xml_tags(raw);
+    let plain = snippet_text(raw);
     if plain.chars().count() <= max_chars {
         plain
     } else {
@@ -280,28 +438,29 @@ pub(crate) fn render_grep_text(
     total_matched: Option<usize>,
     results: &[buddha_core::GrepResult],
     extra: SearchExtra,
+    offset: usize,
 ) -> String {
     use std::fmt::Write as _;
     let mut out = String::new();
     let shown: usize = results.iter().map(|r| r.total_matches).sum();
-    match total_matched {
-        Some(total) if total > results.len() => {
-            let _ = writeln!(
-                out,
-                "{} of {} matching files shown ({} hits listed, capped per file by --max-matches-per-file); raise --max-results for the rest",
-                results.len(),
-                total,
-                shown
-            );
-        }
-        _ => {
-            let _ = writeln!(
-                out,
-                "{} files, {} hits listed (capped per file by --max-matches-per-file)",
-                results.len(),
-                shown
-            );
-        }
+    if let Some(total) = total_matched {
+        let _ = writeln!(
+            out,
+            "{}",
+            buddha_core::grep_page_heading(offset, total, results.len())
+        );
+    } else {
+        let _ = writeln!(
+            out,
+            "{} files, {} hits listed{}",
+            results.len(),
+            shown,
+            if results.is_empty() {
+                ""
+            } else {
+                " (capped per file by --max-matches-per-file)"
+            }
+        );
     }
     for (i, r) in results.iter().enumerate() {
         let title = if r.title == r.file_id {
@@ -399,3 +558,211 @@ pub(crate) fn send_with_retry<T>(
     }
     None
 }
+pub fn validate_line_number(content: &str, line: usize) -> anyhow::Result<()> {
+    let total = content.lines().count();
+    if line == 0 || line > total {
+        anyhow::bail!("invalid argument: line {line} is outside valid range 1..={total}");
+    }
+    Ok(())
+}
+
+pub fn validate_line_text(content: &str, line: usize, text: &str) -> anyhow::Result<()> {
+    if text.trim().is_empty() {
+        let total = content.lines().count();
+        anyhow::bail!("line context not found for line {line}; valid range 1..={total}");
+    }
+    Ok(())
+}
+
+/// Validate the numbered TEI lines used by SHINZEN corpora.
+pub fn validate_shinzen_line(xml: &str, line: usize) -> anyhow::Result<()> {
+    let lines = buddha_core::extract_shinzen_lines(xml);
+    if lines.is_empty() {
+        anyhow::bail!("line context not found for line {line}; no numbered lines available");
+    }
+    let min = lines.iter().map(|l| l.number).min().unwrap();
+    let max = lines.iter().map(|l| l.number).max().unwrap();
+    if !lines.iter().any(|l| l.number == line) {
+        anyhow::bail!(
+            "invalid argument: line {line} is outside valid range {min}..={max} or absent"
+        );
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod shinzen_line_tests {
+    use super::validate_shinzen_line;
+
+    #[test]
+    fn checks_actual_numbered_lines() {
+        let xml = "<TEI><text><lb n=\"0\"/>first<lb n=\"2\"/>second</text></TEI>";
+        assert!(validate_shinzen_line(xml, 0).is_ok());
+        assert!(validate_shinzen_line(xml, 2).is_ok());
+        let error = validate_shinzen_line(xml, 999).unwrap_err().to_string();
+        assert!(error.contains("invalid argument"));
+        assert!(error.contains("0..=2"));
+        assert!(validate_shinzen_line(xml, 1).is_err());
+        assert!(validate_shinzen_line("<TEI/>", 0)
+            .unwrap_err()
+            .to_string()
+            .contains("not found"));
+    }
+}
+
+pub(crate) fn annotate_indic_search(
+    meta: &mut serde_json::Value,
+    query: &str,
+    loose: bool,
+    empty: bool,
+) {
+    let is_regex = buddha_core::text_utils::indic_query_is_regex(query);
+    meta["queryMode"] = serde_json::json!(if loose {
+        "loose"
+    } else if is_regex {
+        "regex"
+    } else {
+        "phrase"
+    });
+    if is_regex {
+        meta["warnings"] = serde_json::json!([
+            "Regex matches do not cross lines. Remove regex symbols to search as a phrase."
+        ]);
+    }
+    if !loose && !is_regex && query.is_ascii() && empty {
+        meta["hint"] =
+            serde_json::json!("No matches. Retry with --loose to ignore diacritics and case.");
+    }
+}
+
+#[cfg(test)]
+mod result_guidance_tests {
+    use super::*;
+
+    #[test]
+    fn snippets_preserve_word_spaces_and_join_han() {
+        assert_eq!(
+            plain_snippet("<p>bhavatu  bhavatu\ndharmaḥ</p>", 100),
+            "bhavatu bhavatu dharmaḥ"
+        );
+        assert_eq!(plain_snippet("<p>般若\n波羅蜜</p>", 100), "般若波羅蜜");
+    }
+
+    #[test]
+    fn empty_results_explain_next_steps_without_cap() {
+        let output = render_grep_text("cbeta-fetch", None, &[], SearchExtra::None, 0);
+        assert!(!output.contains("capped"));
+        assert!(no_results_hint("cbeta-fetch").contains("SAT"));
+    }
+}
+
+/// Translate action objects at the CLI output boundary, including nested legacy hints.
+pub(crate) fn cli_actions(value: &mut serde_json::Value) {
+    use serde_json::{json, Value};
+    match value {
+        Value::Array(items) => items.iter_mut().for_each(cli_actions),
+        Value::Object(obj) => {
+            if let Some(tool) = obj.get("tool").and_then(Value::as_str).map(str::to_owned) {
+                let args = obj.get("args").or_else(|| obj.get("arguments"));
+                let source = args.and_then(|a| a.get("source")).and_then(Value::as_str);
+                let mapped = if tool == "buddha_resolve" {
+                    "resolve".to_string()
+                } else if matches!(tool.as_str(), "title_search" | "work_catalog" | "fetch")
+                    && source.is_some()
+                {
+                    format!("{}_{}", source.unwrap(), tool)
+                } else {
+                    tool.clone()
+                };
+                let mut command = format!("buddha {}", mapped.replace('_', "-"));
+                if let Some(args) = obj
+                    .get("args")
+                    .or_else(|| obj.get("arguments"))
+                    .and_then(Value::as_object)
+                {
+                    for (key, value) in args {
+                        if key == "source"
+                            && matches!(tool.as_str(), "title_search" | "work_catalog" | "fetch")
+                        {
+                            continue;
+                        }
+                        let mut flag = String::new();
+                        for c in key.chars() {
+                            if c.is_uppercase() {
+                                flag.push('-');
+                                flag.extend(c.to_lowercase());
+                            } else {
+                                flag.push(c);
+                            }
+                        }
+                        match value {
+                            Value::Bool(true) => command.push_str(&format!(" --{flag}")),
+                            Value::Bool(false) | Value::Null => {}
+                            _ => {
+                                let s = value
+                                    .as_str()
+                                    .map(str::to_owned)
+                                    .unwrap_or_else(|| value.to_string());
+                                let quoted = if s
+                                    .chars()
+                                    .all(|c| c.is_alphanumeric() || "_./:@-".contains(c))
+                                {
+                                    s
+                                } else {
+                                    format!("'{}'", s.replace('\'', "'\\''"))
+                                };
+                                command.push_str(&format!(" --{flag} {quoted}"));
+                            }
+                        }
+                    }
+                }
+                obj.remove("tool");
+                obj.remove("args");
+                obj.remove("arguments");
+                obj.insert("command".into(), json!(command));
+            }
+            obj.values_mut().for_each(cli_actions);
+        }
+        _ => {}
+    }
+}
+
+pub(crate) fn cli_json(value: &serde_json::Value) -> serde_json::Result<String> {
+    let mut value = value.clone();
+    cli_actions(&mut value);
+    serde_json::to_string(&value)
+}
+
+pub(crate) fn print_operation(value: serde_json::Value, json: bool) -> anyhow::Result<()> {
+    let mut value = value;
+    cli_actions(&mut value);
+    if json {
+        println!(
+            "{}",
+            serde_json::to_string(&buddha_core::operations::response(
+                serde_json::Value::Null,
+                Ok(value)
+            ))?
+        );
+    } else {
+        println!("{}", buddha_core::operations::render(&value));
+    }
+    Ok(())
+}
+
+#[derive(Debug)]
+pub(crate) struct RecoveryError {
+    pub message: String,
+    pub recovery: serde_json::Value,
+}
+impl std::fmt::Display for RecoveryError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "{}; {}",
+            self.message,
+            cli_json(&self.recovery).map_err(|_| std::fmt::Error)?
+        )
+    }
+}
+impl std::error::Error for RecoveryError {}

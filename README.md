@@ -77,15 +77,20 @@ Unified MCP tools are enabled by default (`BUDDHA_UNIFIED_TOOLS=0` disables them
 
 | Tool | Purpose |
 |------|---------|
-| `fetch` | Retrieve text by ID, `useid`, `lineno`, query, line number, section, or character range |
-| `search` | Full-text search in `cbeta`, `tipitaka`, `gretil`, `sarit`, `muktabodha`, `shinzen`, `shoku_shinzen`, `sat`, or `jozen` |
+| `fetch` | Retrieve one ID, or up to 10 local `ids` with per-ID `ID@lb` / `ID:line` locators (batch default: 2000 characters each) |
+| `verify` | Check a quotation against corrected local text; return exact/variant/partial/not_found, location and citation |
+| `search` | Omit source for concurrent local search selected by query script; explicit `all` searches all installed local corpora. Individual sources and online SAT/Jozen remain available |
 | `work_catalog` | Find works by title/author in `shinzen` or `shoku_shinzen`; returns `SZW`/`SKZW` entries and executable next actions |
 | `title_search` | Title search in local indexed corpora |
 | `pipeline` | Search plus optional auto-fetch for supported corpora; prefer explicit `search` → returned `nextAction` for normal retrieval |
 | `resolve` | Crosswalk a human title/alias/ID to candidate corpus IDs and next fetch calls |
 | `tibetan_search` | Tibetan online full-text search; kept standalone |
 
-`info` and `profile` remain callable diagnostics but are hidden from the default model tool list to save schema tokens and avoid accidental benchmarking. Set `BUDDHA_MCP_DIAGNOSTIC_TOOLS=1` to list them. Tool definitions use bounded JSON Schemas and read-only annotations; results keep text in `content` and expose status, cursors, citations, errors, and executable `nextActions` in compact `structuredContent`.
+Cross-corpus CLI search accepts omitted `--source` or `--source local` for script selection: Han/kana searches CBETA/SHINZEN/SHOKU_SHINZEN; Latin (including diacritics) searches Tipitaka/GRETIL/SARIT/MUKTABODHA. Mixed queries search both groups; explicit `all` disables selection. Each corpus reports its total matching files and up to three hits, bounded by the overall `--max-results`; absent corpora are `skipped`. Online databases are separate next actions. MCP uses omitted `source` or `source: "all"`.
+
+`verify` uses corrected fetch text and phrase matching rules, including punctuation and annotated reading aids. It lists variant character pairs, reports `locationMismatch` when a supplied locator differs, and returns the longest matching substring for `partial` (at least two characters and half the quote); weaker matches are `not_found` with search actions. Only local corpora are supported. Batch fetch keeps successful entries when another ID fails; `maxChars` applies to each item. CLI JSON actions contain runnable `command` strings; MCP actions retain `tool` and `args`.
+
+`info` and `profile` remain callable diagnostics but are hidden from the default model tool list to save schema tokens and avoid accidental benchmarking. Set `BUDDHA_MCP_DIAGNOSTIC_TOOLS=1` to list them. Tool definitions use bounded JSON Schemas and read-only annotations; results expose text in both `content` and `structuredContent.text`, alongside status, cursors, citations, errors, and executable `nextActions` in `structuredContent`.
 
 Legacy corpus-specific tools are still available when unified mode is disabled or when an older client has cached tool names, for example `cbeta_fetch`, `cbeta_search`, `gretil_pipeline`, `sat_detail`, `jozen_fetch`, and `buddha_version`.
 
@@ -95,9 +100,16 @@ CBETA CLI fetch and unified MCP fetch default to readable text without the TEI h
 
 Use `buddha doctor --json` for a machine-readable inventory of installed binaries and all local corpus paths; each item has an explicit `available` boolean.
 
+Local search, fetch and index commands never download corpora. Use `buddha init` or the installer for supported corpora; SHINZEN and SHOKU_SHINZEN require separate local data. `doctor` reports potential cleanup issues without deleting files. `buddha update --yes` installs into `$BUDDHA_DIR/bin` and uses that binary for the index rebuild.
+
 Direct fetch when you already know the ID:
 
 ```bash
+buddha --text search 六大無礙 --max-results 6
+buddha search dharma --source all --json
+buddha verify --id T08n0235 --quote 応無所住而生其心 --json
+buddha verify --id T08n0235 --quote 應無所住而生其心 --lb 0750a01 --json
+buddha --text fetch T08n0235@0749c22 SZ13p0006:12 T9999
 buddha cbeta-fetch --id T0262 --max-chars 4000 --json
 buddha tipitaka-fetch --id DN1 --max-chars 2000 --json
 buddha gretil-fetch --id saddharmapuNDarIka --max-chars 4000 --json
@@ -118,7 +130,7 @@ Search content and fetch context:
 
 ```bash
 buddha cbeta-search --query "阿弥陀" --max-results 10 --json
-buddha cbeta-fetch --id T0858 --line-number 342 --context-before 2 --context-after 6 --highlight "阿弥陀" --json
+buddha cbeta-fetch --id T235 --line-number 111 --context-before 2 --context-after 6 --highlight "須菩提" --json
 buddha tipitaka-search --query "nibbana|vipassana" --max-results 15 --json
 buddha gretil-search --query "dharma" --max-results 10 --json
 buddha shinzen-search --query "法身偈" --max-results 10 --json
@@ -128,6 +140,10 @@ buddha shinzen-fetch --id SZW0001 --json
 buddha shoku-shinzen-work-catalog --query "<work-or-author>" --json
 buddha shoku-shinzen-fetch --id SKZW0001 --max-chars 2000 --json
 ```
+
+Local corpus searches and pipelines accept `--offset N` (default 0; MCP `offset`, with `offs` as a local alias), skip N sorted matching files, and return `totalFilesMatched`, `nextOffset` and a continuation search action when more files remain; an offset at or beyond the total returns an empty page with a warning.
+
+Local CLI search responses report `_meta.queryMode` as `phrase` or `regex`. Regex matches do not cross lines; remove regex symbols to search as a phrase. Line-context fetches reject out-of-range or empty results and report the valid XML line range.
 
 Fetching a `SZW` work ID (from `shinzen-work-catalog`) resolves to the work's first page automatically (`_meta.resolvedFromWork`). SHINZEN JSON responses include best-effort `biblio` metadata for search hits and fetch results. It derives work title/author from public catalog records such as CiNii and NTU Buddhist Digital Library, plus local global TOC images, opening titles, running titles, and colophons, not from the TEI header. Fetch results also include `work` metadata from the precomputed `shinzen-work-catalog.json` and a ready-to-quote `_meta.preferredCitation` (for example 頼瑜『即身成佛義顯得鈔』、真言宗全書 第13巻 047頁). Use `confidence` to decide whether the generated `citation` is citable; catalog entries carry `medium`, `range-only`, or `metadata-only`, where `metadata-only` means the work is citable (title/author verified) but its page range is unresolved, so search within SHINZEN instead of fetching by work ID. Unresolved hits keep page-level citation and a warning.
 
@@ -213,6 +229,8 @@ JSON errors are written to stderr as:
 
 CBETA, Tipitaka, GRETIL, SARIT and MUKTABODHA fetches require `--id` or `--query`; ID takes precedence when both are supplied. Missing text exits 10, and invalid arguments exit 2 with `INVALID_ARGUMENT` in JSON mode. Their slice metadata uses Unicode character offsets measured before highlighting; continue from `result._meta.nextStartChar` when present. `--full`, where supported, ignores slice offsets.
 
+Tipitaka/GRETIL/SARIT/MUKTABODHA literal searches equate NFC/NFD and `ṃ`/`ṁ`; `--loose` (also `gretil-pipeline`, MCP `loose:true`) ignores Latin diacritics and case, accepts Harvard-Kyoto, and returns `queryMode:"loose"`; regex + loose is invalid, and zero-hit ASCII literals suggest retrying with loose mode.
+
 MCP tool failures instead return `result.isError: true` with machine-readable `structuredContent.error` / `_meta.error` (`category`, `code`, `field`, `retryable`) and, when safe, executable `nextActions`. Do not retry unchanged arguments when `retryable` is false. When it is true, retry at most once after a short delay; if that fails, stop and report.
 
 Exit codes:
@@ -257,6 +275,7 @@ Useful environment variables:
 | `BUDDHA_MCP_AUTO_FILES` | Default number of auto-fetched files |
 | `BUDDHA_MCP_AUTO_MATCHES` | Default matches per auto-fetched file |
 | `BUDDHA_MCP_INLINE_MAX_CHARS` | Inline MCP text limit before spilling to `cache/mcp-spill/`; `0` disables |
+| `BUDDHA_MCP_STRUCTURED_TEXT` | Set to `0` to omit `structuredContent.text` (default: included) |
 | `BUDDHA_HL_PREFIX`, `BUDDHA_HL_SUFFIX` | Highlight markers |
 | `BUDDHA_SNIPPET_PREFIX`, `BUDDHA_SNIPPET_SUFFIX` | Pipeline snippet markers |
 | `BUDDHA_REPO_MIN_DELAY_MS`, `BUDDHA_REPO_USER_AGENT`, `BUDDHA_REPO_RESPECT_ROBOTS` | Data download politeness controls |

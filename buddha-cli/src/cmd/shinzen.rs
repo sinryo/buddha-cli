@@ -26,7 +26,7 @@ pub(crate) fn print_shinzen_missing(json: bool) -> anyhow::Result<()> {
                 }
             }
         });
-        println!("{}", serde_json::to_string(&envelope)?);
+        println!("{}", super::common::cli_json(&envelope)?);
     } else {
         println!("{}", SHINZEN_MISSING_MESSAGE);
     }
@@ -124,8 +124,11 @@ pub fn shinzen_work_catalog(
                 }
             }
         });
-        println!("{}", serde_json::to_string(&envelope)?);
+        println!("{}", super::common::cli_json(&envelope)?);
     } else {
+        if results.is_empty() {
+            println!("0 件。題の一部や著者で検索するか、buddha shinzen-search で本文を検索してください。");
+        }
         for entry in results {
             let author = entry.author.as_deref().unwrap_or("著者未詳");
             println!(
@@ -149,21 +152,21 @@ pub fn shinzen_title_search(query: &str, limit: usize, json: bool) -> anyhow::Re
 pub fn shinzen_search(
     query: &str,
     max_results: usize,
+    offset: usize,
     max_matches_per_file: usize,
     json: bool,
 ) -> anyhow::Result<()> {
     if !shinzen_library_available() {
         return print_shinzen_missing(json);
     }
-    let mut results = shinzen_grep(
+    let results = shinzen_grep(
         &shinzen_kunten_tei_root(),
         query,
         usize::MAX,
         max_matches_per_file,
     );
     // Search every page, then cut, so the text view can say how many matched.
-    let total = results.len();
-    results.truncate(max_results);
+    let (mut results, total) = buddha_core::paginate_grep_results(results, offset, max_results);
     buddha_core::apply_shinzen_work_titles(
         &mut results,
         &load_or_build_shinzen_work_catalog_cli(),
@@ -173,10 +176,13 @@ pub fn shinzen_search(
         "shinzen-fetch",
         Some(total),
         query,
+        query,
         &results,
         "Use shinzen-fetch with id + lineNumber for context",
         json,
         super::common::SearchExtra::None,
+        offset,
+        serde_json::json!({"query":query,"maxResults":max_results,"maxMatchesPerFile":max_matches_per_file}),
     )
 }
 
@@ -227,7 +233,7 @@ fn print_shinzen_work_metadata_only(
                 }
             }
         });
-        println!("{}", serde_json::to_string(&envelope)?);
+        println!("{}", super::common::cli_json(&envelope)?);
     } else {
         println!("{}", hint);
     }
@@ -287,26 +293,13 @@ pub fn shinzen_fetch(args: &crate::Commands) -> anyhow::Result<()> {
 
         let path = resolve_shinzen_path_cli(resolved_id.as_deref(), query.as_deref());
         if path.as_os_str().is_empty() || !path.exists() {
-            if *json {
-                let envelope = serde_json::json!({
-                    "jsonrpc":"2.0","id": serde_json::Value::Null,
-                    "result": {
-                        "content": [{"type":"text","text": "真言宗全書で本文を特定できませんでした。"}],
-                        "isError": true,
-                        "_meta": {
-                            "error": {"category":"not_found","code":"text_not_found","field":"id","retryable":false},
-                            "nextActions": [{"tool":"shinzen_work_catalog","args":{"query": id.as_deref().or(query.as_deref()).unwrap_or(""),"limit":10}}]
-                        }
-                    }
-                });
-                println!("{}", serde_json::to_string(&envelope)?);
-            } else {
-                println!("not found");
-            }
-            return Ok(());
+            anyhow::bail!("shinzen text not found");
         }
 
         let xml = std::fs::read_to_string(&path).unwrap_or_default();
+        if let Some(line) = line_number {
+            super::common::validate_shinzen_line(&xml, *line)?;
+        }
         let output_format = format.as_deref().unwrap_or("plain");
         let (text, extraction_method) = if output_format == "tei" {
             (xml.clone(), "tei".to_string())
@@ -320,6 +313,18 @@ pub fn shinzen_fetch(args: &crate::Commands) -> anyhow::Result<()> {
         } else {
             (extract_shinzen_text(&xml), "full".to_string())
         };
+
+        if let Some(line) = line_number {
+            if output_format != "tei"
+                && !text.lines().any(|item| {
+                    item.split_once(']')
+                        .map(|(_, body)| !body.trim().is_empty())
+                        .unwrap_or(false)
+                })
+            {
+                anyhow::bail!("line context not found for line {line}");
+            }
+        }
 
         let slice = SliceArgs {
             page: *page,
@@ -365,11 +370,15 @@ pub fn shinzen_fetch(args: &crate::Commands) -> anyhow::Result<()> {
                     idx.iter()
                         .find(|entry| entry.path == canonical.to_string_lossy())
                 });
-            let biblio = resolve_shinzen_bibliography_for_path(&shinzen_kunten_tei_root(), &path);
+            let mut biblio =
+                resolve_shinzen_bibliography_for_path(&shinzen_kunten_tei_root(), &path);
             let work = biblio.as_ref().and_then(|b| {
                 let catalog = load_or_build_shinzen_work_catalog_cli();
                 find_shinzen_work_for_bibliography(&catalog, b)
             });
+            if let (Some(b), Some(w)) = (biblio.as_mut(), work.as_ref()) {
+                buddha_core::apply_shinzen_catalog_bibliography(b, w);
+            }
             let preferred_citation = biblio
                 .as_ref()
                 .map(|b| shinzen_preferred_citation(b, work.as_ref()));
@@ -413,7 +422,7 @@ pub fn shinzen_fetch(args: &crate::Commands) -> anyhow::Result<()> {
                 "jsonrpc":"2.0","id": serde_json::Value::Null,
                 "result": { "content": [{"type":"text","text": sliced}], "_meta": meta }
             });
-            println!("{}", serde_json::to_string(&envelope)?);
+            println!("{}", super::common::cli_json(&envelope)?);
         } else {
             println!("{}", sliced);
         }
@@ -424,8 +433,9 @@ pub fn shinzen_fetch(args: &crate::Commands) -> anyhow::Result<()> {
 pub fn shinzen_pipeline(
     query: &str,
     max_results: usize,
+    offset: usize,
     max_matches_per_file: usize,
     json: bool,
 ) -> anyhow::Result<()> {
-    shinzen_search(query, max_results, max_matches_per_file, json)
+    shinzen_search(query, max_results, offset, max_matches_per_file, json)
 }

@@ -1,5 +1,6 @@
 use buddha_core::text_utils::{
-    highlight_text, phrase_regex_literal, ws_cjk_variant_fuzzy_regex_literal, TEXT_PHRASE_GAP,
+    highlight_text, looks_like_user_regex, phrase_regex_literal,
+    ws_cjk_variant_fuzzy_regex_literal, TEXT_PHRASE_GAP,
 };
 
 pub fn ws_fuzzy_regex(s: &str) -> String {
@@ -28,10 +29,6 @@ pub enum FuzzyMode {
     Whitespace,
 }
 
-fn looks_like_regex(s: &str) -> bool {
-    s.chars().any(|c| ".+*?[](){}|\\".contains(c))
-}
-
 /// Fold the duplicated query/highlight-pattern compilation heuristic into one call.
 ///
 /// Returns `(pattern, is_regex)`. The pattern is emitted verbatim (e.g. JSON
@@ -51,14 +48,17 @@ pub fn compile_query(
     require_whitespace: bool,
 ) -> (String, bool) {
     let ws_ok = !require_whitespace || input.chars().any(|c| c.is_whitespace());
-    if !already_regex && !looks_like_regex(input) && ws_ok {
+    if !already_regex && !looks_like_user_regex(input) && !input.contains('|') && ws_ok {
         let pat = match mode {
             FuzzyMode::CjkVariant => ws_cjk_variant_fuzzy_regex_literal(input),
             FuzzyMode::Whitespace => ws_fuzzy_regex(input),
         };
         (pat, true)
     } else {
-        (input.to_string(), already_regex)
+        (
+            input.to_string(),
+            already_regex || looks_like_user_regex(input) || input.contains('|'),
+        )
     }
 }
 
@@ -77,11 +77,13 @@ pub fn apply_highlight(
         FuzzyMode::CjkVariant => false,
         FuzzyMode::Whitespace => true,
     };
-    let (mut hpat, hl_is_regex) = compile_query(hpat0, fuzzy, highlight_regex, require_whitespace);
+    let (mut hpat, mut hl_is_regex) =
+        compile_query(hpat0, fuzzy, highlight_regex, require_whitespace);
     if matches!(fuzzy, FuzzyMode::CjkVariant) && !highlight_regex {
         // Literal CJK highlights may cross the line breaks/punctuation of extracted text.
         if let Some(p) = phrase_regex_literal(hpat0, TEXT_PHRASE_GAP) {
             hpat = p;
+            hl_is_regex = true;
         }
     }
     let hpre = prefix.unwrap_or(">>> ");
@@ -92,4 +94,27 @@ pub fn apply_highlight(
         .map(|p| serde_json::json!({"startChar": p.start_char, "endChar": p.end_char}))
         .collect();
     (decorated, count, hl_positions)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn anchors_are_recognized_and_alternatives_are_highlighted() {
+        assert_eq!(
+            compile_query("^abc$", FuzzyMode::CjkVariant, false, false).0,
+            "^abc$"
+        );
+        let (text, count, _) = apply_highlight(
+            "應無所住而生其心 須菩提",
+            Some("應無所住而生其心|須菩提"),
+            false,
+            None,
+            None,
+            FuzzyMode::CjkVariant,
+        );
+        assert_eq!(count, 2);
+        assert!(text.contains(">>> 須菩提 <<<"));
+    }
 }

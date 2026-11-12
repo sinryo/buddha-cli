@@ -111,17 +111,6 @@ else
   fi
 fi
 
-echo -e "\033[36m🗂️  Cleaning up old installation... / 古いインストールをクリーンアップ中... / 正在清理舊安裝...\033[0m"
-if [ -d "$BIN_OUT" ]; then
-  echo "[cleanup] removing existing directory: $BIN_OUT"
-  rm -rf "$BIN_OUT"
-  echo -e "\033[32m✅ Old installation cleaned up / 古いインストールのクリーンアップ完了 / 舊安裝清理完成\033[0m"
-else
-  echo "[cleanup] no existing bin directory found"
-fi
-
-mkdir -p "$BIN_OUT"
-
 echo -e "\033[36m🔨 Building Rust project... / Rustプロジェクトをビルドしています... / 正在構建Rust項目...\033[0m"
 echo "[build] cargo build --release -p buddha"
 (
@@ -136,8 +125,14 @@ if [ ! -x "$CLI_SRC" ]; then
   echo "[error] missing binary: $CLI_SRC" >&2
   exit 1
 fi
+mkdir -p "$BIN_OUT"
 echo "[install] copy buddha -> $BIN_OUT"
-cp -f "$CLI_SRC" "$BIN_OUT/buddha"
+CLI_TMP="$(mktemp "$BIN_OUT/.buddha.XXXXXXXX")"
+trap 'rm -f "$CLI_TMP"' EXIT
+cp -f "$CLI_SRC" "$CLI_TMP"
+chmod 755 "$CLI_TMP"
+mv -f "$CLI_TMP" "$BIN_OUT/buddha"
+trap - EXIT
 
 # Primary MCP alias
 ALIAS="$BIN_OUT/buddha-mcp"

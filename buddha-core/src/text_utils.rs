@@ -1,8 +1,108 @@
 use crate::IndexEntry;
-use regex::Regex;
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
 use unicode_normalization::UnicodeNormalization;
+
+/// Compile a Pali/Sanskrit literal without changing the searched text or its offsets.
+/// NFC/NFD spellings and the two niggahita dots are equivalent. Loose matching
+/// additionally folds Latin diacritics and case (including Harvard-Kyoto letters).
+/// User regexes are preserved; callers must reject regex + loose before calling.
+pub fn indic_query_pattern(query: &str, loose: bool) -> String {
+    if indic_query_is_regex(query) {
+        return query.to_owned();
+    }
+    static LATIN: std::sync::OnceLock<Vec<(char, char)>> = std::sync::OnceLock::new();
+    let latin = LATIN.get_or_init(|| {
+        (0..=0x1eff)
+            .filter_map(char::from_u32)
+            .filter_map(|ch| {
+                let base: String = ch
+                    .to_string()
+                    .nfd()
+                    .filter(|c| !unicode_normalization::char::is_combining_mark(*c))
+                    .flat_map(char::to_lowercase)
+                    .collect();
+                let mut chars = base.chars();
+                let base = chars.next()?;
+                (base.is_ascii_alphabetic() && chars.next().is_none()).then_some((ch, base))
+            })
+            .collect()
+    });
+    let mut out = String::from("(?i)");
+    let mut in_ws = false;
+    for ch in query.nfc() {
+        if loose && unicode_normalization::char::is_combining_mark(ch) {
+            continue;
+        }
+        if ch.is_whitespace() {
+            if !in_ws {
+                out.push_str("\\s*");
+            }
+            in_ws = true;
+            continue;
+        }
+        in_ws = false;
+        let variants: Vec<char> = if loose {
+            let base: String = ch
+                .to_string()
+                .nfd()
+                .filter(|c| !unicode_normalization::char::is_combining_mark(*c))
+                .flat_map(char::to_lowercase)
+                .collect();
+            if base.len() == 1 && base.as_bytes()[0].is_ascii_alphabetic() {
+                let base = base.chars().next().unwrap();
+                // HK z/S, G/J etc. collapse to the same broad loose classes.
+                let hk_base = match ch {
+                    'G' | 'J' => 'n',
+                    'z' => 's',
+                    _ => base,
+                };
+                latin
+                    .iter()
+                    .filter(|(_, b)| *b == base || *b == hk_base)
+                    .map(|(c, _)| *c)
+                    .collect()
+            } else {
+                vec![ch]
+            }
+        } else {
+            match ch {
+                'ṃ' | 'ṁ' => vec!['ṃ', 'ṁ'],
+                'Ṃ' | 'Ṁ' => vec!['Ṃ', 'Ṁ'],
+                _ => vec![ch],
+            }
+        };
+        let mut alternatives = Vec::new();
+        for variant in variants {
+            alternatives.push(regex::escape(&variant.to_string()));
+            let decomposed: Vec<char> = variant.to_string().nfd().collect();
+            // Include partially composed spellings too, e.g. ṝ = ṛ + macron.
+            for split in 1..=decomposed.len() {
+                let spelling: String = decomposed[..split]
+                    .iter()
+                    .copied()
+                    .nfc()
+                    .chain(decomposed[split..].iter().copied())
+                    .collect();
+                alternatives.push(regex::escape(&spelling));
+            }
+        }
+        alternatives.sort();
+        alternatives.dedup();
+        out.push_str("(?:");
+        out.push_str(&alternatives.join("|"));
+        out.push(')');
+        if loose && ch.is_alphabetic() {
+            // Also accept decomposed diacritics on an otherwise plain base letter.
+            out.push_str("\\p{M}*");
+        }
+    }
+    out
+}
+
+pub fn indic_query_is_regex(query: &str) -> bool {
+    looks_like_user_regex(query) || query.contains('|')
+}
 
 /// Normalize string for general matching: NFKD + lower + CJK harmonization + alnum only
 pub fn normalized(s: &str) -> String {
@@ -1099,8 +1199,16 @@ pub fn find_highlight_positions(text: &str, pattern: &str, is_regex: bool) -> Ve
     if pattern.is_empty() {
         return out;
     }
-    if is_regex {
-        if let Ok(re) = Regex::new(pattern) {
+    {
+        let pat = if is_regex {
+            pattern.to_owned()
+        } else {
+            regex::escape(pattern)
+        };
+        if let Ok(re) = regex::RegexBuilder::new(&pat)
+            .case_insensitive(true)
+            .build()
+        {
             for m in re.find_iter(text) {
                 let sb = m.start();
                 let eb = m.end();
@@ -1111,18 +1219,6 @@ pub fn find_highlight_positions(text: &str, pattern: &str, is_regex: bool) -> Ve
                     end_char: ec,
                 });
             }
-        }
-    } else {
-        let mut i = 0usize;
-        while let Some(pos) = text[i..].find(pattern) {
-            let abs = i + pos;
-            let sc = text[..abs].chars().count();
-            let ec = sc + pattern.chars().count();
-            out.push(HighlightPos {
-                start_char: sc,
-                end_char: ec,
-            });
-            i = abs + pattern.len();
         }
     }
     out
@@ -1143,8 +1239,16 @@ pub fn highlight_text(
     if positions.is_empty() {
         return (text.to_string(), 0, positions);
     }
-    if is_regex {
-        if let Ok(re) = Regex::new(pattern) {
+    {
+        let pat = if is_regex {
+            pattern.to_owned()
+        } else {
+            regex::escape(pattern)
+        };
+        if let Ok(re) = regex::RegexBuilder::new(&pat)
+            .case_insensitive(true)
+            .build()
+        {
             let mut count = 0usize;
             let replaced = re.replace_all(text, |caps: &regex::Captures| {
                 count += 1;
@@ -1153,21 +1257,7 @@ pub fn highlight_text(
             return (replaced.into_owned(), count, positions);
         }
     }
-    // literal replace
-    let mut out = String::with_capacity(text.len());
-    let mut j = 0usize;
-    let mut count = 0usize;
-    while let Some(pos) = text[j..].find(pattern) {
-        let abs = j + pos;
-        out.push_str(&text[j..abs]);
-        out.push_str(prefix);
-        out.push_str(pattern);
-        out.push_str(suffix);
-        j = abs + pattern.len();
-        count += 1;
-    }
-    out.push_str(&text[j..]);
-    (out, count, positions)
+    (text.to_string(), 0, positions)
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -1181,6 +1271,17 @@ mod tests {
     use super::*;
     use crate::IndexEntry;
     use std::collections::BTreeMap;
+
+    #[test]
+    fn highlights_ignore_case_and_preserve_original_text() {
+        for is_regex in [false, true] {
+            let (text, count, positions) =
+                highlight_text("Saṃgha SAṂGHA", "saṃgha", is_regex, "[", "]");
+            assert_eq!(text, "[Saṃgha] [SAṂGHA]");
+            assert_eq!(count, 2);
+            assert_eq!(positions.len(), 2);
+        }
+    }
 
     #[test]
     fn normalized_cjk_variants() {
@@ -1269,5 +1370,43 @@ mod tests {
         };
         let s = compute_match_score(&e, "DN1", true);
         assert!(s >= 0.95, "expected alias boost >= 0.95, got {}", s);
+    }
+}
+
+#[cfg(test)]
+mod indic_tests {
+    use super::*;
+
+    #[test]
+    fn indic_patterns_preserve_accents_by_default_and_fold_only_when_loose() {
+        for (q, text) in [
+            ("saṁghātaṁ", "saṃghātaṃ"),
+            ("saṃgha\u{304}taṃ", "saṁgha\u{304}taṁ"),
+            ("ā", "a\u{304}"),
+            ("ṝ", "ṛ\u{304}"),
+        ] {
+            assert!(regex::Regex::new(&indic_query_pattern(q, false))
+                .unwrap()
+                .is_match(text));
+        }
+        assert!(!regex::Regex::new(&indic_query_pattern("samghatam", false))
+            .unwrap()
+            .is_match("saṃghātaṃ"));
+        for (q, text) in [
+            ("samghatam", "saṃghātaṃ"),
+            ("saMghAtaM", "saṁgha\u{304}taṁ"),
+            ("a i u r l m n s t d h", "ā ī ū ṝ ḹ ṁ ṇ ṣ ṭ ḍ ḥ"),
+            ("GJzS", "ṅñśṣ"),
+            ("GURU", "guru"),
+            ("b\u{304}", "b"),
+        ] {
+            assert!(
+                regex::Regex::new(&indic_query_pattern(q, true))
+                    .unwrap()
+                    .is_match(text),
+                "{q}/{text}"
+            );
+        }
+        assert_eq!(indic_query_pattern("^dharma.*$", false), "^dharma.*$");
     }
 }

@@ -4,7 +4,9 @@ use crate::{
     SliceArgs,
 };
 use buddha_core::path_resolver::cbeta_root;
-use buddha_core::{extract_cbeta_juan_plain, extract_cbeta_plain_from_xml, list_heads_cbeta};
+use buddha_core::{
+    cbeta_citation, extract_cbeta_juan_plain, extract_cbeta_plain_from_xml, list_heads_cbeta,
+};
 
 /// Pattern actually handed to the matcher: literal queries become markup/line-break
 /// tolerant phrases; regex input (and the displayed `searchPattern`) stays as compiled.
@@ -70,7 +72,12 @@ pub fn cbeta_fetch(args: &crate::Commands) -> anyhow::Result<()> {
                 .as_deref()
                 .and_then(buddha_core::path_resolver::cbeta_missing_hint)
                 .unwrap_or_else(|| "check --id or --query".to_string());
-            anyhow::bail!("cbeta text not found; {}", hint);
+            let recovery = buddha_core::operations::cbeta_recovery(id.as_deref().unwrap_or(""));
+            return Err(super::common::RecoveryError {
+                message: format!("cbeta text not found; {}", hint),
+                recovery,
+            }
+            .into());
         }
         let xml = decode_xml_bytes(&std::fs::read(&path)?);
         let lb_line = match lb.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
@@ -84,6 +91,7 @@ pub fn cbeta_fetch(args: &crate::Commands) -> anyhow::Result<()> {
         let mut lb_range: Option<(String, Option<String>)> = None;
         let mut line_lbs: Vec<String> = Vec::new();
         let (text, extraction_method, part_matched) = if let Some(line_num) = line_number {
+            super::common::validate_line_number(&xml, *line_num)?;
             let before = context_lines.unwrap_or(*context_before);
             let after = context_lines.unwrap_or(*context_after);
             let raw =
@@ -130,6 +138,9 @@ pub fn cbeta_fetch(args: &crate::Commands) -> anyhow::Result<()> {
                 false,
             )
         };
+        if let Some(line_num) = line_number {
+            super::common::validate_line_text(&xml, *line_num, &text)?;
+        }
         let slice = SliceArgs {
             page: *page,
             page_size: *page_size,
@@ -210,7 +221,7 @@ pub fn cbeta_fetch(args: &crate::Commands) -> anyhow::Result<()> {
                 "jsonrpc":"2.0","id": serde_json::Value::Null,
                 "result": { "content": [{"type":"text","text": sliced}], "_meta": meta }
             });
-            println!("{}", serde_json::to_string(&envelope)?);
+            println!("{}", super::common::cli_json(&envelope)?);
         } else if crate::text_mode() {
             let file_id = file_stem(&path);
             let mut head = file_id.clone();
@@ -258,59 +269,9 @@ fn cbeta_line_of_lb(xml: &str, lb: &str) -> Option<usize> {
     Some(xml[..m.start()].matches('\n').count() + 1)
 }
 
-/// Taishō-style citation `No. 235, T08p749a12-17` (page, column a/b/c, line; the end
-/// repeats only what changes: `-17`, `-b03`, `-750a02`).
-pub(crate) fn cbeta_citation(
-    file_id: &str,
-    lb_start: &str,
-    lb_end: Option<&str>,
-) -> Option<String> {
-    let (canon_vol, no) = file_id.split_once('n')?;
-    let no = no.trim_start_matches('0');
-    let split = |lb: &str| -> Option<(String, char, String)> {
-        let pos = lb.find(|c: char| c.is_ascii_alphabetic())?;
-        let (page, rest) = lb.split_at(pos);
-        let mut chars = rest.chars();
-        let col = chars.next()?;
-        let page = page.trim_start_matches('0');
-        Some((format!("{:0>3}", page), col, chars.as_str().to_string()))
-    };
-    let (p1, c1, l1) = split(lb_start)?;
-    let end = match lb_end.and_then(split) {
-        Some((p2, c2, l2)) if p2 == p1 && c2 == c1 => format!("-{}", l2),
-        Some((p2, c2, l2)) if p2 == p1 => format!("-{}{}", c2, l2),
-        Some((p2, c2, l2)) => format!("-{}{}{}", p2, c2, l2),
-        None => String::new(),
-    };
-    Some(format!(
-        "No. {}, {}p{}{}{}{}",
-        no, canon_vol, p1, c1, l1, end
-    ))
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn citation_ranges() {
-        assert_eq!(
-            cbeta_citation("T08n0235", "0749a13", Some("0749a16")).as_deref(),
-            Some("No. 235, T08p749a13-16")
-        );
-        assert_eq!(
-            cbeta_citation("T19n0924A", "0749a29", Some("0749b03")).as_deref(),
-            Some("No. 924A, T19p749a29-b03")
-        );
-        assert_eq!(
-            cbeta_citation("T18n0873", "0336c24", Some("0337a06")).as_deref(),
-            Some("No. 873, T18p336c24-337a06")
-        );
-        assert_eq!(
-            cbeta_citation("T18n0848", "0046c01", None).as_deref(),
-            Some("No. 848, T18p046c01")
-        );
-    }
 
     #[test]
     fn lb_line_lookup() {
@@ -324,6 +285,7 @@ pub fn cbeta_pipeline(args: &crate::Commands) -> anyhow::Result<()> {
     if let crate::Commands::CbetaPipeline {
         query,
         max_results,
+        offset,
         max_matches_per_file,
         context_before,
         context_after,
@@ -349,15 +311,14 @@ pub fn cbeta_pipeline(args: &crate::Commands) -> anyhow::Result<()> {
         let (results, _) = buddha_core::cbeta_grep_ordered(
             &root,
             &cbeta_match_pattern(query, &q),
-            *max_results,
+            usize::MAX,
             *max_matches_per_file,
             buddha_core::GrepOrder::Canon,
         );
-        let mut summary = format!(
-            "Found {} files with matches for '{}':\n\n",
-            results.len(),
-            q
-        );
+
+        let (results, total) = buddha_core::paginate_grep_results(results, *offset, *max_results);
+        let mut summary = buddha_core::grep_page_heading(*offset, total, results.len());
+        summary.push_str("\n\n");
         let mut suggestions: Vec<serde_json::Value> = Vec::new();
         for (i, result) in results.iter().enumerate() {
             summary.push_str(&format!(
@@ -392,6 +353,14 @@ pub fn cbeta_pipeline(args: &crate::Commands) -> anyhow::Result<()> {
             "results": results,
             "fetchSuggestions": suggestions
         });
+        super::common::annotate_search_page(
+            &mut meta,
+            "cbeta_search",
+            serde_json::json!({"query":query,"maxResults":max_results,"maxMatchesPerFile":max_matches_per_file}),
+            *offset,
+            total,
+            results.len(),
+        );
         if *autofetch {
             let take_files = auto_fetch_files.unwrap_or(1).min(results.len());
             let mut fetched: Vec<serde_json::Value> = Vec::new();
@@ -565,9 +534,9 @@ pub fn cbeta_pipeline(args: &crate::Commands) -> anyhow::Result<()> {
         if *json {
             let envelope = serde_json::json!({
                 "jsonrpc":"2.0","id": serde_json::Value::Null,
-                "result": { "content": contents, "_meta": meta }
+                "result": { "content": contents, "_meta": meta, "structuredContent": super::common::search_page_content(&meta) }
             });
-            println!("{}", serde_json::to_string(&envelope)?);
+            println!("{}", super::common::cli_json(&envelope)?);
         } else {
             for c in contents {
                 if let Some(t) = c.get("text").and_then(|v| v.as_str()) {
@@ -582,25 +551,31 @@ pub fn cbeta_pipeline(args: &crate::Commands) -> anyhow::Result<()> {
 pub fn cbeta_search(
     query: &str,
     max_results: usize,
+    offset: usize,
     max_matches_per_file: usize,
     order: buddha_core::GrepOrder,
     json: bool,
 ) -> anyhow::Result<()> {
     let q = compile_query(query, FuzzyMode::CjkVariant, false, false).0;
-    let (results, total) = buddha_core::cbeta_grep_ordered(
+    let (results, _) = buddha_core::cbeta_grep_ordered(
         &cbeta_root(),
         &cbeta_match_pattern(query, &q),
-        max_results,
+        usize::MAX,
         max_matches_per_file,
         order,
     );
+
+    let (results, total) = buddha_core::paginate_grep_results(results, offset, max_results);
     super::common::corpus_grep_summary(
         "cbeta-fetch",
         Some(total),
         &q,
+        query,
         &results,
         "Use cbeta-fetch with the file_id and recommended parts to get full content",
         json,
         super::common::SearchExtra::RecommendedParts,
+        offset,
+        serde_json::json!({"query":query,"maxResults":max_results,"maxMatchesPerFile":max_matches_per_file,"sort": match order { buddha_core::GrepOrder::Canon => "canon", buddha_core::GrepOrder::Matches => "matches" }}),
     )
 }

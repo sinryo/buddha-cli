@@ -5,11 +5,17 @@ use std::{
     process::{Command, Output},
 };
 
+static NEXT_CORPUS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
 struct Corpus(PathBuf);
 
 impl Corpus {
     fn new() -> Self {
-        let root = std::env::temp_dir().join(format!("buddha-fetch-{}", std::process::id()));
+        let root = std::env::temp_dir().join(format!(
+            "buddha-fetch-{}-{}",
+            std::process::id(),
+            NEXT_CORPUS.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+        ));
         fs::create_dir(&root).unwrap();
         for path in [
             "xml-p5/T/T01/T01n0001.xml",
@@ -63,6 +69,14 @@ fn local_fetch_preserves_text_cursors_and_source_identity() {
         } else {
             "fixture"
         };
+        let invalid = fixture.run(corpus, &["--id", id, "--line-number", "999"]);
+        assert_eq!(invalid.status.code(), Some(2), "{corpus}");
+        let error: Value = serde_json::from_slice(&invalid.stderr).unwrap();
+        assert_eq!(error["error"]["code"], "INVALID_ARGUMENT", "{corpus}");
+        assert!(error["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("1..=1"));
         let all = fixture.fetch(corpus, &["--id", id, "--max-chars", "1000"]);
         let text = all["content"][0]["text"].as_str().unwrap();
         assert!(text.contains("布施波羅蜜"));
@@ -196,4 +210,39 @@ fn local_fetch_preserves_text_cursors_and_source_identity() {
     let help = fixture.run("cbeta", &["--help"]);
     assert!(help.status.success());
     assert!(String::from_utf8_lossy(&help.stdout).contains("Usage:"));
+}
+
+#[test]
+fn invalid_search_regex_is_an_argument_error() {
+    let out = Command::new(env!("CARGO_BIN_EXE_buddha"))
+        .env(
+            "BUDDHA_DIR",
+            std::env::temp_dir().join("buddha-invalid-regex-no-corpus"),
+        )
+        .args(["--json", "cbeta-search", "--query", "["])
+        .output()
+        .unwrap();
+    assert_eq!(out.status.code(), Some(2));
+    let error: Value = serde_json::from_slice(&out.stderr).unwrap();
+    assert_eq!(error["error"]["code"], "INVALID_ARGUMENT");
+    assert!(error["error"]["message"]
+        .as_str()
+        .unwrap()
+        .contains("regex"));
+}
+
+#[test]
+fn regex_search_reports_linewise_mode() {
+    let corpus = Corpus::new();
+    let out = Command::new(env!("CARGO_BIN_EXE_buddha"))
+        .env("BUDDHA_DIR", &corpus.0)
+        .args(["--json", "cbeta-search", "--query", "a(b)"])
+        .output()
+        .unwrap();
+    let output: Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(output["result"]["_meta"]["queryMode"], "regex");
+    assert!(output["result"]["_meta"]["warnings"].as_array().unwrap()[0]
+        .as_str()
+        .unwrap()
+        .contains("line"));
 }

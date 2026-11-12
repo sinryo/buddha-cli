@@ -3,6 +3,7 @@ use serde_json::{json, Value};
 /// All unified tool names.
 const UNIFIED_TOOLS: &[&str] = &[
     "search",
+    "verify",
     "title_search",
     "work_catalog",
     "fetch",
@@ -101,6 +102,7 @@ fn require_query(id: &Value, name: &str, args: &Value) -> Option<Value> {
 fn validate_integer_ranges(id: &Value, name: &str, args: &Value) -> Option<Value> {
     const NON_NEGATIVE: &[&str] = &[
         "offs",
+        "offset",
         "page",
         "startChar",
         "endChar",
@@ -199,6 +201,7 @@ pub fn validate_unified_call(id: &Value, name: &str, args: &Value) -> Option<Val
         "shoku_shinzen",
     ];
     const SEARCH_SOURCES: &[&str] = &[
+        "all",
         "cbeta",
         "tipitaka",
         "gretil",
@@ -244,7 +247,7 @@ pub fn validate_unified_call(id: &Value, name: &str, args: &Value) -> Option<Val
 
     match name {
         "search" | "title_search" | "pipeline" => {
-            if source.is_none() {
+            if source.is_none() && name != "search" {
                 let query = nonblank_arg(args, "query").unwrap_or("");
                 return Some(validation_response(
                     id.clone(),
@@ -279,7 +282,53 @@ pub fn validate_unified_call(id: &Value, name: &str, args: &Value) -> Option<Val
             None
         }
         "resolve" | "tibetan_search" => require_query(id, name, args),
+        "verify" => {
+            for field in ["id", "quote"] {
+                if nonblank_arg(args, field).is_none() {
+                    return Some(validation_response(
+                        id.clone(),
+                        name,
+                        "missing_required_field",
+                        field,
+                        format!("Missing {field}"),
+                        None,
+                        Vec::new(),
+                    ));
+                }
+            }
+            None
+        }
         "fetch" => {
+            if let Some(ids) = args.get("ids") {
+                if !ids.as_array().is_some_and(|a| {
+                    !a.is_empty()
+                        && a.len() <= 10
+                        && a.iter()
+                            .all(|s| s.as_str().is_some_and(|s| !s.trim().is_empty()))
+                }) {
+                    return Some(validation_response(
+                        id.clone(),
+                        name,
+                        "invalid_ids",
+                        "ids",
+                        "ids must contain 1 to 10 non-empty strings".into(),
+                        None,
+                        Vec::new(),
+                    ));
+                }
+                if args.get("id").is_some() {
+                    return Some(validation_response(
+                        id.clone(),
+                        name,
+                        "conflicting_ids",
+                        "id",
+                        "Use id or ids, not both".into(),
+                        None,
+                        Vec::new(),
+                    ));
+                }
+                return None;
+            }
             let locators = ["id", "query", "useid", "url", "lineno"];
             if !locators.iter().any(|key| nonblank_arg(args, key).is_some()) {
                 return Some(validation_response(
@@ -351,112 +400,7 @@ pub fn validate_unified_call(id: &Value, name: &str, args: &Value) -> Option<Val
 /// Detect source corpus from an ID string.
 ///
 /// Returns None if ambiguous or unrecognizable.
-pub fn detect_source(id: &str) -> Option<&'static str> {
-    let id = id.trim();
-    if id.is_empty() {
-        return None;
-    }
-
-    // CBETA: T followed by digits (e.g. T0262, T0001)
-    let upper = id.to_ascii_uppercase();
-    if upper.starts_with('T') {
-        let rest: String = upper
-            .chars()
-            .skip(1)
-            .take_while(|c| c.is_ascii_digit())
-            .collect();
-        if !rest.is_empty() {
-            return Some("cbeta");
-        }
-    }
-
-    // SHOKU_SHINZEN work id: SKZW{digits}. Check before the SKZ page-id rule.
-    if upper.starts_with("SKZW") {
-        let rest = &upper[4..];
-        if !rest.is_empty() && rest.chars().all(|c| c.is_ascii_digit()) {
-            return Some("shoku_shinzen");
-        }
-    }
-
-    // SHOKU_SHINZEN: SKZ{volume}p{page}, e.g. SKZ02p0128
-    if upper.starts_with("SKZ") {
-        let rest = &upper[3..];
-        if let Some((volume, page)) = rest.split_once('P') {
-            if !volume.is_empty()
-                && !page.is_empty()
-                && volume.chars().all(|c| c.is_ascii_digit())
-                && page.chars().all(|c| c.is_ascii_digit())
-            {
-                return Some("shoku_shinzen");
-            }
-        }
-    }
-
-    // SHINZEN work id: SZW{digits} (e.g. SZW0001) or SZW-META-{digits} (e.g. SZW-META-0120).
-    // Must be checked BEFORE the SZ{volume}p{page} passage-id rule below, since "SZW..."
-    // also starts with "SZ" but is not a P-split passage id.
-    if upper.starts_with("SZW") {
-        let rest = &upper[3..];
-        let is_all_digits = !rest.is_empty() && rest.chars().all(|c| c.is_ascii_digit());
-        let is_meta = rest
-            .strip_prefix("-META-")
-            .map(|d| !d.is_empty() && d.chars().all(|c| c.is_ascii_digit()))
-            .unwrap_or(false);
-        if is_all_digits || is_meta {
-            return Some("shinzen");
-        }
-    }
-
-    // SHINZEN: SZ{volume}p{page}, e.g. SZ09p0243
-    if upper.starts_with("SZ") {
-        let rest = &upper[2..];
-        if let Some((volume, page)) = rest.split_once('P') {
-            if !volume.is_empty()
-                && !page.is_empty()
-                && volume.chars().all(|c| c.is_ascii_digit())
-                && page.chars().all(|c| c.is_ascii_digit())
-            {
-                return Some("shinzen");
-            }
-        }
-    }
-
-    // Tipitaka: DN/MN/SN/AN/KN followed by digits
-    for pref in &["DN", "MN", "SN", "AN", "KN"] {
-        if upper.starts_with(pref) {
-            let rest = &upper[pref.len()..];
-            let digits: String = rest.chars().take_while(|c| c.is_ascii_digit()).collect();
-            if !digits.is_empty() {
-                return Some("tipitaka");
-            }
-        }
-    }
-
-    // Tipitaka: file stem pattern like s0101m.mul
-    if id.contains(".mul") {
-        return Some("tipitaka");
-    }
-
-    // JOZEN: J followed by 2 digits + underscore (e.g. J01_0200B19)
-    if upper.starts_with('J') && id.len() >= 4 {
-        let after_j: String = id.chars().skip(1).take(2).collect();
-        if after_j.chars().all(|c| c.is_ascii_digit()) && id.chars().nth(3) == Some('_') {
-            return Some("jozen");
-        }
-    }
-
-    // GRETIL: sa_ prefix
-    if id.starts_with("sa_") {
-        return Some("gretil");
-    }
-
-    // SAT: comma-separated digits (useid) e.g. "2,7,98,38,0"
-    if id.contains(',') && id.chars().all(|c| c.is_ascii_digit() || c == ',') {
-        return Some("sat");
-    }
-
-    None
-}
+pub use buddha_core::detect_source;
 
 // ---------------------------------------------------------------------------
 // Unified tools list (8 tools → 7 in UNIFIED_TOOLS + tibetan_search kept as-is)
@@ -466,23 +410,25 @@ pub fn unified_tools_list() -> Vec<Value> {
     vec![
         tool(
             "search",
-            "Full-text regex search across corpora. Returns _meta.fetchSuggestions (use fetch with id+lineNumber+highlight). IMPORTANT: Always include highlight param when fetching!",
+            "Phrase/regex search; use fetch suggestions with highlight.",
             json!({
                 "type": "object",
                 "properties": {
                     "source": {
                         "type": "string",
-                        "enum": ["cbeta", "tipitaka", "gretil", "sarit", "muktabodha", "shinzen", "shoku_shinzen", "sat", "jozen"],
-                        "description": "Corpus to search. Required."
+                        "enum": ["all", "cbeta", "tipitaka", "gretil", "sarit", "muktabodha", "shinzen", "shoku_shinzen", "sat", "jozen"],
+                        "description": "Default all: script-selected local corpora; explicit all searches every installed local corpus."
                     },
                     "query": {"type": "string", "minLength": 1, "description": "Phrase or regex. Plain text crosses lines/markup/variants."},
+                    "loose": {"type": "boolean", "description": "Latin literals: fold marks/case."},
                     "maxResults": {"type": "integer", "minimum": 1, "maximum": 200, "default": 20, "description": "Max files/results to return."},
                     "maxMatchesPerFile": {"type": "integer", "minimum": 1, "maximum": 50, "default": 5, "description": "Max matches per file. Local corpora only."},
                     "sort": {"type": "string", "enum": ["canon", "matches"], "description": "cbeta only."},
                     // SAT-specific
                     "exact": {"type": "boolean", "description": "SAT/Jozen only (ignored for other sources): phrase search (default true)."},
                     "rows": {"type": "integer", "minimum": 1, "maximum": 200, "description": "SAT only: number of rows."},
-                    "offs": {"type": "integer", "minimum": 0, "description": "SAT only: result offset."},
+                    "offset": {"type":"integer","minimum":0,"default":0,"description":"Local corpora: skip this many sorted matching files."},
+                    "offs": {"type": "integer", "minimum": 0, "description": "SAT result offset; alias for offset for local corpora."},
                     "fields": {"type": "string", "description": "SAT only (ignored for other sources): fields to return."},
                     "fq": {"type": "array", "items": {"type": "string"}, "description": "SAT only (ignored for other sources): filter queries."},
                     "titlesOnly": {"type": "boolean", "description": "SAT only (ignored for other sources): titles only."},
@@ -491,7 +437,7 @@ pub fn unified_tools_list() -> Vec<Value> {
                     "page": {"type": "integer", "minimum": 1, "description": "Jozen only: page number (1-based)."},
                     "maxSnippetChars": {"type": "integer", "minimum": 1, "description": "Jozen only: max snippet length."}
                 },
-                "required": ["source", "query"]
+                "required": ["query"]
             }),
         ),
         tool(
@@ -529,6 +475,13 @@ pub fn unified_tools_list() -> Vec<Value> {
                 "required": ["source"]
             }),
         ),
+        tool("verify", "Verify a quote in corrected local text; exact/variant/partial/not_found and citation.", json!({
+            "type":"object", "properties":{
+                "id":{"type":"string","minLength":1},"quote":{"type":"string","minLength":1},
+                "lb":{"type":"string"},"lineNumber":{"type":"integer","minimum":0},
+                "source":{"type":"string"}
+            },"required":["id","quote"]
+        })),
         tool(
             "fetch",
             "Retrieve source text. If an ID is known, call fetch directly: T0262, DN1, SZ09p0243/SZW0001, or SKZ02p0128/SKZW0001. ID prefixes auto-detect the corpus. For search hits, copy the returned fetchSuggestion/nextAction and keep lineNumber+highlight. Default output is bounded; continue only from _meta.nextStartChar.",
@@ -541,6 +494,7 @@ pub fn unified_tools_list() -> Vec<Value> {
                         "description": "Corpus. Auto-detected from id if omitted."
                     },
                     "id": {"type": "string", "minLength": 1, "description": "Text/page/work ID. Prefer this over query."},
+                    "ids":{"type":"array","minItems":1,"maxItems":10,"items":{"type":"string","minLength":1},"description":"Batch local IDs; ID@lb / ID:line. Default maxChars 2000 per item."},
                     "query": {"type": "string", "minLength": 1, "description": "Fuzzy title search (slower); source is required with query."},
                     // SAT-specific
                     "useid": {"type": "string", "minLength": 1, "description": "SAT: useid from search results."},
@@ -567,13 +521,14 @@ pub fn unified_tools_list() -> Vec<Value> {
                     "page": {"type": "integer", "minimum": 0},
                     "pageSize": {"type": "integer", "minimum": 1},
                     "lineNumber": {"type": "integer", "minimum": 0, "description": "Target line for context extraction."},
-                    "contextBefore": {"type": "integer", "minimum": 0, "default": 1, "description": "Lines before target."},
-                    "contextAfter": {"type": "integer", "minimum": 0, "default": 3, "description": "Lines after target."},
+                    "contextBefore": {"type": "integer", "minimum": 0, "default": 2, "description": "Lines before target."},
+                    "contextAfter": {"type": "integer", "minimum": 0, "default": 5, "description": "Lines after target."},
                     // SAT key
                     "key": {"type": "string", "description": "SAT: detail key."}
                 },
                 "anyOf": [
                     {"required": ["id"]},
+                    {"required": ["ids"]},
                     {"required": ["query"]},
                     {"required": ["useid"]},
                     {"required": ["url"]},
@@ -596,10 +551,11 @@ pub fn unified_tools_list() -> Vec<Value> {
                         "description": "Corpus. Required. Note: tipitaka has no pipeline."
                     },
                     "query": {"type": "string", "minLength": 1},
+                    "loose": {"type": "boolean", "description": "Latin literals: fold marks/case."},
                     "maxResults": {"type": "integer", "minimum": 1, "maximum": 200, "default": 10},
                     "maxMatchesPerFile": {"type": "integer", "minimum": 1, "maximum": 50, "default": 3},
-                    "contextBefore": {"type": "integer", "minimum": 0, "default": 1},
-                    "contextAfter": {"type": "integer", "minimum": 0, "default": 3},
+                    "contextBefore": {"type": "integer", "minimum": 0, "default": 2},
+                    "contextAfter": {"type": "integer", "minimum": 0, "default": 5},
                     "autoFetch": {"type": "boolean"},
                     "autoFetchFiles": {"type": "integer", "minimum": 1, "maximum": 10, "default": 1, "description": "Auto-fetch top N files."},
                     "includeMatchLine": {"type": "boolean"},
@@ -615,7 +571,8 @@ pub fn unified_tools_list() -> Vec<Value> {
                     // SAT-specific
                     "exact": {"type": "boolean", "description": "SAT: phrase search."},
                     "rows": {"type": "integer", "minimum": 1, "maximum": 200, "description": "SAT: rows."},
-                    "offs": {"type": "integer", "minimum": 0, "description": "SAT: offset."},
+                    "offset": {"type":"integer","minimum":0,"default":0,"description":"Local corpora: skip this many sorted matching files."},
+                    "offs": {"type": "integer", "minimum": 0, "description": "SAT offset; alias for offset for local corpora."},
                     "fields": {"type": "string", "description": "SAT: fields."},
                     "fq": {"type": "array", "items": {"type": "string"}, "description": "SAT: filter queries."},
                     "startChar": {"type": "integer", "minimum": 0},
@@ -710,6 +667,26 @@ pub fn dispatch_unified(name: &str, args: &Value) -> (String, Value) {
         .unwrap_or("")
         .to_string();
 
+    let mut normalized = args.clone();
+    if matches!(
+        name,
+        "search" | "pipeline" | "title_search" | "work_catalog" | "resolve"
+    ) {
+        let primary = if matches!(name, "search" | "pipeline") {
+            "maxResults"
+        } else {
+            "limit"
+        };
+        if normalized.get(primary).is_none() {
+            if let Some(value) = ["maxResults", "limit", "rows"]
+                .iter()
+                .find_map(|key| normalized.get(*key).cloned())
+            {
+                normalized[primary] = value;
+            }
+        }
+    }
+    let args = &normalized;
     match name {
         "search" => dispatch_search(&source, args),
         "title_search" => dispatch_title_search(&source, args),
@@ -1009,6 +986,9 @@ pub fn rewrite_meta_suggestions(response: &mut Value) {
                     if let Some(fetch) = item.get_mut("fetch") {
                         rewrite_tool_ref(fetch);
                     }
+                    if let Some(next) = item.get_mut("next") {
+                        rewrite_tool_ref(next);
+                    }
                 }
             }
         }
@@ -1025,6 +1005,9 @@ fn collect_next_actions(meta: &Value) -> Vec<Value> {
     // Explicit actions are the canonical plan; legacy hints are only a fallback.
     if let Some(actions) = meta.get("nextActions").and_then(Value::as_array) {
         if !actions.is_empty() {
+            if meta.get("nextOffset").is_some() {
+                return actions.clone();
+            }
             return actions.iter().take(5).cloned().collect();
         }
     }
@@ -1092,10 +1075,133 @@ fn normalized_execution_error(meta: &Value, content_text: &str) -> Value {
     })
 }
 
-/// Add a compact, stable control plane to tool results without duplicating full source text.
+/// Finish local search pagination after handlers have built their existing fetch hints.
+pub fn add_search_continuation(response: &mut Value, tool_name: &str, args: &Value) {
+    let Some(result) = response.get_mut("result") else {
+        return;
+    };
+    let Some(meta) = result.get_mut("_meta") else {
+        return;
+    };
+    if let Some(query) = args.get("query").and_then(Value::as_str) {
+        meta["query"] = json!(query);
+    }
+    if let Some(pattern) = meta.get("searchPattern").and_then(Value::as_str) {
+        meta["searchPattern"] = json!(pattern.chars().take(200).collect::<String>());
+    }
+    let Some(total) = meta.get("totalFilesMatched").and_then(Value::as_u64) else {
+        return;
+    };
+    let Some(offset) = meta.get("offset").and_then(Value::as_u64) else {
+        return;
+    };
+    let returned = meta
+        .get("results")
+        .and_then(Value::as_array)
+        .map_or(0, Vec::len);
+    let source = args
+        .get("source")
+        .and_then(Value::as_str)
+        .map(str::to_owned)
+        .unwrap_or_else(|| {
+            tool_name
+                .trim_end_matches("_search")
+                .trim_end_matches("_pipeline")
+                .to_owned()
+        });
+    if total == 0 {
+        let hint = if source == "cbeta" {
+            "No matches. Try shorter terms, variant or traditional characters, or another corpus. Japanese works in Taisho volumes 56–84: SAT; Kukai and Shingon ritual works: shinzen / shoku_shinzen."
+        } else {
+            "No matches. Try shorter terms, spelling variants, or another corpus."
+        };
+        meta["hint"] = json!(hint);
+        if meta.get("pipelineHint").is_some() {
+            meta["pipelineHint"] = Value::Null;
+        }
+    }
+    let search_tool = if is_unified_tool(tool_name) {
+        "search".to_owned()
+    } else {
+        format!("{source}_search")
+    };
+    let mut next_args = args.clone();
+    if is_unified_tool(tool_name) {
+        next_args["source"] = json!(source);
+    }
+    if next_args
+        .get("maxResults")
+        .or_else(|| next_args.get("limit"))
+        .or_else(|| next_args.get("rows"))
+        .is_none()
+    {
+        next_args["maxResults"] = json!(returned);
+    }
+    if next_args.get("maxMatchesPerFile").is_none() {
+        if let Some(value) = meta.get("maxMatchesPerFile") {
+            next_args["maxMatchesPerFile"] = value.clone();
+        }
+    }
+    // Keep only options supported by search when continuing a pipeline.
+    if tool_name == "pipeline" || tool_name.ends_with("_pipeline") {
+        if let Some(obj) = next_args.as_object_mut() {
+            obj.retain(|key, _| {
+                matches!(
+                    key.as_str(),
+                    "source"
+                        | "query"
+                        | "maxResults"
+                        | "limit"
+                        | "rows"
+                        | "maxMatchesPerFile"
+                        | "loose"
+                        | "sort"
+                        | "offset"
+                        | "offs"
+                )
+            });
+        }
+    }
+    let actions = collect_next_actions(meta);
+    if !actions.is_empty() {
+        meta["nextActions"] = json!(actions);
+    }
+    buddha_core::annotate_grep_page(
+        meta,
+        &search_tool,
+        next_args,
+        offset as usize,
+        total as usize,
+        returned,
+    );
+    let heading = buddha_core::grep_page_heading(offset as usize, total as usize, returned);
+    if let Some(text) = result.pointer_mut("/content/0/text") {
+        if let Some(old) = text.as_str() {
+            *text = json!(format!("{heading}\n{old}"));
+        }
+    }
+}
+
+/// Add model-readable text and a stable control plane to tool results.
 /// Existing `content` and `_meta` remain compatible with older clients.
 pub fn enrich_tool_response(response: &mut Value, tool_name: &str, args: &Value) {
-    if !is_unified_mode() {
+    enrich_tool_response_with_text(
+        response,
+        tool_name,
+        args,
+        std::env::var("BUDDHA_MCP_STRUCTURED_TEXT")
+            .map(|v| v != "0")
+            .unwrap_or(true),
+    );
+}
+
+fn enrich_tool_response_with_text(
+    response: &mut Value,
+    tool_name: &str,
+    args: &Value,
+    include_text: bool,
+) {
+    if !is_unified_mode() && response.pointer("/result/_meta/offset").is_none() {
         return;
     }
     let Some(result) = response.get_mut("result").and_then(Value::as_object_mut) else {
@@ -1108,7 +1214,7 @@ pub fn enrich_tool_response(response: &mut Value, tool_name: &str, args: &Value)
         .get("isError")
         .and_then(Value::as_bool)
         .unwrap_or(false);
-    let content_text = result
+    let mut content_text = result
         .get("content")
         .and_then(Value::as_array)
         .and_then(|items| items.first())
@@ -1116,6 +1222,17 @@ pub fn enrich_tool_response(response: &mut Value, tool_name: &str, args: &Value)
         .and_then(Value::as_str)
         .unwrap_or("")
         .to_string();
+    if !is_error && content_text.trim().is_empty() {
+        content_text = "No text returned.".to_string();
+        if let Some(item) = result
+            .get_mut("content")
+            .and_then(Value::as_array_mut)
+            .and_then(|items| items.first_mut())
+            .and_then(Value::as_object_mut)
+        {
+            item.insert("text".to_string(), json!(content_text));
+        }
+    }
     let mut meta = result.get("_meta").cloned().unwrap_or_else(|| json!({}));
     if !meta.is_object() {
         meta = json!({"legacyMeta": meta});
@@ -1139,6 +1256,9 @@ pub fn enrich_tool_response(response: &mut Value, tool_name: &str, args: &Value)
         "status": if is_error { "error" } else { "ok" },
         "tool": tool_name,
     });
+    if !is_error && include_text {
+        structured["text"] = json!(content_text);
+    }
     if let Some(source) = source {
         structured["source"] = json!(source);
     }
@@ -1146,18 +1266,31 @@ pub fn enrich_tool_response(response: &mut Value, tool_name: &str, args: &Value)
         structured["nextActions"] = json!(next_actions);
     }
     for key in [
+        "queryMode",
+        "hint",
+        "warnings",
         "count",
         "totalFiles",
+        "totalFilesMatched",
+        "offset",
+        "nextOffset",
         "totalCatalogEntries",
         "matchedId",
         "matchedTitle",
         "workId",
         "preferredCitation",
         "citation",
+        "lbStart",
+        "lbEnd",
         "sourceUrl",
     ] {
         if let Some(value) = meta.get(key) {
             structured[key] = value.clone();
+        }
+    }
+    if structured["matchedTitle"].is_null() {
+        if let Some(title) = meta.get("title").filter(|value| value.is_string()) {
+            structured["matchedTitle"] = title.clone();
         }
     }
     let mut page = serde_json::Map::new();
@@ -1220,11 +1353,11 @@ fn tool(name: &str, description: &str, mut input_schema: Value) -> Value {
         "outputSchema": {
             "type": "object",
             "properties": {
-                "status": {"enum":["ok","error"]},
-                "tool": {"type":"string"}
+                "status": {"enum":if name=="verify" {json!(["exact","variant","partial","not_found","error"])} else {json!(["ok","error"])}},
+                "tool": {"type":"string"},
+                "text": {"type":"string"}
             },
-            "required": ["status", "tool"],
-            "additionalProperties": true
+            "required": ["status", "tool"]
         },
         "annotations": {
             "readOnlyHint": true,
@@ -1556,7 +1689,7 @@ mod tests {
     #[test]
     fn test_unified_tools_list_count() {
         let tools = unified_tools_list();
-        assert_eq!(tools.len(), 7); // 6 model tools + tibetan_search; info/profile are opt-in
+        assert_eq!(tools.len(), 8); // 6 model tools + tibetan_search; info/profile are opt-in
         assert!(tools
             .iter()
             .all(|tool| tool["annotations"]["readOnlyHint"] == true));
@@ -1564,7 +1697,8 @@ mod tests {
         assert!(tools
             .iter()
             .all(|tool| tool["inputSchema"]["additionalProperties"] == false));
-        assert!(serde_json::to_vec(&tools).unwrap().len() <= 11_500);
+        // Local pagination adds offset schemas to search and pipeline.
+        assert!(serde_json::to_vec(&tools).unwrap().len() <= 13_000);
     }
 
     #[test]
@@ -1595,6 +1729,7 @@ mod tests {
                 "content":[{"type":"text","text":"本文"}],
                 "_meta": {
                     "matchedId":"SKZ02p0128",
+                    "title":"題名",
                     "returnedStart":0,
                     "returnedEnd":2,
                     "totalLength":20,
@@ -1611,6 +1746,14 @@ mod tests {
         );
         assert_eq!(response["result"]["structuredContent"]["status"], "ok");
         assert_eq!(
+            response["result"]["structuredContent"]["matchedTitle"],
+            "題名"
+        );
+        assert_eq!(
+            response["result"]["structuredContent"]["text"],
+            response["result"]["content"][0]["text"]
+        );
+        assert_eq!(
             response["result"]["structuredContent"]["page"]["nextStartChar"],
             2
         );
@@ -1625,5 +1768,43 @@ mod tests {
                 .len(),
             1
         );
+    }
+    #[test]
+    fn search_text_and_total_are_visible_in_structured_content() {
+        let mut response = json!({"result": {
+            "content": [{"type":"text", "text":"T08n0235 金剛經"}],
+            "_meta": {"totalFiles": 1, "totalFilesMatched": 242}
+        }});
+        enrich_tool_response(&mut response, "search", &json!({"source":"cbeta"}));
+        assert!(response["result"]["structuredContent"]["text"]
+            .as_str()
+            .unwrap()
+            .contains("T08n0235"));
+        assert_eq!(
+            response["result"]["structuredContent"]["totalFilesMatched"],
+            242
+        );
+    }
+    #[test]
+    fn regex_warning_and_mode_are_visible_in_structured_content() {
+        let mut response = json!({"result": {
+            "content": [{"type":"text", "text":"Warning: line-based regex\nresults"}],
+            "_meta": {"queryMode":"regex", "warnings":["line-based regex"]}
+        }});
+        enrich_tool_response(&mut response, "search", &json!({"source":"cbeta"}));
+        let structured = &response["result"]["structuredContent"];
+        assert_eq!(structured["queryMode"], "regex");
+        assert_eq!(structured["warnings"][0], "line-based regex");
+        assert_eq!(structured["text"], response["result"]["content"][0]["text"]);
+    }
+    #[test]
+    fn structured_text_can_be_disabled_without_changing_content() {
+        let original = json!({"result": {"content": [{"type":"text", "text":"本文"}]}});
+        let mut response = original.clone();
+        enrich_tool_response_with_text(&mut response, "fetch", &json!({}), false);
+        assert!(response["result"]["structuredContent"]
+            .get("text")
+            .is_none());
+        assert_eq!(response["result"]["content"], original["result"]["content"]);
     }
 }

@@ -275,7 +275,7 @@ pub(crate) fn resolve(
                 } else {
                     0.0
                 };
-                let cand = json!({
+                let mut cand = json!({
                     "source": "cbeta",
                     "id": id_norm,
                     "title": null,
@@ -283,6 +283,14 @@ pub(crate) fn resolve(
                     "fetch": {"tool": "cbeta_fetch", "args": {"id": format!("T{:04}", n)}},
                     "resolvedBy": "direct-id"
                 });
+                if buddha_core::path_resolver::resolve_cbeta_path_direct(&id_norm).is_none() {
+                    cand.as_object_mut().unwrap().remove("fetch");
+                    cand["score"] = json!(0.0);
+                    cand["resolvedBy"] = json!("unavailable-id");
+                    cand["note"] = json!(buddha_core::path_resolver::cbeta_missing_hint(&id_norm).unwrap_or_else(|| "Not in local CBETA; try SAT or a title search, and shinzen-work-catalog for Shingon works.".to_string()));
+                    cand["next"] =
+                        json!({"command":format!("buddha sat-search --query {}", id_norm)});
+                }
                 cands_scored.push((1.20 + bias, cand));
                 direct_id_mode = true;
             }
@@ -469,6 +477,12 @@ pub(crate) fn resolve(
         direct_id_mode = true;
     }
 
+    cands_scored.extend(buddha_mcp::server::resolve_crosswalk_candidates(
+        q,
+        sources,
+        prefer_source,
+    ));
+
     // Common scripture names (法華経, 大日経, 十住心論 …) that title indexes miss.
     if !direct_id_mode {
         for c in buddha_core::common_titles::common_title_matches(q) {
@@ -637,7 +651,10 @@ pub(crate) fn resolve(
     }
 
     // Sort and deduplicate
-    cands_scored.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal));
+    for (_, candidate) in &mut cands_scored {
+        buddha_core::operations::check_direct_candidate(candidate);
+    }
+    buddha_core::operations::rank_resolve_candidates(&mut cands_scored, q);
     let mut candidates: Vec<serde_json::Value> = Vec::new();
     let mut seen: std::collections::HashSet<(String, String)> = std::collections::HashSet::new();
     for (_s, v) in cands_scored.into_iter() {
@@ -684,7 +701,7 @@ pub(crate) fn resolve(
             }
         }
         if candidates.is_empty() {
-            summary.push_str("0 candidates\n");
+            summary.push_str("0 candidates. Try a shorter title, variant or traditional characters, or another corpus; Japanese works in Taisho volumes 56–84: SAT; Shingon works: shinzen-work-catalog.\n");
         }
 
         let meta = json!({
@@ -702,7 +719,7 @@ pub(crate) fn resolve(
                 "_meta": meta
             }
         });
-        println!("{}", serde_json::to_string(&envelope)?);
+        println!("{}", super::common::cli_json(&envelope)?);
     } else {
         println!("Candidates for '{}':", q);
         for (i, c) in candidates.iter().enumerate() {
@@ -717,7 +734,7 @@ pub(crate) fn resolve(
             }
         }
         if candidates.is_empty() {
-            println!("0 candidates");
+            println!("0 candidates. Try a shorter title, variant or traditional characters, or another corpus; Japanese works in Taisho volumes 56–84: SAT; Shingon works: shinzen-work-catalog.");
         }
     }
     Ok(())

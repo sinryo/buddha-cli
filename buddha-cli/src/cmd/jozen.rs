@@ -408,6 +408,14 @@ pub(crate) fn jozen_search(
 
     let parsed = jozen_parse_search_html(&html, query, max_results, max_snippet_chars);
 
+    let docs = serde_json::to_value(&parsed.results)?;
+    let summary = buddha_core::operations::online_search_text(
+        "jozen",
+        docs.as_array().unwrap(),
+        parsed.total_count.unwrap_or(parsed.results.len()),
+        0,
+        page,
+    );
     if json {
         let meta = serde_json::json!({
             "query": query,
@@ -418,22 +426,7 @@ pub(crate) fn jozen_search(
             "totalPages": parsed.total_pages,
             "pageSize": parsed.page_size,
         });
-        let text = parsed
-            .results
-            .iter()
-            .enumerate()
-            .map(|(i, h)| {
-                format!(
-                    "{}. [{}] {}  {}  snippet: {}",
-                    i + 1,
-                    h.lineno,
-                    h.title,
-                    h.author,
-                    h.snippet
-                )
-            })
-            .collect::<Vec<_>>()
-            .join("\n");
+        let text = summary.clone();
         let envelope = serde_json::json!({
             "jsonrpc": "2.0",
             "id": null,
@@ -445,19 +438,7 @@ pub(crate) fn jozen_search(
         });
         println!("{}", serde_json::to_string(&envelope)?);
     } else {
-        if let Some(tc) = parsed.total_count {
-            eprintln!("Total: {} results (page {})", tc, page);
-        }
-        for (i, h) in parsed.results.iter().enumerate() {
-            println!(
-                "{}. [{}] {}  {}\n   {}",
-                i + 1,
-                h.lineno,
-                h.title,
-                h.author,
-                h.snippet
-            );
-        }
+        print!("{}", summary);
     }
     Ok(())
 }
