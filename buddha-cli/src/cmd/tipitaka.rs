@@ -37,7 +37,19 @@ pub fn tipitaka_fetch(args: &crate::Commands) -> anyhow::Result<()> {
     {
         let path = resolve_tipitaka_path(id.as_deref(), query.as_deref());
         if path.as_os_str().is_empty() || !path.exists() {
-            anyhow::bail!("tipitaka text not found; check --id or --query");
+            let candidates = id
+                .as_deref()
+                .map(buddha_core::path_resolver::tipitaka_nearby_ids)
+                .unwrap_or_default();
+            let next_actions: Vec<_> = candidates
+                .iter()
+                .map(|id| serde_json::json!({"tool":"tipitaka_fetch","args":{"id":id}}))
+                .collect();
+            return Err(super::common::RecoveryError {
+                message: "tipitaka text not found; check --id or --query".into(),
+                recovery: serde_json::json!({"candidates":candidates,"nextActions":next_actions}),
+            }
+            .into());
         }
         let xml = decode_xml_bytes(&std::fs::read(&path)?);
         let mut text = if let Some(line_num) = line_number {

@@ -495,20 +495,19 @@ pub(crate) fn render_grep_text(
             .matches
             .iter()
             .find(|m| m.section.as_deref() != Some("apparatus"))
+            .filter(|m| m.lb.is_some() || m.line_number.is_some())
         {
-            let target = match (&m.lb, m.line_number) {
-                (Some(lb), _) => Some(format!("--lb {}", lb)),
-                (None, Some(ln)) => Some(format!("--line-number {}", ln)),
-                _ => None,
-            };
-            if let Some(target) = target {
-                let _ = writeln!(
-                    out,
-                    "   fetch: buddha {} --id {} {} --context-before 2 --context-after 5 --text",
-                    fetch_cmd, r.file_id, target
-                );
-            }
+            let command = buddha_core::operations::search_fetch_command(
+                fetch_cmd,
+                &r.file_id,
+                m.lb.as_deref(),
+                m.line_number,
+                2,
+                5,
+            );
+            let _ = writeln!(out, "   fetch: {}", command);
         }
+
         match extra {
             SearchExtra::RecommendedParts if !r.fetch_hints.recommended_parts.is_empty() => {
                 let _ = writeln!(
@@ -674,6 +673,41 @@ pub(crate) fn cli_actions(value: &mut serde_json::Value) {
                 } else {
                     tool.clone()
                 };
+                if tool == "fetch"
+                    && source.is_some()
+                    && args.is_some_and(|a| {
+                        a.get("contextBefore").is_some()
+                            && a.get("contextAfter").is_some()
+                            && a.as_object().is_some_and(|o| {
+                                o.keys().all(|k| {
+                                    matches!(
+                                        k.as_str(),
+                                        "source"
+                                            | "id"
+                                            | "lb"
+                                            | "lineNumber"
+                                            | "contextBefore"
+                                            | "contextAfter"
+                                    )
+                                })
+                            })
+                    })
+                {
+                    let a = args.unwrap();
+                    let command = buddha_core::operations::search_fetch_command(
+                        &mapped.replace('_', "-"),
+                        a["id"].as_str().unwrap_or(""),
+                        a["lb"].as_str(),
+                        a["lineNumber"].as_u64().map(|n| n as usize),
+                        a["contextBefore"].as_u64().unwrap() as usize,
+                        a["contextAfter"].as_u64().unwrap() as usize,
+                    );
+                    obj.remove("tool");
+                    obj.remove("args");
+                    obj.insert("command".into(), json!(command));
+                    obj.values_mut().for_each(cli_actions);
+                    return;
+                }
                 let mut command = format!("buddha {}", mapped.replace('_', "-"));
                 if let Some(args) = obj
                     .get("args")

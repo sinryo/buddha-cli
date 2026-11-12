@@ -4,6 +4,13 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+- Derive MCP CBETA citations and line bounds from the returned passage, including batch fetch and sliced context.
+- Reject nonexistent Tipitaka IDs instead of returning another text, and suggest nearby installed Nikāya IDs.
+- Return NOT_FOUND with exit code 10 for missing SHOKU_SHINZEN page and work IDs.
+- Use the same runnable text fetch commands in cross-corpus and corpus-specific search guidance.
+- Match cross-corpus search continuation offsets and page sizes to each corpus's displayed results.
+- Show fetch-specific help and expose its location, context and slice flags consistently in the command schema.
+
 - Rank curated common-name and crosswalk matches above title-only matches in resolve results.
 
 - Show online search hits and pagination in text, provide recovery for empty work catalogs, and deduplicate and order resolve candidates.

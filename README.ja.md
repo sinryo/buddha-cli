@@ -117,6 +117,8 @@ buddha sarit-fetch --id asvaghosa-buddhacarita --max-chars 4000 --json
 buddha muktabodha-fetch --id "<file-stem>" --max-chars 4000 --json
 ```
 
+ローカル取得でIDが存在しない場合は `NOT_FOUND`（終了10）を返します。Tipitakaの範囲外番号、続真言宗全書のページ・作品IDも同様です。Tipitakaでは近い実在IDを候補として案内します。`buddha fetch --help` にIDの振り分け・個別位置指定・文脈と文字範囲のオプションを表示し、`buddha schema --command fetch --json` でも同じフラグを確認できます。 接頭辞のないローカルファイルIDは導入済みのcorpusから探し、曖昧な場合は `--source` で指定します。題から探す場合は `resolve` を使います。
+
 題名や通称から ID を探す場合:
 
 ```bash

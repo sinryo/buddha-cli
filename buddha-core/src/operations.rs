@@ -105,15 +105,15 @@ pub fn search_all(
         let total = hits.len();
         let mut results: Vec<Value> = hits.iter().skip(offset).take(3).map(|hit| {
             let mut v = serde_json::to_value(hit).unwrap();
-            let mut args = json!({"source":source,"id":hit.file_id,"highlight":query});
-            if let Some(m) = hit.matches.first() {
+            let mut args = json!({"source":source,"id":hit.file_id,"contextBefore":2,"contextAfter":5});
+            if let Some(m) = hit.matches.iter().find(|m| m.section.as_deref() != Some("apparatus")) {
                 if let Some(lb) = &m.lb { args["lb"]=json!(lb); }
                 else if let Some(n) = m.line_number { args["lineNumber"]=json!(n); }
             }
             v["nextAction"]=action("fetch",args); v
         }).collect();
         results.truncate(max_results);
-        json!({"source":source,"status":"ok","totalFilesMatched":total,"results":results,"nextAction":action("search",json!({"source":source,"query":query,"offset":offset+3,"loose":loose,"maxResults":3}))})
+        json!({"source":source,"status":"ok","totalFilesMatched":total,"results":results,"nextAction":action("search",json!({"source":source,"query":query,"loose":loose}))})
     }).collect();
     let mut remaining = max_results;
     let mut corpora = Vec::new();
@@ -129,6 +129,8 @@ pub fn search_all(
         let shown = results.len();
         if offset + shown < group["totalFilesMatched"].as_u64().unwrap_or(0) as usize {
             group["nextAction"]["args"]["offset"] = json!(offset + shown);
+            group["nextAction"]["args"]["maxResults"] = json!(shown.max(1));
+            group["nextAction"]["args"]["maxMatchesPerFile"] = json!(max_matches);
         } else {
             group.as_object_mut().unwrap().remove("nextAction");
         }
@@ -239,18 +241,54 @@ fn extract(doc: &Document, raw: &str) -> String {
     }
 }
 
+#[derive(Clone, Debug)]
+pub struct FetchOptions {
+    pub lb: Option<String>,
+    pub line_number: Option<usize>,
+    pub context_before: usize,
+    pub context_after: usize,
+    pub start_char: usize,
+}
+impl Default for FetchOptions {
+    fn default() -> Self {
+        Self {
+            lb: None,
+            line_number: None,
+            context_before: 2,
+            context_after: 5,
+            start_char: 0,
+        }
+    }
+}
+
 pub fn fetch_local(id: &str, source: Option<&str>, max_chars: usize) -> Result<Value, String> {
+    fetch_local_with_options(id, source, max_chars, &FetchOptions::default())
+}
+
+pub fn fetch_local_with_options(
+    id: &str,
+    source: Option<&str>,
+    max_chars: usize,
+    options: &FetchOptions,
+) -> Result<Value, String> {
     let (id, lb, line) = split_locator(id)?;
+    let (lb, line) = if lb.is_some() || line.is_some() {
+        (lb, line)
+    } else {
+        (options.lb.clone(), options.line_number)
+    };
     let doc = document(&id, source)?;
     let line = if let Some(lb) = &lb {
-        Some(
-            doc.xml[..doc.xml.find(&format!("n=\"{lb}\"")).ok_or("lb not found")?]
-                .lines()
-                .count(),
-        )
+        let position = lb_markers(&doc.xml)
+            .into_iter()
+            .find(|(_, n)| n == lb)
+            .ok_or("lb not found")?
+            .0;
+        Some(doc.xml[..position].bytes().filter(|c| *c == b'\n').count() + 1)
     } else {
         line
     };
+    let mut context_raw = None;
     let text = if let Some(n) = line {
         if matches!(doc.source.as_str(), "shinzen" | "shoku_shinzen") {
             if !extract_shinzen_lines(&doc.xml)
@@ -270,41 +308,51 @@ pub fn fetch_local(id: &str, source: Option<&str>, max_chars: usize) -> Result<V
                     .iter()
                     .zip(corrected)
                     .filter(|(l, _)| {
-                        l.number >= n.saturating_sub(2) && l.number <= n.saturating_add(5)
+                        l.number >= n.saturating_sub(options.context_before)
+                            && l.number <= n.saturating_add(options.context_after)
                     })
                     .map(|(l, t)| format!("[{}] {}", l.number, t))
                     .collect::<Vec<_>>()
                     .join("\n")
             } else {
-                extract_shinzen_context(&doc.xml, n, 2, 5)
+                extract_shinzen_context(&doc.xml, n, options.context_before, options.context_after)
             }
         } else {
             if n == 0 || n > doc.xml.lines().count() {
                 return Err("line not found".into());
             }
-            extract(
-                &doc,
-                &extract_text_around_line_asymmetric(&doc.xml, n, 2, 5),
-            )
+            let raw = extract_text_around_line_asymmetric(
+                &doc.xml,
+                n,
+                options.context_before,
+                options.context_after,
+            );
+            let text = extract(&doc, &raw);
+            context_raw = Some(raw);
+            text
         }
     } else {
         doc.text.clone()
     };
-    let body: String = text.chars().take(max_chars).collect();
-    let end = body.chars().count();
     let total = text.chars().count();
+    let start = options.start_char.min(total);
+    let body: String = text.chars().skip(start).take(max_chars).collect();
+    let end = start + body.chars().count();
+    let mut range = None;
     let mut cite = doc.citation.clone();
     if doc.source == "cbeta" {
-        if let Some(n) = line {
-            let raw = extract_text_around_line_asymmetric(&doc.xml, n, 2, 5);
-            let lbs = lb_markers(&raw);
-            if let (Some(first), Some(last)) = (lbs.first(), lbs.last()) {
-                cite =
-                    cbeta_citation(&stem_from(&doc.path), &first.1, Some(&last.1)).unwrap_or(cite);
+        if let Some(raw) = context_raw {
+            range = cbeta_range_for_slice(&raw, &text, start, end, |prefix| extract(&doc, prefix));
+            if let Some((first, last)) = &range {
+                cite = cbeta_citation(&stem_from(&doc.path), first, Some(last)).unwrap_or(cite);
             }
         }
     }
-    let mut result = json!({"id":id,"status":"ok","source":doc.source,"text":body,"citation":cite,"preferredCitation":cite,"matchedId":doc.id,"sourcePath":doc.path,"totalLength":total,"returnedStart":0,"returnedEnd":end,"truncated":end<total});
+    let mut result = json!({"id":id,"status":"ok","source":doc.source,"text":body,"citation":cite,"preferredCitation":cite,"matchedId":doc.id,"sourcePath":doc.path,"totalLength":total,"returnedStart":start,"returnedEnd":end,"truncated":end<total});
+    if let Some((start, end)) = range {
+        result["lbStart"] = json!(start);
+        result["lbEnd"] = json!(end);
+    }
     if end < total {
         result["nextStartChar"] = json!(end);
         let mut args = json!({"id":id,"source":doc.source,"startChar":end,"maxChars":max_chars});
@@ -313,18 +361,63 @@ pub fn fetch_local(id: &str, source: Option<&str>, max_chars: usize) -> Result<V
         } else if let Some(line) = line {
             args["lineNumber"] = json!(line);
         }
+        args["contextBefore"] = json!(options.context_before);
+        args["contextAfter"] = json!(options.context_after);
         result["nextAction"] = action("fetch", args);
     }
     Ok(result)
 }
 
 pub fn fetch_many(ids: &[String], source: Option<&str>, max_chars: usize) -> Result<Value, String> {
+    fetch_many_with_options(ids, source, max_chars, &FetchOptions::default())
+}
+pub fn fetch_many_with_options(
+    ids: &[String],
+    source: Option<&str>,
+    max_chars: usize,
+    options: &FetchOptions,
+) -> Result<Value, String> {
     if ids.is_empty() || ids.len() > 10 {
         return Err("ids must contain 1 to 10 IDs".into());
     }
     Ok(
-        json!({"results":ids.iter().map(|id|fetch_local(id,source,max_chars).unwrap_or_else(|e|json!({"id":id,"status":"error","error":e}))).collect::<Vec<_>>()}),
+        json!({"results":ids.iter().map(|id|fetch_local_with_options(id,source,max_chars,options).unwrap_or_else(|e|json!({"id":id,"status":"error","error":e}))).collect::<Vec<_>>()}),
     )
+}
+
+/// Map the returned character slice to the actual CBETA markers in the extracted snippet.
+/// Ignore layout whitespace when comparing prefix lengths, since extractors trim snippets.
+pub fn cbeta_range_for_slice(
+    raw: &str,
+    text: &str,
+    start: usize,
+    end: usize,
+    extract: impl Fn(&str) -> String,
+) -> Option<(String, String)> {
+    let meaningful = |s: &str| s.chars().filter(|c| !c.is_whitespace()).count();
+    let prefix: String = text.chars().take(start).collect();
+    let returned: String = text
+        .chars()
+        .skip(start)
+        .take(end.saturating_sub(start))
+        .collect();
+    let from = meaningful(&prefix);
+    let count = meaningful(&returned);
+    if count == 0 {
+        return None;
+    }
+    let positions: Vec<_> = lb_markers(raw)
+        .into_iter()
+        .map(|(p, lb)| (meaningful(&extract(&raw[..p])), lb))
+        .collect();
+    let at = |n| {
+        positions
+            .iter()
+            .rev()
+            .find(|(p, _)| *p <= n)
+            .map(|(_, lb)| lb.clone())
+    };
+    Some((at(from)?, at(from + count - 1)?))
 }
 
 // Keep original byte positions while folding exactly the same character groups as phrase search.
@@ -1084,4 +1177,34 @@ mod response_regressions {
         assert!(values[0].1["score"].as_f64().unwrap() >= values[1].1["score"].as_f64().unwrap());
         assert!(values[0].1["score"].as_f64().unwrap() <= 1.0);
     }
+}
+
+/// Runnable context fetch shared by cross-corpus and corpus-specific CLI search output.
+pub fn search_fetch_command(
+    command: &str,
+    id: &str,
+    lb: Option<&str>,
+    line: Option<usize>,
+    before: usize,
+    after: usize,
+) -> String {
+    let quote = |s: &str| {
+        if s.chars()
+            .all(|c| c.is_alphanumeric() || "_./:@-".contains(c))
+        {
+            s.to_string()
+        } else {
+            format!("'{}'", s.replace('\'', "'\\''"))
+        }
+    };
+    let mut out = format!("buddha {} --id {}", command, quote(id));
+    if let Some(lb) = lb {
+        out.push_str(&format!(" --lb {}", quote(lb)));
+    } else if let Some(line) = line {
+        out.push_str(&format!(" --line-number {line}"));
+    }
+    out.push_str(&format!(
+        " --context-before {before} --context-after {after} --text"
+    ));
+    out
 }

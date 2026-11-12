@@ -214,7 +214,15 @@ enum Commands {
         #[arg(long)]
         loose: bool,
     },
-    /// Fetch up to ten local IDs. Per-ID locations: ID@lb or ID:line.
+    /// Fetch local texts by ID prefix, or up to ten IDs with per-ID locations.
+    #[command(
+        after_help = "ROUTING: T/X/B… -> cbeta; DN/MN/SN/AN/KN -> tipitaka; SZ/SZW -> shinzen; SKZ/SKZW -> shoku-shinzen. Use --source for other local corpora.
+LOCATIONS: ID@lb or ID:line.
+SINGLE-ID FLAGS: --lb, --line-number, --context-before, --context-after, --max-chars, --start-char, --text, --json (see the corpus fetch help for details).
+EXAMPLES:
+  buddha fetch T235 --lb 0749c22 --context-before 2 --context-after 5 --text
+  buddha fetch T08n0235@0749c22 SZ13p0006:19 --json"
+    )]
     Fetch {
         #[arg(required=true, num_args=1..=10)]
         ids: Vec<String>,
@@ -222,6 +230,16 @@ enum Commands {
         source: Option<String>,
         #[arg(long, default_value_t = 2000)]
         max_chars: usize,
+        #[arg(long)]
+        lb: Option<String>,
+        #[arg(long)]
+        line_number: Option<usize>,
+        #[arg(long, default_value_t = 2)]
+        context_before: usize,
+        #[arg(long, default_value_t = 5)]
+        context_after: usize,
+        #[arg(long, default_value_t = 0)]
+        start_char: usize,
     },
     /// Verify a quotation against corrected local source text.
     Verify {
@@ -1836,6 +1854,9 @@ fn normalize_argv(mut argv: Vec<std::ffi::OsString>) -> Vec<std::ffi::OsString> 
     };
     let sub = argv[sub_ix].to_string_lossy().to_string();
     if sub == "fetch" {
+        if argv.iter().any(|a| a == "--help" || a == "-h") {
+            return argv;
+        }
         let positional: Vec<_> = argv
             .iter()
             .skip(sub_ix + 1)
@@ -1859,9 +1880,26 @@ fn normalize_argv(mut argv: Vec<std::ffi::OsString>) -> Vec<std::ffi::OsString> 
                 .and_then(|i| argv.get(i + 1))
                 .map(|a| a.to_string_lossy().to_string())
         });
+        let explicit_source = argv
+            .iter()
+            .position(|a| a == "--source")
+            .and_then(|i| argv.get(i + 1))
+            .map(|a| a.to_string_lossy().replace('-', "_"));
+        if explicit_source.is_some() {
+            if let Some(i) = argv.iter().position(|a| a == "--id") {
+                argv.remove(i);
+            }
+            return argv;
+        }
         let cmd = id.as_deref().and_then(fetch_command_for_id);
-        // An ID we cannot route (a title, GRETIL/SARIT stem …) goes to cross-corpus resolve.
-        argv[sub_ix] = cmd.unwrap_or("resolve").into();
+        // Non-prefixed local stems use cross-corpus lookup, with a failing status when absent.
+        if cmd.is_none() {
+            if let Some(i) = argv.iter().position(|a| a == "--id") {
+                argv.remove(i);
+            }
+            return argv;
+        }
+        argv[sub_ix] = cmd.unwrap().into();
         if bare_next(&argv).is_some() {
             argv.insert(
                 sub_ix + 1,
@@ -2073,9 +2111,38 @@ fn run_cli() -> i32 {
                 ids,
                 source,
                 max_chars,
+                lb,
+                line_number,
+                context_before,
+                context_after,
+                start_char,
             } => {
-                let value = buddha_core::operations::fetch_many(&ids, source.as_deref(), max_chars)
-                    .map_err(anyhow::Error::msg)?;
+                let source = source.map(|s| s.replace('-', "_"));
+                let options = buddha_core::operations::FetchOptions {
+                    lb,
+                    line_number,
+                    context_before,
+                    context_after,
+                    start_char,
+                };
+                let value = if ids.len() == 1 {
+                    let item = buddha_core::operations::fetch_local_with_options(
+                        &ids[0],
+                        source.as_deref(),
+                        max_chars,
+                        &options,
+                    )
+                    .map_err(|e| anyhow::anyhow!("text not found: {e}"))?;
+                    serde_json::json!({"results":[item]})
+                } else {
+                    buddha_core::operations::fetch_many_with_options(
+                        &ids,
+                        source.as_deref(),
+                        max_chars,
+                        &options,
+                    )
+                    .map_err(anyhow::Error::msg)?
+                };
                 cmd::common::print_operation(value, should_output_json(global_json, false))?;
             }
             Commands::Verify {
@@ -3420,7 +3487,8 @@ fn cmd_schema(filter: Option<&str>) {
 }
 
 fn build_command_schema(filter: Option<&str>) -> serde_json::Value {
-    let app = Cli::command();
+    let mut app = Cli::command();
+    app.build();
     let version = env!("CARGO_PKG_VERSION");
 
     let mut commands = Vec::new();
@@ -4311,7 +4379,7 @@ mod argv_tests {
         );
         assert_eq!(
             norm(&["buddha", "fetch", "般若心経"]),
-            ["buddha", "resolve", "--query", "般若心経"]
+            ["buddha", "fetch", "般若心経"]
         );
         assert_eq!(
             norm(&["buddha", "search", "--source", "shoku_shinzen", "護摩"]),

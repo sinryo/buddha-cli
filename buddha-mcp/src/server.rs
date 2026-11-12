@@ -470,44 +470,6 @@ fn search_snippet(context: &str) -> String {
         .join(" ")
 }
 
-fn cbeta_context_lb_range(xml: &str, args: &serde_json::Value) -> Option<(String, String)> {
-    if args.get("full").and_then(|v| v.as_bool()).unwrap_or(false)
-        || args.get("startChar").is_some()
-    {
-        return None;
-    }
-    let (line, default_before, default_after) = if let Some(lb) = args
-        .get("lb")
-        .and_then(|v| v.as_str())
-        .map(str::trim)
-        .filter(|s| !s.is_empty())
-    {
-        let pattern = format!(r#"<lb\b[^>]*\bn\s*=\s*["']{}["']"#, regex::escape(lb));
-        let found = Regex::new(&pattern).ok()?.find(xml)?;
-        (xml[..found.start()].lines().count() + 1, 1, 3)
-    } else {
-        (
-            args.get("lineNumber").and_then(|v| v.as_u64())? as usize,
-            10,
-            100,
-        )
-    };
-    let common = args.get("contextLines").and_then(|v| v.as_u64());
-    let before = args
-        .get("contextBefore")
-        .and_then(|v| v.as_u64())
-        .or(common)
-        .unwrap_or(default_before) as usize;
-    let after = args
-        .get("contextAfter")
-        .and_then(|v| v.as_u64())
-        .or(common)
-        .unwrap_or(default_after) as usize;
-    let raw = extract_text_around_line_asymmetric(xml, line, before, after);
-    let markers = buddha_core::lb_markers(&raw);
-    Some((markers.first()?.1.clone(), markers.last()?.1.clone()))
-}
-
 fn load_index(path: &Path) -> Option<Vec<IndexEntry>> {
     fs::read(path)
         .ok()
@@ -2967,7 +2929,7 @@ fn fetch_not_found_response(
     query: &str,
     mut candidates: Vec<serde_json::Value>,
 ) -> serde_json::Value {
-    if buddha_core::detect_source(query).is_some() {
+    if source != "tipitaka" && buddha_core::detect_source(query).is_some() {
         candidates.clear();
     }
     let mut lines = vec![format!("not found: '{}' in {}.", query, source)];
@@ -3242,7 +3204,18 @@ fn handle_call_inner(id: serde_json::Value, params: &serde_json::Value) -> serde
                     .flatten()
                     .filter_map(|v| v.as_str().map(str::to_owned))
                     .collect::<Vec<_>>();
-                buddha_core::operations::fetch_many(&ids, source, number("maxChars", 2000))
+                buddha_core::operations::fetch_many_with_options(
+                    &ids,
+                    source,
+                    number("maxChars", 2000),
+                    &buddha_core::operations::FetchOptions {
+                        lb: args_raw["lb"].as_str().map(str::to_owned),
+                        line_number: args_raw["lineNumber"].as_u64().map(|n| n as usize),
+                        context_before: number("contextBefore", number("contextLines", 2)),
+                        context_after: number("contextAfter", number("contextLines", 5)),
+                        start_char: number("startChar", 0),
+                    },
+                )
             }
             _ => Ok(buddha_core::operations::search_all(
                 args_raw["query"].as_str().unwrap_or(""),
@@ -4367,6 +4340,7 @@ Flow: search({source:"jozen"}) -> fetch with lineno
                 }
             };
 
+            let mut context_raw = None;
             // lineNumber/lb/part/head指定時の処理
             let (mut text, mut extraction_method, part_matched) = if let Some(lb) = args
                 .get("lb")
@@ -4399,6 +4373,7 @@ Flow: search({source:"jozen"}) -> fetch with lineno
                                 context_before,
                                 context_after,
                             );
+                            context_raw = Some(raw.clone());
                             let context_text = extract_cbeta_plain_from_snippet(
                                 &raw,
                                 gaiji.as_ref().unwrap(),
@@ -4413,12 +4388,14 @@ Flow: search({source:"jozen"}) -> fetch with lineno
                                 false,
                             )
                         } else {
-                            let context_text = buddha_core::extract_xml_around_line_asymmetric(
+                            let raw = extract_text_around_line_asymmetric(
                                 &xml,
                                 xml_line,
                                 context_before,
                                 context_after,
                             );
+                            context_raw = Some(raw.clone());
+                            let context_text = extract_text_opts(&raw, include_notes);
                             (
                                 context_text,
                                 format!("lb-context-{}-{}-{}", lb, context_before, context_after),
@@ -4482,6 +4459,7 @@ Flow: search({source:"jozen"}) -> fetch with lineno
                         context_before,
                         context_after,
                     );
+                    context_raw = Some(raw.clone());
                     let context_text = extract_cbeta_plain_from_snippet(
                         &raw,
                         gaiji.as_ref().unwrap(),
@@ -4496,12 +4474,14 @@ Flow: search({source:"jozen"}) -> fetch with lineno
                         false,
                     )
                 } else {
-                    let context_text = buddha_core::extract_xml_around_line_asymmetric(
+                    let raw = extract_text_around_line_asymmetric(
                         &xml,
                         line_num as usize,
                         context_before,
                         context_after,
                     );
+                    context_raw = Some(raw.clone());
+                    let context_text = extract_text_opts(&raw, include_notes);
                     (
                         context_text,
                         format!(
@@ -4754,7 +4734,25 @@ Flow: search({source:"jozen"}) -> fetch with lineno
             }
             let (fallback_citation, source_url) =
                 local_source_link("cbeta", matched_id.as_deref(), &path);
-            let range = cbeta_context_lb_range(xml, &args);
+            let range = context_raw.as_deref().and_then(|raw| {
+                buddha_core::operations::cbeta_range_for_slice(
+                    raw,
+                    &text,
+                    returned_start,
+                    returned_end,
+                    |prefix| {
+                        if is_plain {
+                            extract_cbeta_plain_from_snippet(
+                                prefix,
+                                &cbeta_gaiji_cached(&path, xml),
+                                include_notes,
+                            )
+                        } else {
+                            extract_text_opts(prefix, include_notes)
+                        }
+                    },
+                )
+            });
             let mut citation = fallback_citation;
             if let Some((start, end)) = range {
                 meta["lbStart"] = json!(start);
@@ -4888,8 +4886,12 @@ Flow: search({source:"jozen"}) -> fetch with lineno
                     .unwrap_or("")
                     .to_string();
                 let idx = load_or_build_tipitaka_index();
-                let candidates =
-                    fetch_candidates_from_hits("tipitaka", &best_match_tipitaka(idx, &q, 3), true);
+                let nearby = buddha_core::path_resolver::tipitaka_nearby_ids(&q);
+                let candidates = if nearby.is_empty() {
+                    fetch_candidates_from_hits("tipitaka", &best_match_tipitaka(idx, &q, 3), true)
+                } else {
+                    nearby.into_iter().map(|id| json!({"id":id,"fetch":{"tool":"tipitaka_fetch","args":{"id":id}}})).collect()
+                };
                 return json!({"jsonrpc":"2.0","id": id, "result": fetch_not_found_response("tipitaka", &q, candidates)});
             }
             // If we matched a TOC file (e.g., s0404m1.mul.toc.xml), try to open the first content part (e.g., s0404m1.mul0.xml)
@@ -10223,11 +10225,10 @@ fn normalize_ws(s: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::{
-        cbeta_context_lb_range, cbeta_dila_id, cbeta_extract_lb_from_line_near, cbeta_part_arg,
-        fetch_next_start_char, fetch_not_found_response, fetch_page_bounds, handle_call,
-        handle_initialize, hint_top_from, jozen_extract_detail, jozen_parse_search_html,
-        local_source_link, sat_pick_best_doc, should_focus_highlight, slice_text_bounds,
-        spill_large_content_response_to,
+        cbeta_dila_id, cbeta_extract_lb_from_line_near, cbeta_part_arg, fetch_next_start_char,
+        fetch_not_found_response, fetch_page_bounds, handle_call, handle_initialize, hint_top_from,
+        jozen_extract_detail, jozen_parse_search_html, local_source_link, sat_pick_best_doc,
+        should_focus_highlight, slice_text_bounds, spill_large_content_response_to,
     };
     use serde_json::json;
     use std::path::Path;
@@ -10534,27 +10535,6 @@ mod tests {
         let line = r#"<lb n="0001a01"/>甲<lb n="0001a02"/>乙般若波羅蜜<lb n="0001a03"/>丙"#;
         let lb = cbeta_extract_lb_from_line_near(line, Some("般若波羅蜜"));
         assert_eq!(lb.as_deref(), Some("0001a02"));
-    }
-
-    #[test]
-    fn cbeta_fetch_context_range_tracks_requested_lines() {
-        let xml =
-            "<TEI>\n<lb n=\"0749c21\"/>一\n<lb n=\"0749c22\"/>二\n<lb n=\"0749c23\"/>三\n</TEI>";
-        assert_eq!(
-            cbeta_context_lb_range(
-                xml,
-                &json!({"lb":"0749c22", "contextBefore":1, "contextAfter":1})
-            ),
-            Some(("0749c21".into(), "0749c23".into()))
-        );
-        assert_eq!(
-            cbeta_context_lb_range(
-                xml,
-                &json!({"lineNumber":3, "contextBefore":0, "contextAfter":1})
-            ),
-            Some(("0749c22".into(), "0749c23".into()))
-        );
-        assert!(cbeta_context_lb_range(xml, &json!({"lb":"0749c22", "startChar":1})).is_none());
     }
 
     #[test]

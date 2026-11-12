@@ -117,6 +117,8 @@ buddha sarit-fetch --id asvaghosa-buddhacarita --max-chars 4000 --json
 buddha muktabodha-fetch --id "<file-stem>" --max-chars 4000 --json
 ```
 
+Local fetches return `NOT_FOUND` (exit 10) for missing IDs, including out-of-range Tipitaka numbers and SHOKU_SHINZEN page/work IDs. Tipitaka errors suggest nearby installed Nikāya IDs. `buddha fetch --help` lists ID routing, per-ID locators and context/slice options; `buddha schema --command fetch --json` exposes the same flags. Non-prefixed local file stems are looked up across installed corpora; specify `--source` when ambiguous. Use `resolve` for title lookup.
+
 Find an ID when you only know a title or alias:
 
 ```bash

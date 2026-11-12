@@ -168,6 +168,9 @@ pub fn shoku_shinzen_fetch(args: &crate::Commands) -> anyhow::Result<()> {
             if raw.trim().to_ascii_uppercase().starts_with("SKZW") {
                 let catalog = load_or_build_shoku_work_catalog_cli();
                 let entry = find_shinzen_work_by_id(&catalog, raw).cloned();
+                if entry.is_none() {
+                    anyhow::bail!("shoku-shinzen work not found: {raw}");
+                }
                 match entry
                     .as_ref()
                     .and_then(|work| shinzen_work_start_fetch_id(work).map(str::to_string))
@@ -184,23 +187,7 @@ pub fn shoku_shinzen_fetch(args: &crate::Commands) -> anyhow::Result<()> {
 
         let path = resolve_shoku_shinzen_path_cli(resolved_id.as_deref(), query.as_deref());
         if path.as_os_str().is_empty() || !path.exists() {
-            if *json {
-                let envelope = serde_json::json!({
-                    "jsonrpc":"2.0","id": serde_json::Value::Null,
-                    "result": {
-                        "content": [{"type":"text","text": "続真言宗全書で本文を特定できませんでした。"}],
-                        "isError": true,
-                        "_meta": {
-                            "error": {"category":"not_found","code":"text_not_found","field":"id","retryable":false},
-                            "nextActions": [{"tool":"shoku_shinzen_work_catalog","args":{"query": id.as_deref().or(query.as_deref()).unwrap_or(""),"limit":10}}]
-                        }
-                    }
-                });
-                println!("{}", super::common::cli_json(&envelope)?);
-            } else {
-                println!("not found");
-            }
-            return Ok(());
+            anyhow::bail!("shoku-shinzen text not found; check --id or --query");
         }
 
         let xml = std::fs::read_to_string(&path).unwrap_or_default();

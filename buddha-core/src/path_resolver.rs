@@ -313,18 +313,6 @@ pub fn resolve_cbeta_path_by_id(id: &str) -> Option<PathBuf> {
 /// Supports: DN, MN, SN, AN, KN (e.g., "DN1", "MN1", "SN1.1") or direct file stems (e.g., "s0101m.mul")
 pub fn resolve_tipitaka_path_direct(id: &str) -> Option<PathBuf> {
     let root = tipitaka_root();
-    let id_lower = id.to_lowercase();
-    let id_upper = id.to_uppercase();
-
-    // Nikāya code mapping: DN->s01, MN->s02, SN->s03, AN->s04, KN->s05
-    let nikaya_map: &[(&str, &str)] = &[
-        ("DN", "s01"),
-        ("MN", "s02"),
-        ("SN", "s03"),
-        ("AN", "s04"),
-        ("KN", "s05"),
-    ];
-
     // Try direct file stem match first (e.g., "s0101m.mul" -> "s0101m.mul.xml")
     let direct_path = root.join(format!("{}.xml", id));
     if direct_path.exists() {
@@ -339,113 +327,155 @@ pub fn resolve_tipitaka_path_direct(id: &str) -> Option<PathBuf> {
         }
     }
 
-    // Parse Nikāya code (e.g., "DN1", "MN 1", "SN1.1", "AN1", or just "DN")
-    let re_nikaya = Regex::new(r"^(DN|MN|SN|AN|KN)\s*(\d+)?(?:\.(\d+))?$").ok()?;
-    if let Some(caps) = re_nikaya.captures(&id_upper) {
-        let nikaya = &caps[1];
-        let num1 = caps.get(2).map(|m| m.as_str());
-        let _num2 = caps.get(3).map(|m| m.as_str());
-
-        // Find the file prefix for this Nikāya
-        let file_prefix = nikaya_map
-            .iter()
-            .find(|(n, _)| *n == nikaya)
-            .map(|(_, p)| *p)?;
-
-        // FAST PATH: Try direct path construction first (no glob needed)
-        // DN -> s0101m.mul.xml (first volume)
-        // DN1 -> s0101m.mul.xml (sutta 1 is in volume 1)
-        // Most suttas are in the first volume of each Nikāya
-        let vol_num = if let Some(n) = num1 {
-            // For simplicity, map sutta number to volume 01 (most common case)
-            // DN1-DN13 are in volume 1 (Sīlakkhandhavagga)
-            // More sophisticated mapping would require a lookup table
-            let sutta_num: u32 = n.parse().unwrap_or(1);
-            // Simple heuristic: suttas 1-13 -> vol 01, 14-23 -> vol 02, 24+ -> vol 03
-            match nikaya {
-                "DN" => {
-                    if sutta_num <= 13 {
-                        "01"
-                    } else if sutta_num <= 23 {
-                        "02"
-                    } else {
-                        "03"
-                    }
-                }
-                "MN" => {
-                    // MN has 3 volumes: Mūlapaṇṇāsa (1-50), Majjhimapaṇṇāsa (51-100), Uparipaṇṇāsa (101-152)
-                    if sutta_num <= 50 {
-                        "01"
-                    } else if sutta_num <= 100 {
-                        "02"
-                    } else {
-                        "03"
-                    }
-                }
-                _ => "01", // Default to first volume for SN, AN, KN
-            }
-        } else {
-            "01" // Default to first volume when no number specified
-        };
-
-        // Try direct path first
-        let direct_vol_path = root.join(format!("{}{}m.mul.xml", file_prefix, vol_num));
-        if direct_vol_path.exists() {
-            return Some(direct_vol_path);
-        }
-
-        // Fallback: try glob pattern (slower but more comprehensive)
-        let pattern = if num1.is_some() {
-            format!("{}/{}{}*m.mul.xml", root.display(), file_prefix, vol_num)
-        } else {
-            format!("{}/{}*m.mul.xml", root.display(), file_prefix)
-        };
-
-        if let Ok(paths) = glob(&pattern) {
-            let mut found: Vec<PathBuf> = paths.filter_map(|e| e.ok()).collect();
-            found.sort();
-            if let Some(first) = found.first() {
-                return Some(first.clone());
-            }
-        }
-
-        // Final fallback: any file with matching prefix
-        let fallback_pattern = format!("{}/{}*.xml", root.display(), file_prefix);
-        if let Ok(paths) = glob(&fallback_pattern) {
-            let mut found: Vec<PathBuf> = paths.filter_map(|e| e.ok()).collect();
-            found.sort();
-            if let Some(first) = found.first() {
-                return Some(first.clone());
-            }
-        }
+    // Recognized Nikāya IDs are exact aliases, never partial filename queries.
+    if let Some(result) = resolve_nikaya_id(&root, id) {
+        return result;
     }
-
-    // Try glob for partial file stem match (e.g., "s0101" -> "s0101m.mul.xml")
-    let partial_pattern = format!("{}/{}*.xml", root.display(), id_lower);
-    if let Ok(paths) = glob(&partial_pattern) {
-        let mut found: Vec<PathBuf> = paths
-            .filter_map(|e| e.ok())
-            .filter(|p| {
-                let name = p.file_name().and_then(|s| s.to_str()).unwrap_or("");
-                !name.contains("toc") && !name.contains("sitemap") && !name.contains("tree")
-            })
-            .collect();
-        // Prefer mūla (本文) files
-        found.sort_by(|a, b| {
-            let a_is_mul = a.to_string_lossy().contains(".mul.");
-            let b_is_mul = b.to_string_lossy().contains(".mul.");
-            match (a_is_mul, b_is_mul) {
-                (true, false) => std::cmp::Ordering::Less,
-                (false, true) => std::cmp::Ordering::Greater,
-                _ => a.cmp(b),
-            }
-        });
-        if let Some(first) = found.first() {
-            return Some(first.clone());
-        }
-    }
-
     None
+}
+
+/// Some(None) means a recognized but nonexistent alias; do not fall back to fuzzy matching.
+fn resolve_nikaya_id(root: &Path, id: &str) -> Option<Option<PathBuf>> {
+    let upper = id.trim().to_ascii_uppercase();
+    let re = Regex::new(r"^(DN|MN|SN|AN|KN)\s*(\d+)?(?:\.(\d+))?$").ok()?;
+    let caps = re.captures(&upper)?;
+    let nikaya = &caps[1];
+    let number = caps
+        .get(2)
+        .map(|m| m.as_str().parse::<usize>().unwrap_or(usize::MAX))
+        .unwrap_or(1);
+    let sub = caps
+        .get(3)
+        .map(|m| m.as_str().parse::<usize>().unwrap_or(usize::MAX));
+    if number == 0 || sub == Some(0) {
+        return Some(None);
+    }
+    let code = match nikaya {
+        "DN" => "01",
+        "MN" => "02",
+        "SN" => "03",
+        "AN" => "04",
+        _ => "05",
+    };
+    // DN/MN have continuous canonical sutta numbering across their three volumes.
+    if matches!(nikaya, "DN" | "MN") {
+        if sub.is_some() {
+            return Some(None);
+        }
+        let bounds = if nikaya == "DN" {
+            [13, 23, 34]
+        } else {
+            [50, 100, 152]
+        };
+        let Some(volume) = bounds.iter().position(|end| number <= *end).map(|n| n + 1) else {
+            return Some(None);
+        };
+        let path = root.join(format!("s{code}{volume:02}m.mul.xml"));
+        return Some(path.is_file().then_some(path));
+    }
+    let pattern = format!("{}/s{}*m*.xml", root.display(), code);
+    let mut paths: Vec<_> = glob(&pattern)
+        .ok()?
+        .filter_map(Result::ok)
+        .filter(|p| {
+            let name = p.file_name().unwrap_or_default().to_string_lossy();
+            !name.contains(".toc.") && (name.contains(".mul") || name.contains(".nrf"))
+        })
+        .collect();
+    paths.sort();
+    let division = Regex::new(r#"<div\b[^>]*\btype="samyutta"[^>]*>"#).unwrap();
+    let numbered = Regex::new(
+        r#"<(?:p|head)\b[^>]*\brend="subhead"[^>]*>\s*(\d+)(?:[-–](\d+))?\.\s*[^<]*[Ss]utt"#,
+    )
+    .unwrap();
+    let mut previous = 0;
+    let mut remaining = sub;
+    for path in paths {
+        let xml = crate::read_file_with_encoding(&path)?;
+        let section = if nikaya == "SN" {
+            let divisions: Vec<_> = division.find_iter(&xml).collect();
+            let index = number.saturating_sub(previous + 1);
+            previous += divisions.len();
+            if number > previous {
+                continue;
+            }
+            let start = divisions.get(index)?.end();
+            &xml[start
+                ..divisions
+                    .get(index + 1)
+                    .map(|m| m.start())
+                    .unwrap_or(xml.len())]
+        } else {
+            let book = Regex::new(&format!(
+                r#"<div\b[^>]*\bid="{}{}"[^>]*>"#,
+                nikaya.to_ascii_lowercase(),
+                number
+            ))
+            .unwrap();
+            if !book.is_match(&xml) {
+                continue;
+            }
+            &xml
+        };
+        if let Some(n) = remaining {
+            let count: usize = if nikaya == "AN" && number == 1 {
+                let paras = Regex::new(r#"<p\b[^>]*\bn="(\d+)""#).unwrap();
+                paras
+                    .captures_iter(section)
+                    .filter_map(|c| c[1].parse::<usize>().ok())
+                    .max()
+                    .unwrap_or(0)
+            } else {
+                numbered
+                    .captures_iter(section)
+                    .map(|c| {
+                        let first = c[1].parse::<usize>().unwrap_or(0);
+                        c.get(2)
+                            .and_then(|m| m.as_str().parse::<usize>().ok())
+                            .unwrap_or(first)
+                            .saturating_sub(first)
+                            + 1
+                    })
+                    .sum()
+            };
+            if n > count {
+                if nikaya == "AN" {
+                    remaining = Some(n - count);
+                    continue;
+                }
+                return Some(None);
+            }
+        }
+        return Some(Some(path));
+    }
+    Some(None)
+}
+
+/// Nearby installed Nikāya aliases for a failed exact ID lookup (not replacement text).
+pub fn tipitaka_nearby_ids(id: &str) -> Vec<String> {
+    let re = Regex::new(r"(?i)^(DN|MN|SN|AN|KN)\s*(\d+)(?:\.\d+)?$").unwrap();
+    let Some(c) = re.captures(id.trim()) else {
+        return Vec::new();
+    };
+    let prefix = c[1].to_ascii_uppercase();
+    let maximum = match prefix.as_str() {
+        "DN" => 34,
+        "MN" => 152,
+        "SN" => 56,
+        "AN" => 11,
+        _ => 19,
+    };
+    let wanted = c[2].parse::<usize>().unwrap_or(usize::MAX);
+    let mut numbers: Vec<usize> = (1..=maximum).collect();
+    numbers.sort_by_key(|n| (n.abs_diff(wanted), *n));
+    numbers
+        .into_iter()
+        .filter_map(|n| {
+            let candidate = format!("{prefix}{n}");
+            resolve_tipitaka_path_direct(&candidate).map(|_| candidate)
+        })
+        .take(3)
+        .collect()
 }
 
 /// For Tipitaka, find the smallest numeric-sequence file that shares the same base.
@@ -514,6 +544,10 @@ pub fn resolve_tipitaka_by_id(index: &[IndexEntry], id: &str) -> Option<PathBuf>
         return Some(path);
     }
 
+    if resolve_nikaya_id(&tipitaka_root(), id).is_some() {
+        return None;
+    }
+
     // Fallback: exact stem match in index
     for e in index.iter() {
         if Path::new(&e.path)
@@ -548,10 +582,6 @@ pub fn resolve_tipitaka_by_id(index: &[IndexEntry], id: &str) -> Option<PathBuf>
     }
     // base-content fallback
     if let Some(p) = find_tipitaka_content_for_base(id) {
-        return Some(p);
-    }
-    // directory scan fallback
-    if let Some(p) = find_in_dir(&tipitaka_root(), id) {
         return Some(p);
     }
     // exact filename fallback
