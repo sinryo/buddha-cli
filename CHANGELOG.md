@@ -4,56 +4,47 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
-- Derive MCP CBETA citations and line bounds from the returned passage, including batch fetch and sliced context.
-- Reject nonexistent Tipitaka IDs instead of returning another text, and suggest nearby installed Nikāya IDs.
-- Return NOT_FOUND with exit code 10 for missing SHOKU_SHINZEN page and work IDs.
-- Use the same runnable text fetch commands in cross-corpus and corpus-specific search guidance.
-- Match cross-corpus search continuation offsets and page sizes to each corpus's displayed results.
-- Show fetch-specific help and expose its location, context and slice flags consistently in the command schema.
-
-- Rank curated common-name and crosswalk matches above title-only matches in resolve results.
-
-- Show online search hits and pagination in text, provide recovery for empty work catalogs, and deduplicate and order resolve candidates.
-
-- Add shared local cross-corpus search to CLI/MCP, with script selection, per-corpus counts, skipped installations and online search actions.
-- Add `verify` to CLI/MCP for corrected quotation text, variant pairs, partial matches, source locations and citation checks.
-- Add batch local fetch for up to ten IDs with per-ID locators, per-item errors and a default cap of 2000 characters each.
-- Emit runnable CLI commands in JSON retrieval guidance while keeping MCP tool/args actions.
-- Add resolve/title-search recovery and locally existing same-number candidates to missing CBETA fetch errors.
-- Check local existence before recommending fetch for direct IDs in every local corpus.
-- Show `0 matching files` for empty searches and warn about out-of-range offsets only when offset is positive.
-
 ### Fixed
-- Local search and fetch report missing corpora without downloading them; use init or the installer.
-- Doctor warns about duplicate names, backups, broken links, stale index paths and legacy logs.
-- Uninstall removes legacy aliases and includes GRETIL in purge while preserving SHINZEN links.
-- Updates rebuild indexes with the binary installed under BUDDHA_DIR.
-- The installer marks the CLI executable, and help and schema describe available corpora and options.
-- Local search summaries show the original query and limit displayed search patterns.
-- Text snippets retain spaces between words while joining CJK line breaks.
-- SHINZEN bibliography follows the work catalog when a matching work is available.
-- Empty searches and title resolution provide alternative search guidance.
-- CBETA ID resolution checks local availability before suggesting a fetch.
-- Local corpus searches and pipelines support `--offset` / MCP `offset` (`offs` alias), report matching-file totals and continuation actions, and keep deterministic page order.
-- CBETA plain-text fetch excludes table-of-contents `<cb:mulu>` text to avoid duplicated body headings.
-- CLI and MCP share corpus ID detection, including CBETA canons and Jozen IDs.
-- CLI result count options accept `--max-results`, `--limit`, and `--rows` as aliases.
-- SHINZEN missing texts return a structured NOT_FOUND error and exit code 10.
-- Line context defaults to two preceding and five following lines.
-- Pali/Sanskrit literal searches equate NFC/NFD and `ṃ`/`ṁ`; CLI `--loose` and MCP `loose:true` fold diacritics/case (including Harvard-Kyoto), with retry guidance for zero-hit ASCII queries.
-- Local MCP fetches and SHINZEN CLI fetches validate requested line numbers before extracting context.
-- MCP local regex search and pipeline responses show the line-based warning in text and expose query mode and warnings in structured results.
-- Local TEI fetches prefer the body over front matter when a body is present.
-- CLI local fetches reject out-of-range or empty line contexts with the valid line range.
-- Local CLI and MCP searches reject invalid regular expressions with a machine-readable argument error.
-- SHINZEN and SHOKU_SHINZEN label simple corrected-reading matches with both the original and corrected forms.
-- CLI local search results identify phrase and regular-expression modes and warn that regular expressions are line-based.
-- CBETA gaiji decode Unicode mappings, prefer normalized alternatives to character names, and avoid duplicating mapped characters.
-- Local TEI text extraction excludes headers, separates paragraphs and verse lines, and handles fragments beginning with closing tags.
-- CLI highlights support alternatives and case-insensitive matching; anchored search patterns are recognized as regular expressions.
-- CBETA MCP fetch includes titles and Taishō citation ranges; the installer preserves existing binaries if the build fails.
-- Set `BUDDHA_MCP_STRUCTURED_TEXT=0` to omit the duplicate structured text.
-- MCP structured results include readable text, and CBETA search summaries show clean snippets, locations and the total number of matching files.
+- MCP CBETA fetch returns the title, `lbStart`/`lbEnd` and a Taishō citation computed from the returned passage, also for batch and sliced fetches and `verify` (e.g. `No. 235, T08p749c22-23`).
+- Local CLI search reports `queryMode` (`phrase`, `regex` or `loose`) and warns that regular expressions do not cross lines; `^`/`$` anchors are recognized as regex, and highlights support alternatives and case-insensitive matches.
+- Text snippets keep spaces between Latin words while joining CJK line breaks; TEI fragments that begin with a closing tag are extracted correctly.
+- CBETA gaiji decode to their Unicode mapping or normalized form instead of a character name.
+- SHINZEN and SHOKU_SHINZEN hits on an uncorrected reading are labelled with both the original and corrected forms, and SHINZEN bibliography follows the work catalog when a matching work exists.
+- CBETA ID resolution and `resolve` check local availability before suggesting a fetch; missing CBETA IDs offer `resolve`/title-search recovery and existing same-number candidates.
+- CLI and MCP share one corpus detector for IDs, including CBETA canons and Jozen line numbers.
+- Searches with no hits print `0 matching files` with suggestions (shorter terms, variant characters, SAT for Taishō vols. 56–84, SHINZEN for Shingon works); empty work catalogs and unresolved titles give recovery actions; search summaries show the original query.
+- SAT and Jozen search text lists hits and pagination instead of returning empty text.
+- `buddha fetch --help` documents routing, locators and context/slice options, and `buddha schema --command fetch --json` exposes the same flags.
+- `buddha update` rebuilds indexes with the binary installed under `$BUDDHA_DIR/bin`; the installer marks the CLI executable and keeps the existing binaries when the build fails; `uninstall` removes legacy aliases and includes GRETIL in `--purge` while preserving SHINZEN links.
+
+### Added
+- `buddha search <query>` searches the installed local corpora concurrently. Without `--source` (or with `--source local`) the query's script selects the corpora: Han/kana → CBETA, SHINZEN, SHOKU_SHINZEN; Latin, with or without diacritics → Tipitaka, GRETIL, SARIT, MUKTABODHA; mixed queries search both. `--source all` searches every installed corpus. Each corpus reports its matching-file total and its first hits with a ready-to-run fetch line; corpora that are not installed are listed as `skipped`, and SAT/Jozen/Tibetan are offered as separate next actions. MCP `search` does the same with `source` omitted or `"local"` (script selection) or `"all"`. `buddha search --source` also takes a single corpus (`cbeta` … `shoku_shinzen`) or the online `sat` / `jozen`, and `--help` lists all of them.
+- `buddha verify --id ID --quote TEXT` (MCP `verify`) checks a quotation against the same corrected text that fetch returns, ignoring punctuation and reading aids. It returns `exact`, `variant` (with the differing character pairs, e.g. 応/應), `partial` (longest match of at least two characters and half the quote) or `not_found` (with search actions), plus the location and citation; with `--lb`/`--line-number` it adds `locationMismatch: true` when the quote is elsewhere. Local corpora only. `buddha --text verify` prints a readable report (status and citation, the matched text, `differences: 応→應`, the remaining quote after a partial match, or the next search command); without `--text` the output is JSON.
+- `buddha fetch` takes up to ten IDs, each optionally with a locator: `buddha fetch T08n0235@0749c22 SZ13p0006:12`. MCP `fetch` takes the same list as `ids`. Each item is capped at 2000 characters by default, and a missing ID becomes an error entry without dropping the others.
+- `--offset N` for local corpus searches and pipelines (MCP `offset`, alias `offs`) skips N matching files in a fixed order and returns `totalFilesMatched`, `nextOffset` and a continuation action. An offset at or past the total returns an empty page with a warning.
+- `--loose` for Tipitaka/GRETIL/SARIT/MUKTABODHA search and `gretil-pipeline` (MCP `loose: true`) ignores diacritics and case and also accepts Harvard-Kyoto, e.g. `dharmakaya` finds `dharmakāya`. Literal searches without it now treat NFC/NFD and `ṃ`/`ṁ` as equal, and a zero-hit ASCII query suggests retrying with `--loose`.
+- `doctor` warns, without deleting anything, about whitespace-variant duplicate directories, old backups, broken symlinks, index entries pointing at missing paths and legacy logs.
+- `--limit` and `--rows` are accepted as aliases of `--max-results`.
+
+### Changed
+- Line-context fetches default to 2 lines before and 5 after everywhere. Previously the CLI and legacy MCP tools returned 10 before and 100 after, and unified MCP `fetch` 1 before and 3 after.
+- Local search, fetch and pipeline commands no longer clone or download a missing corpus. They fail with `DATA_UNAVAILABLE` (CLI exit 12; MCP `corpus_not_installed`) and point to `buddha init` or the installer; cross-corpus `search` lists the corpus as `skipped`.
+- A missing ID is `NOT_FOUND` with exit 10 in every local corpus, including `verify`. Tipitaka no longer returns another text for a nonexistent ID such as `DN99` and suggests nearby installed IDs (`DN34`, `DN33` …); SHOKU_SHINZEN page and work IDs behave the same way.
+- Out-of-range `--line-number` values, empty line contexts and invalid regular expressions are errors (exit 2, `INVALID_ARGUMENT`) that state the valid line range or the regex parse error, instead of returning empty or unrelated text. An `ID:line` locator outside the text is the same `INVALID_ARGUMENT` with the valid range (exit 2 for a single ID, a per-item error in a batch); an `ID@lb` locator whose `lb` does not exist is `NOT_FOUND`.
+- `buddha fetch` accepts several positional IDs. A single ID still routes to the corpus fetch command, but an unprefixed name that no installed corpus owns (e.g. `buddha fetch 般若心経`) now fails with `NOT_FOUND` and a hint to use `resolve` instead of running `resolve` itself.
+- GRETIL, SARIT and MUKTABODHA TEI XML fetches start at `<body>` without the TEI header, and paragraphs and verse lines are separated by line breaks.
+- CBETA plain-text fetches no longer include the table-of-contents `<cb:mulu>` text that duplicated headings, and mapped gaiji appear once instead of as both a code point and a glyph.
+- `resolve` orders candidates in tiers: verified direct IDs, then common names, aliases and crosswalk entries, then exact titles, then partial titles. The displayed `score` is rescaled to 0–1 within those tiers, duplicates are merged, and direct IDs that are not installed locally are kept in the lowest tier with a note pointing to SAT or title search.
+- MCP results now carry the readable text in `structuredContent.text` as well as in `content`, so clients that pass only `structuredContent` to the model still see the text. Responses grow accordingly; set `BUDDHA_MCP_STRUCTURED_TEXT=0` to omit the copy.
+- Next actions in CLI JSON output are runnable `command` strings (e.g. `buddha cbeta-fetch --id T08n0235 --lb 0749c22 …`); MCP keeps `tool` and `args`.
+
+### Verification
+- 167 workspace tests passed (0.6.18: 108).
+- Format check passed.
+- The same queries as for the 0.6.18 build (7 corpora, 20 queries, phrase and regex) matched identical sets of files.
+- Differences in fetched text are limited to the intended ones: `<cb:mulu>` removal, paragraph line breaks and TEI header removal.
+- All 8 MCP tools were exercised over stdio.
+
 
 ## [0.6.18] - 2026-10-20
 

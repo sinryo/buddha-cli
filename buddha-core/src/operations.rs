@@ -136,7 +136,7 @@ pub fn search_all(
         }
         corpora.push(group);
     }
-    json!({"query":query,"corpora":corpora,"skipped":skipped,"nextActions":[action("search",json!({"source":"sat","query":query})),action("search",json!({"source":"jozen","query":query})),action("tibetan_search",json!({"query":query}))],"note":"オンラインは別に引く (SAT / Jozen / Tibetan)."})
+    json!({"query":query,"corpora":corpora,"skipped":skipped,"nextActions":[action("search",json!({"source":"sat","query":query})),action("search",json!({"source":"jozen","query":query})),action("tibetan_search",json!({"query":query}))],"note":"Online corpora are searched separately (SAT / Jozen / Tibetan):"})
 }
 
 fn catalog(source: &str) -> Option<ShinzenWorkCatalog> {
@@ -159,7 +159,7 @@ struct Document {
 fn document(id: &str, source: Option<&str>) -> Result<Document, String> {
     let source = source_for_id(id, source)?;
     if !LOCAL_SOURCES.contains(&source.as_str()) {
-        return Err("未対応: only local corpora are supported".into());
+        return Err("Only local corpora are supported".into());
     }
     let mut page_id = id.to_string();
     let mut work: Option<ShinzenWorkEntry> = None;
@@ -295,7 +295,12 @@ pub fn fetch_local_with_options(
                 .iter()
                 .any(|l| l.number == n)
             {
-                return Err("line not found".into());
+                let lines = extract_shinzen_lines(&doc.xml);
+                let min = lines.iter().map(|l| l.number).min().unwrap_or(0);
+                let max = lines.iter().map(|l| l.number).max().unwrap_or(0);
+                return Err(format!(
+                    "invalid argument: line {n} out of range (valid range {min}-{max})"
+                ));
             }
             if doc.source == "shoku_shinzen" {
                 let lines = extract_shinzen_lines(&doc.xml);
@@ -319,7 +324,10 @@ pub fn fetch_local_with_options(
             }
         } else {
             if n == 0 || n > doc.xml.lines().count() {
-                return Err("line not found".into());
+                return Err(format!(
+                    "invalid argument: line {n} out of range (valid range 1-{})",
+                    doc.xml.lines().count()
+                ));
             }
             let raw = extract_text_around_line_asymmetric(
                 &doc.xml,
@@ -765,7 +773,7 @@ pub fn render(value: &Value) -> String {
         for g in value["skipped"].as_array().into_iter().flatten() {
             out.push_str(&format!("skipped {}: {}\n", g["source"], g["reason"]));
         }
-        out.push_str("オンラインは別に引く (SAT / Jozen / Tibetan).\n");
+        out.push_str("Online corpora are searched separately (SAT / Jozen / Tibetan):\n");
         for action in value["nextActions"].as_array().into_iter().flatten() {
             out.push_str(&format!(
                 "  {}\n",
@@ -1062,9 +1070,9 @@ pub fn online_search_text(
         ));
     }
     if source == "sat" {
-        out.push_str(&format!("続き: offs={}\n", offset + hits.len()));
+        out.push_str(&format!("Continue: offs={}\n", offset + hits.len()));
     } else {
-        out.push_str(&format!("続き: page={}\n", page + 1));
+        out.push_str(&format!("Continue: page={}\n", page + 1));
     }
     out
 }

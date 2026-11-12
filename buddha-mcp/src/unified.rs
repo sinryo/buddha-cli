@@ -202,6 +202,7 @@ pub fn validate_unified_call(id: &Value, name: &str, args: &Value) -> Option<Val
     ];
     const SEARCH_SOURCES: &[&str] = &[
         "all",
+        "local",
         "cbeta",
         "tipitaka",
         "gretil",
@@ -410,14 +411,14 @@ pub fn unified_tools_list() -> Vec<Value> {
     vec![
         tool(
             "search",
-            "Phrase/regex search; use fetch suggestions with highlight.",
+            "Search local or online corpora. Phrases cross lines; read structuredContent.text and nextActions, paginate with offset, and verify quotations.",
             json!({
                 "type": "object",
                 "properties": {
                     "source": {
                         "type": "string",
-                        "enum": ["all", "cbeta", "tipitaka", "gretil", "sarit", "muktabodha", "shinzen", "shoku_shinzen", "sat", "jozen"],
-                        "description": "Default all: script-selected local corpora; explicit all searches every installed local corpus."
+                        "enum": ["all", "local", "cbeta", "tipitaka", "gretil", "sarit", "muktabodha", "shinzen", "shoku_shinzen", "sat", "jozen"],
+                        "description": "Omitted or local: script-selected local corpora; all: every installed local corpus."
                     },
                     "query": {"type": "string", "minLength": 1, "description": "Phrase or regex. Plain text crosses lines/markup/variants."},
                     "loose": {"type": "boolean", "description": "Latin literals: fold marks/case."},
@@ -484,7 +485,7 @@ pub fn unified_tools_list() -> Vec<Value> {
         })),
         tool(
             "fetch",
-            "Retrieve source text. If an ID is known, call fetch directly: T0262, DN1, SZ09p0243/SZW0001, or SKZ02p0128/SKZW0001. ID prefixes auto-detect the corpus. For search hits, copy the returned fetchSuggestion/nextAction and keep lineNumber+highlight. Default output is bounded; continue only from _meta.nextStartChar.",
+            "Retrieve a text by ID, or batch local ids using ID@lb or ID:line. Follow nextActions; bounded results continue from nextStartChar.",
             json!({
                 "type": "object",
                 "properties": {

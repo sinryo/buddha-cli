@@ -778,10 +778,60 @@ pub(crate) fn print_operation(value: serde_json::Value, json: bool) -> anyhow::R
                 Ok(value)
             ))?
         );
+    } else if value.get("quote").is_some() {
+        print_verify(&value);
     } else {
         println!("{}", buddha_core::operations::render(&value));
     }
     Ok(())
+}
+
+fn print_verify(value: &serde_json::Value) {
+    let field = |key: &str| value[key].as_str().unwrap_or("");
+    println!(
+        "# verify {}: {}  |  {}",
+        field("id"),
+        field("status"),
+        field("citation")
+    );
+    if value["locationMismatch"] == true {
+        println!(
+            "Not found at the requested location; found at {}.",
+            field("citation")
+        );
+    }
+    if let Some(text) = value["text"].as_str() {
+        println!("{text}");
+    }
+    if field("status") == "partial" {
+        println!(
+            "matched: {}; mismatch after {} characters; remaining quote: {}",
+            field("matchedQuote"),
+            field("quoteBefore").chars().count() + field("matchedQuote").chars().count(),
+            field("quoteAfter")
+        );
+    }
+    if let Some(diffs) = value["differences"].as_array().filter(|a| !a.is_empty()) {
+        println!(
+            "differences: {}",
+            diffs
+                .iter()
+                .map(|d| format!(
+                    "{}→{}",
+                    d["quote"].as_str().unwrap_or(""),
+                    d["text"].as_str().unwrap_or("")
+                ))
+                .collect::<Vec<_>>()
+                .join(", ")
+        );
+    }
+    if let Some(actions) = value["nextActions"].as_array() {
+        for action in actions {
+            if let Some(command) = action["command"].as_str() {
+                println!("next: {command}");
+            }
+        }
+    }
 }
 
 #[derive(Debug)]

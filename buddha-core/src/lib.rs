@@ -1302,10 +1302,10 @@ fn shinzen_catalog_manual_start_page(
 
 fn shinzen_work_summary(title: &str, author: Option<&str>, range: &ShinzenWorkRange) -> String {
     let author_part = author
-        .map(|a| format!("著者は{}。", a))
-        .unwrap_or_else(|| "著者情報は本文・目録から未確定。".to_string());
+        .map(|a| format!("Author: {}. ", a))
+        .unwrap_or_else(|| "Author not established from text or catalog. ".to_string());
     format!(
-        "真言宗全書に収録される『{}』。{}収録範囲は{}。",
+        "{} is included in Shingon-shu Zensho. {}Range: {}.",
         title, author_part, range.citation
     )
 }
@@ -6861,7 +6861,7 @@ pub fn build_shoku_shinzen_work_catalog(root: &Path) -> ShinzenWorkCatalog {
                 aliases: candidate.aliases.clone(),
                 author: candidate.author.clone(),
                 summary: format!(
-                    "『{}』は続真言宗全書 第{}巻に収録。本文頁は未確定(metadata-only)。",
+                    "{} is included in Zoku Shingon-shu Zensho, volume {}. Pages unresolved (metadata only).",
                     candidate.title, volume
                 ),
                 range: ShinzenWorkRange {
@@ -6893,7 +6893,7 @@ pub fn build_shoku_shinzen_work_catalog(root: &Path) -> ShinzenWorkCatalog {
             aliases: candidate.aliases.clone(),
             author: candidate.author.clone(),
             summary: format!(
-                "『{}』は続真言宗全書 第{}巻に収録(頁 {:03}-{:03})。",
+                "{} is included in Zoku Shingon-shu Zensho, volume {}, pages {:03}-{:03}.",
                 candidate.title, volume, start, end
             ),
             range: ShinzenWorkRange {

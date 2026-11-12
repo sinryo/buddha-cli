@@ -524,7 +524,7 @@ fn legacy_tools_list() -> Vec<serde_json::Value> {
     vec![
         tool("buddha_version", "Get buddha-mcp server version and build information. Use this to check compatibility and troubleshoot issues.", json!({"type":"object","properties":{}})),
         tool("buddha_usage", "Usage guidance for AI (low-token). FAST PATH: use direct IDs when known. Local corpora: CBETA (T0001/T0262), Tipitaka (DN1/MN1), GRETIL (saddharmapuNDarIka), SARIT (file stem), MUKTABODHA (file stem). Online: SAT, JOZEN, Tibetan (tibetan_search).", json!({"type":"object","properties":{}})),
-        tool("buddha_system_prompt", "One-page system prompt template for AI clients using buddha-mcp (low-token defaults, _meta.fetchSuggestions flow).", json!({"type":"object","properties":{}})),
+        tool("buddha_system_prompt", "System prompt template for search, fetch, nextActions, and quotation verification.", json!({"type":"object","properties":{}})),
         tool("buddha_profile", "Run an in-process benchmark for a tool call and return timing stats (warm cache). Use for performance measurement.", json!({"type":"object","properties":{
             "tool":{"type":"string","description":"Tool name to call (e.g., cbeta_search, cbeta_fetch, buddha_resolve)."},
             "arguments":{"type":"object","description":"Arguments object passed to the tool."},
@@ -563,7 +563,7 @@ fn legacy_tools_list() -> Vec<serde_json::Value> {
             "contextAfter":{"type":"number","description":"Number of lines after target line (default: 5)"},
             "contextLines":{"type":"number","description":"Number of lines before/after target line (deprecated, use contextBefore/contextAfter)"}
         }})),
-        tool("cbeta_search", "Fast regex search over CBETA; returns _meta.fetchSuggestions (use cbeta_fetch with id+lineNumber+highlight). IMPORTANT: When fetching, always include highlight param with search term!", json!({"type":"object","properties":{
+        tool("cbeta_search", "Search CBETA text by phrase or regex. Use matching locations to fetch context; use offset to continue.", json!({"type":"object","properties":{
             "query":{"type":"string","description":"Phrase (plain text or A|B; crosses line breaks, markup, punctuation and CJK variants) or regular expression"},
             "maxResults":{"type":"number","description":"Maximum number of files to return (default: 20)"},
             "maxMatchesPerFile":{"type":"number","description":"Maximum matches per file (default: 5)"},
@@ -666,7 +666,7 @@ fn legacy_tools_list() -> Vec<serde_json::Value> {
             "contextAfter":{"type":"number","description":"Number of lines after target line (default: 5)"},
             "contextLines":{"type":"number","description":"Number of lines before/after target line (deprecated, use contextBefore/contextAfter)"}
         }})),
-        tool("tipitaka_search", "Fast regex search over Tipitaka; returns _meta.fetchSuggestions (use tipitaka_fetch with id+lineNumber+highlight). Always include highlight param when fetching!", json!({"type":"object","properties":{
+        tool("tipitaka_search", "Search TIPITAKA text by phrase or regex. Use matching locations to fetch context; use offset to continue.", json!({"type":"object","properties":{
             "loose":{"type":"boolean","description":"Ignore Latin diacritics and case; literal Pali/Sanskrit queries only."},
             "query":{"type":"string","description":"Regular expression pattern to search for"},
             "maxResults":{"type":"number","description":"Maximum number of files to return (default: 20)"},
@@ -675,7 +675,7 @@ fn legacy_tools_list() -> Vec<serde_json::Value> {
         tool("tipitaka_title_search", "Title-based search in Tipitaka corpus. Note: If Nikāya code is known (DN, MN, SN, AN, KN), skip search and use tipitaka_fetch directly with id!", json!({"type":"object","properties":{"query":{"type":"string","description":"Title to search. If you know Nikāya code, use tipitaka_fetch with id instead."},"limit":{"type":"number"}},"required":["query"]})),
         // GRETIL (Sanskrit TEI)
         tool("gretil_title_search", "Title-based search in GRETIL corpus. Note: If text name is known, skip search and use gretil_fetch directly with id!", json!({"type":"object","properties":{"query":{"type":"string","description":"Title to search. If you know the file stem (e.g., 'saddharmapuNDarIka'), use gretil_fetch with id instead."},"limit":{"type":"number"}},"required":["query"]})),
-        tool("gretil_search", "Fast regex search over GRETIL; returns _meta.fetchSuggestions (use gretil_fetch with id+lineNumber+highlight). Always include highlight param when fetching!", json!({"type":"object","properties":{
+        tool("gretil_search", "Search GRETIL text by phrase or regex. Use matching locations to fetch context; use offset to continue.", json!({"type":"object","properties":{
             "loose":{"type":"boolean","description":"Ignore Latin diacritics and case; literal Pali/Sanskrit queries only."},
             "query":{"type":"string","description":"Regular expression pattern to search for"},
             "maxResults":{"type":"number","description":"Maximum number of files to return (default: 20)"},
@@ -722,7 +722,7 @@ fn legacy_tools_list() -> Vec<serde_json::Value> {
         },"required":["query"]})),
         // SARIT (TEI P5)
         tool("sarit_title_search", "Title-based search in SARIT corpus. Note: If file stem is known, skip search and use sarit_fetch directly with id!", json!({"type":"object","properties":{"query":{"type":"string","description":"Title to search. If you know the file stem (e.g., 'asvaghosa-buddhacarita'), use sarit_fetch with id instead."},"limit":{"type":"number"}},"required":["query"]})),
-        tool("sarit_search", "Fast regex search over SARIT; returns _meta.fetchSuggestions (use sarit_fetch with id+lineNumber+highlight). Always include highlight param when fetching!", json!({"type":"object","properties":{
+        tool("sarit_search", "Search SARIT text by phrase or regex. Use matching locations to fetch context; use offset to continue.", json!({"type":"object","properties":{
             "loose":{"type":"boolean","description":"Ignore Latin diacritics and case; literal Pali/Sanskrit queries only."},
             "query":{"type":"string","description":"Regular expression pattern to search for"},
             "maxResults":{"type":"number","description":"Maximum number of files to return (default: 20)"},
@@ -769,7 +769,7 @@ fn legacy_tools_list() -> Vec<serde_json::Value> {
         },"required":["query"]})),
         // SHINZEN (真言宗全書)
         tool("shinzen_title_search", "Title/page search in local SHINZEN 真言宗全書 corpus. If page ID is known, use shinzen_fetch directly.", json!({"type":"object","properties":{"query":{"type":"string"},"limit":{"type":"number"}},"required":["query"]})),
-        tool("shinzen_search", "Fast regex search over extracted SHINZEN line text; returns _meta.fetchSuggestions (use shinzen_fetch with id+lineNumber+highlight).", json!({"type":"object","properties":{
+        tool("shinzen_search", "Search SHINZEN text by phrase or regex. Use matching locations to fetch context; use offset to continue.", json!({"type":"object","properties":{
             "query":{"type":"string","description":"Regular expression pattern to search for"},
             "maxResults":{"type":"number","description":"Maximum number of pages to return (default: 20)"},
             "maxMatchesPerFile":{"type":"number","description":"Maximum matches per page (default: 5)"}
@@ -838,7 +838,7 @@ fn legacy_tools_list() -> Vec<serde_json::Value> {
         },"required":["query"]})),
         // MUKTABODHA
         tool("muktabodha_title_search", "Title-based search in MUKTABODHA Sanskrit library (IAST). If file stem is known, use muktabodha_fetch with id.", json!({"type":"object","properties":{"query":{"type":"string"},"limit":{"type":"number"}},"required":["query"]})),
-        tool("muktabodha_search", "Fast regex search over MUKTABODHA; returns _meta.fetchSuggestions (use muktabodha_fetch with id+lineNumber+highlight).", json!({"type":"object","properties":{
+        tool("muktabodha_search", "Search MUKTABODHA text by phrase or regex. Use matching locations to fetch context; use offset to continue.", json!({"type":"object","properties":{
             "loose":{"type":"boolean","description":"Ignore Latin diacritics and case; literal Pali/Sanskrit queries only."},
             "query":{"type":"string","description":"Regular expression pattern to search for"},
             "maxResults":{"type":"number","description":"Maximum number of files to return (default: 20)"},
@@ -1114,7 +1114,7 @@ fn load_or_build_shinzen_index() -> &'static Vec<IndexEntry> {
 }
 
 fn catalog_empty_result(source: &str, query: Option<&str>) -> (String, Vec<serde_json::Value>) {
-    let text = format!("0 件。題の一部や著者で検索するか、search {{source: {source}, query: …}} で本文を検索してください。");
+    let text = format!("No results. Try part of the title or an author, or search {{source: {source}, query: …}} for text.");
     let actions = query.filter(|q| !q.trim().is_empty()).map(|q| vec![json!({"tool":format!("{source}_search"),"args":{"query":q},"reason":"catalog-empty"})]).unwrap_or_default();
     (text, actions)
 }
@@ -1124,7 +1124,7 @@ fn catalog_empty_result(source: &str, query: Option<&str>) -> (String, Vec<serde
 fn empty_catalog_suggests_body_search_for_each_source() {
     for source in ["shinzen", "shoku_shinzen"] {
         let (text, actions) = catalog_empty_result(source, Some("護摩"));
-        assert!(text.contains("0 件") && text.contains("本文"));
+        assert!(text.contains("No results") && text.contains("text"));
         assert_eq!(actions[0]["tool"], format!("{source}_search"));
         assert_eq!(actions[0]["args"]["query"], "護摩");
     }
@@ -1160,9 +1160,9 @@ fn load_or_build_shinzen_work_catalog() -> &'static ShinzenWorkCatalog {
 }
 
 const SHINZEN_MISSING_MESSAGE: &str =
-    "SHINZENライブラリがありません。buddha init または手動インストールを確認してください。";
+    "SHINZEN library is unavailable. Check buddha init or the manual installation.";
 const SHOKU_SHINZEN_MISSING_MESSAGE: &str =
-    "SHOKU_SHINZENライブラリがありません。buddha init または手動インストールを確認してください。";
+    "SHOKU_SHINZEN library is unavailable. Check buddha init or the manual installation.";
 
 static SHOKU_SHINZEN_INDEX_CACHE: OnceLock<Vec<IndexEntry>> = OnceLock::new();
 static SHOKU_SHINZEN_WORK_CATALOG_CACHE: OnceLock<ShinzenWorkCatalog> = OnceLock::new();
@@ -3176,7 +3176,7 @@ fn handle_call_inner(id: serde_json::Value, params: &serde_json::Value) -> serde
             && args_raw
                 .get("source")
                 .and_then(|v| v.as_str())
-                .is_none_or(|s| s == "all"))
+                .is_none_or(|s| s == "all" || s == "local"))
     {
         let source = args_raw.get("source").and_then(|v| v.as_str());
         let number = |key: &str, default: usize| {
@@ -6849,9 +6849,9 @@ Flow: search({source:"jozen"}) -> fetch with lineno
                 .iter()
                 .enumerate()
                 .map(|(i, entry)| {
-                    let author = entry.author.as_deref().unwrap_or("著者未詳");
+                    let author = entry.author.as_deref().unwrap_or("author unknown");
                     let suffix = if entry.confidence == "metadata-only" {
-                        "（頁未確定・書誌のみ）"
+                        " (page range unresolved; bibliography only)"
                     } else {
                         ""
                     };
@@ -6944,9 +6944,9 @@ Flow: search({source:"jozen"}) -> fetch with lineno
                             args["id"] = json!(start_id);
                         } else {
                             // metadata-only work: no resolved page range, but still citable.
-                            let author = entry.author.as_deref().unwrap_or("著者未詳");
+                            let author = entry.author.as_deref().unwrap_or("author unknown");
                             let text = format!(
-                                "この作品（{}『{}』、{}）は頁範囲未確定です。書誌情報としては有効です。本文を探すには search({{source:\"shinzen\", query:\"{}\"}}) を使ってください。",
+                                "This work ({}: {}, {}) has an unresolved page range but valid bibliography. Search its text with search({{source:\"shinzen\", query:\"{}\"}}).",
                                 author, entry.title, entry.range.citation, entry.title
                             );
                             let meta = json!({
@@ -7335,9 +7335,9 @@ Flow: search({source:"jozen"}) -> fetch with lineno
                 .iter()
                 .enumerate()
                 .map(|(index, entry)| {
-                    let author = entry.author.as_deref().unwrap_or("著者未詳");
+                    let author = entry.author.as_deref().unwrap_or("author unknown");
                     let suffix = if entry.confidence == "metadata-only" {
-                        "（頁未確定・書誌のみ）"
+                        " (page range unresolved; bibliography only)"
                     } else {
                         ""
                     };
@@ -7488,7 +7488,7 @@ Flow: search({source:"jozen"}) -> fetch with lineno
                             args["id"] = json!(start_id);
                         } else {
                             let text = format!(
-                                "{} は頁範囲未確定の書誌エントリです。本文を探すには返却した nextAction を実行してください。",
+                                "{} is a bibliographic entry with an unresolved page range. Follow the returned nextAction to find its text.",
                                 entry.id
                             );
                             let next_actions = vec![metadata_only_work_search_action(

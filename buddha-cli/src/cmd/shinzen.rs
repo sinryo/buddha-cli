@@ -10,7 +10,7 @@ use buddha_core::{
 };
 use std::path::{Path, PathBuf};
 
-pub(crate) const SHINZEN_MISSING_MESSAGE: &str = "SHINZENライブラリがありません";
+pub(crate) const SHINZEN_MISSING_MESSAGE: &str = "SHINZEN library is unavailable";
 
 pub(crate) fn print_shinzen_missing(json: bool) -> anyhow::Result<()> {
     if json {
@@ -127,10 +127,10 @@ pub fn shinzen_work_catalog(
         println!("{}", super::common::cli_json(&envelope)?);
     } else {
         if results.is_empty() {
-            println!("0 件。題の一部や著者で検索するか、buddha shinzen-search で本文を検索してください。");
+            println!("No results. Try part of the title or an author, or use buddha shinzen-search for text.");
         }
         for entry in results {
-            let author = entry.author.as_deref().unwrap_or("著者未詳");
+            let author = entry.author.as_deref().unwrap_or("author unknown");
             println!(
                 "{} {}『{}』 {} [{}]",
                 entry.id, author, entry.title, entry.range.citation, entry.confidence
@@ -195,14 +195,14 @@ fn print_shinzen_work_metadata_only(
 ) -> anyhow::Result<()> {
     let hint = match entry {
         Some(e) => {
-            let author = e.author.as_deref().unwrap_or("著者未詳");
+            let author = e.author.as_deref().unwrap_or("author unknown");
             format!(
-                "この作品は頁範囲未確定（書誌: {}『{}』、第{}巻）。shinzen-work-catalog / shinzen-search で探してください",
+                "Page range unresolved (bibliography: {}, {}, volume {}). Use shinzen-work-catalog / shinzen-search.",
                 author, e.title, e.range.start_volume
             )
         }
         None => format!(
-            "作品ID {} は作品カタログに未登録です。shinzen-work-catalog / shinzen-search で探してください",
+            "Work ID {} is absent from the catalog. Use shinzen-work-catalog / shinzen-search.",
             work_id
         ),
     };

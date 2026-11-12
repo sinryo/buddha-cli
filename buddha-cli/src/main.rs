@@ -200,10 +200,11 @@ struct Cli {
 #[derive(Subcommand, Debug)]
 enum Commands {
     /// Search installed local corpora concurrently; script-selects corpora unless --source all.
+    #[command(after_help = "Online corpora: sat-search / jozen-search / tibetan-search.")]
     Search {
         #[arg(long)]
         query: String,
-        #[arg(long, value_parser=["all","local"])]
+        #[arg(long, value_parser=["all","local","cbeta","tipitaka","gretil","sarit","muktabodha","shinzen","shoku_shinzen","sat","jozen"])]
         source: Option<String>,
         #[arg(long, default_value_t = 20)]
         max_results: usize,
@@ -2132,7 +2133,13 @@ fn run_cli() -> i32 {
                         max_chars,
                         &options,
                     )
-                    .map_err(|e| anyhow::anyhow!("text not found: {e}"))?;
+                    .map_err(|e| {
+                        if e.starts_with("invalid argument:") {
+                            anyhow::anyhow!("{e}")
+                        } else {
+                            anyhow::anyhow!("text not found: {e}")
+                        }
+                    })?;
                     serde_json::json!({"results":[item]})
                 } else {
                     buddha_core::operations::fetch_many_with_options(
@@ -2167,7 +2174,7 @@ fn run_cli() -> i32 {
             }
             Commands::Init { base } => {
                 // Display startup message with colored output
-                progress!("\x1b[33m📥 First-time setup requires downloading Buddhist texts. This may take several minutes... / 初回起動時はお経のダウンロードに時間がかかります。しばらくお待ちください... / 首次啟動需要下載佛經文本，可能需要幾分鐘時間...\x1b[0m");
+                progress!("\x1b[33m📥 First-time setup requires downloading Buddhist texts. This may take several minutes...\x1b[0m");
 
                 let base_dir = base.unwrap_or(default_buddha());
                 ensure_dir(&base_dir)?;
@@ -3010,7 +3017,7 @@ fn run_cli() -> i32 {
                 return Ok(());
             }
             Commands::IndexRebuild { source } => {
-                progress!("\x1b[33m📥 Rebuilding search indexes... / インデックスを再構築中... / 正在重建搜索索引...\x1b[0m");
+                progress!("\x1b[33m📥 Rebuilding search indexes...\x1b[0m");
 
                 let src = source.to_lowercase();
                 let base = default_buddha();

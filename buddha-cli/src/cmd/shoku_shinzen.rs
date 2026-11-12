@@ -13,7 +13,7 @@ use buddha_core::{
 };
 use std::path::{Path, PathBuf};
 
-pub(crate) const SHOKU_SHINZEN_MISSING_MESSAGE: &str = "SHOKU_SHINZENライブラリがありません";
+pub(crate) const SHOKU_SHINZEN_MISSING_MESSAGE: &str = "SHOKU_SHINZEN library is unavailable";
 
 pub(crate) fn print_shoku_shinzen_missing(json: bool) -> anyhow::Result<()> {
     if json {
@@ -94,11 +94,11 @@ fn print_shoku_work_metadata_only(
 ) -> anyhow::Result<()> {
     let hint = match entry {
         Some(entry) => format!(
-            "{} は頁範囲未確定の書誌エントリ（『{}』、{}）です。本文を探す場合は作品名で検索してください。",
+            "{} is a bibliographic entry with an unresolved page range ({}, {}). Search by title to find its text.",
             work_id, entry.title, entry.range.citation
         ),
         None => format!(
-            "{} は続真言宗全書の作品カタログにありません。",
+            "{} is absent from the shoku-shinzen work catalog.",
             work_id
         ),
     };
@@ -500,7 +500,7 @@ pub fn shoku_shinzen_work_catalog(
         println!("{}", super::common::cli_json(&envelope)?);
     } else {
         if results.is_empty() {
-            println!("0 件。題の一部や著者で検索するか、buddha shoku-shinzen-search で本文を検索してください。");
+            println!("No results. Try part of the title or an author, or use buddha shoku-shinzen-search for text.");
         }
         for entry in results {
             let author = entry.author.as_deref().unwrap_or("著者未詳");

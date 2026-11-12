@@ -223,6 +223,7 @@ fn mcp_stdio_exposes_and_runs_shared_operations() {
         json!({"jsonrpc":"2.0","id":5,"method":"tools/call","params":{"name":"fetch","arguments":{"ids":["T08n0235@0749c22","SZ13p0006:12","T9999"]}}}),
         json!({"jsonrpc":"2.0","id":6,"method":"tools/call","params":{"name":"fetch","arguments":{"ids":vec!["T08n0235";11]}}}),
         json!({"jsonrpc":"2.0","id":7,"method":"tools/call","params":{"name":"verify","arguments":{"id":"2,7,98,38,0","source":"sat","quote":"六大無礙"}}}),
+        json!({"jsonrpc":"2.0","id":8,"method":"tools/call","params":{"name":"search","arguments":{"source":"local","query":"六大無礙","maxResults":2}}}),
     ];
     let mut child = Command::new(env!("CARGO_BIN_EXE_buddha"))
         .env("BUDDHA_DIR", &c.0)
@@ -260,6 +261,12 @@ fn mcp_stdio_exposes_and_runs_shared_operations() {
     assert_eq!(fetch["inputSchema"]["properties"]["ids"]["maxItems"], 10);
     let search = tools.iter().find(|v| v["name"] == "search").unwrap();
     assert_eq!(search["inputSchema"]["required"], json!(["query"]));
+    assert!(search["description"]
+        .as_str()
+        .unwrap()
+        .contains("nextActions"));
+    assert!(fetch["description"].as_str().unwrap().contains("ID@lb"));
+    assert!(get(8)["result"]["structuredContent"]["corpora"].is_array());
     let m = &get(3)["result"]["structuredContent"];
     assert_eq!(m["corpora"].as_array().unwrap().len(), 2);
     assert_eq!(m["corpora"][0]["results"][0]["nextAction"]["tool"], "fetch");
@@ -273,7 +280,7 @@ fn mcp_stdio_exposes_and_runs_shared_operations() {
     assert!(get(7)["result"]["content"][0]["text"]
         .as_str()
         .unwrap()
-        .contains("未対応"));
+        .contains("Only local corpora"));
     for command in ["search", "fetch", "verify"] {
         let v = c.json(&["schema", "--command", command]);
         assert_eq!(v["commands"][0]["name"], command);
@@ -452,4 +459,71 @@ fn latin_selection_batch_default_and_locator_continuation() {
         .as_str()
         .unwrap()
         .contains("--start-char 2000"));
+}
+
+#[test]
+fn release_search_text_is_english() {
+    let c = Corpus::new();
+    let out = c.run(&["--text", "search", "六大無礙"]);
+    let text = String::from_utf8(out.stdout).unwrap();
+    assert!(text.contains("Online corpora are searched separately"));
+    assert!(text.contains("--source sat"));
+    let v = c.json(&["search", "六大無礙", "--json"]);
+    assert!(v["result"]["_meta"]["note"]
+        .as_str()
+        .unwrap()
+        .starts_with("Online"));
+}
+
+#[test]
+fn release_verify_text_is_readable() {
+    let c = Corpus::new();
+    for (quote, status) in [
+        ("応無所住而生其心", "variant"),
+        ("應無所住而生妙心", "partial"),
+        ("完全不存在的文字", "not_found"),
+    ] {
+        let out = c.run(&["--text", "verify", "--id", "T08n0235", "--quote", quote]);
+        let text = String::from_utf8(out.stdout).unwrap();
+        assert!(text.starts_with("# verify T08n0235:"), "{text}");
+        assert!(text.contains(status), "{text}");
+    }
+}
+
+#[test]
+fn release_search_schema_lists_individual_sources() {
+    let c = Corpus::new();
+    let help = String::from_utf8(c.run(&["search", "--help"]).stdout).unwrap();
+    for source in [
+        "all",
+        "local",
+        "cbeta",
+        "tipitaka",
+        "gretil",
+        "sarit",
+        "muktabodha",
+        "shinzen",
+        "shoku_shinzen",
+    ] {
+        assert!(help.contains(source), "missing {source}: {help}");
+        let schema = c.json(&["schema", "--command", "search", "--json"]);
+        assert!(schema.to_string().contains(source));
+    }
+}
+
+#[test]
+fn release_locator_out_of_range_is_invalid_argument() {
+    let c = Corpus::new();
+    let out = c.run(&["fetch", "T08n0235:999", "--json"]);
+    assert_eq!(out.status.code(), Some(2));
+    let err = String::from_utf8(out.stderr).unwrap();
+    assert!(
+        err.contains("INVALID_ARGUMENT") && err.contains("1-"),
+        "{err}"
+    );
+    let result = c.json(&["fetch", "T08n0235:999", "T08n0235", "--json"]);
+    assert!(result["result"]["_meta"]["results"][0]["error"]
+        .as_str()
+        .unwrap()
+        .contains("invalid argument"));
 }
